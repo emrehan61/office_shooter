@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyPong, createNet, connect, estimateServerTime } from './net.js';
+import { applyPong, createNet, connect, estimateServerTime, sendBuy, sendInput, sendReload, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { applyAuthoritativeState, createPlayer } from './player.js';
 
 class FakeWebSocket {
     static instances = [];
@@ -59,9 +60,9 @@ test('connect keeps lobby players keyed by id after lobby snapshots', async () =
         ws.open();
         assert.deepEqual(ws.sent[0], { t: 'name', name: 'Host' });
 
-        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0] });
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], match: { currentRound: 0, totalRounds: 30, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false } });
         await connected;
-        ws.emit({ t: 'lobby', players: [{ id: 1, name: 'Host' }] });
+        ws.emit({ t: 'lobby', players: [{ id: 1, name: 'Host' }], match: { currentRound: 0, totalRounds: 30, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false } });
 
         assert.deepEqual(Object.keys(net.players), ['1']);
         assert.equal(net.players['1'].name, 'Host');
@@ -103,10 +104,11 @@ test('welcome marks the client as playing when the match is already active', asy
         const ws = FakeWebSocket.instances[0];
 
         ws.open();
-        ws.emit({ t: 'welcome', id: 2, pos: [5, 1.7, 5], state: 'playing' });
+        ws.emit({ t: 'welcome', id: 2, pos: [5, 1.7, 5], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true } });
         await connected;
 
         assert.equal(net.gameStarted, true);
+        assert.equal(net.match.currentRound, 1);
     } finally {
         restore();
     }
@@ -120,20 +122,223 @@ test('state snapshots refresh kills and deaths for the leaderboard', async () =>
         const ws = FakeWebSocket.instances[0];
 
         ws.open();
-        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing' });
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true } });
         await connected;
         ws.emit({
             t: 'state',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 294000, buyTimeLeftMs: 4000, buyPhase: true },
             players: {
-                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100, kills: 3, deaths: 1 },
-                2: { pos: [5, 1.7, 5], yaw: 0, pitch: 0, hp: 80, kills: 5, deaths: 4 },
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100, armor: 15, credits: 420, hasPistol: true, pistolClip: 7, pistolReserve: 14, activeWeapon: 'pistol', kills: 3, deaths: 1 },
+                2: { pos: [5, 1.7, 5], yaw: 0, pitch: 0, hp: 80, armor: 25, credits: 610, hasMachineGun: true, machineGunClip: 30, machineGunReserve: 50, activeWeapon: 'machinegun', kills: 5, deaths: 4 },
             },
         });
 
         assert.equal(net.players['1'].kills, 3);
         assert.equal(net.players['1'].deaths, 1);
+        assert.equal(net.players['1'].armor, 15);
+        assert.equal(net.players['1'].pistolClip, 7);
+        assert.equal(net.players['1'].pistolReserve, 14);
+        assert.equal(net.players['1'].credits, 420);
+        assert.equal(net.players['1'].activeWeapon, 'pistol');
         assert.equal(net.players['2'].kills, 5);
         assert.equal(net.players['2'].deaths, 4);
+        assert.equal(net.players['2'].armor, 25);
+        assert.equal(net.players['2'].machineGunClip, 30);
+        assert.equal(net.players['2'].machineGunReserve, 50);
+        assert.equal(net.players['2'].credits, 610);
+        assert.equal(net.match.buyPhase, true);
+    } finally {
+        restore();
+    }
+});
+
+test('state snapshots do not overwrite the local player position', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const localPlayer = createPlayer();
+        net.onSelfState = (state) => {
+            applyAuthoritativeState(localPlayer, state);
+        };
+
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            hp: 100,
+            armor: 0,
+            credits: 3000,
+            activeWeapon: 'knife',
+            state: 'playing',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true },
+        });
+        await connected;
+
+        localPlayer.pos = [9, 1.7, -4];
+
+        ws.emit({
+            t: 'state',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 289000, buyTimeLeftMs: 0, buyPhase: false },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 1.2, pitch: 0.1, hp: 100, armor: 25, credits: 2600, activeWeapon: 'knife', kills: 1, deaths: 0 },
+            },
+        });
+
+        assert.deepEqual(localPlayer.pos, [9, 1.7, -4]);
+        assert.equal(localPlayer.armor, 25);
+        assert.equal(localPlayer.credits, 2600);
+    } finally {
+        restore();
+    }
+});
+
+test('economy messages update local player state and action requests send ids', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], hp: 100, armor: 0, credits: 3000, hasPistol: false, hasMachineGun: false, pistolClip: 0, pistolReserve: 0, machineGunClip: 0, machineGunReserve: 0, activeWeapon: 'knife', state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true } });
+        await connected;
+
+        sendTeam(net, 'blue');
+        sendSwitchWeapon(net, 'knife');
+        sendReload(net);
+        sendThrow(net, [0, 0.25, -1], 'bomb');
+        sendBuy(net, 'buy-pistol');
+        assert.deepEqual(ws.sent[ws.sent.length - 5], { t: 'team', team: 'blue' });
+        assert.deepEqual(ws.sent[ws.sent.length - 4], { t: 'switch', weapon: 'knife' });
+        assert.deepEqual(ws.sent[ws.sent.length - 3], { t: 'reload' });
+        assert.deepEqual(ws.sent[ws.sent.length - 2], { t: 'throw', dir: [0, 0.25, -1], weapon: 'bomb' });
+        assert.deepEqual(ws.sent[ws.sent.length - 1], { t: 'buy', item: 'buy-pistol' });
+
+        ws.emit({
+            t: 'economy',
+            id: 1,
+            ok: true,
+            kind: 'purchase',
+            item: 'buy-pistol',
+            team: 'blue',
+            credits: 2300,
+            armor: 0,
+            hp: 100,
+            hasPistol: true,
+            pistolClip: 7,
+            pistolReserve: 21,
+            activeWeapon: 'pistol',
+        });
+
+        assert.equal(net.players['1'].credits, 2300);
+        assert.equal(net.players['1'].team, 'blue');
+        assert.equal(net.players['1'].hasPistol, true);
+        assert.equal(net.players['1'].pistolClip, 7);
+        assert.equal(net.players['1'].pistolReserve, 21);
+        assert.equal(net.players['1'].activeWeapon, 'pistol');
+    } finally {
+        restore();
+    }
+});
+
+test('shoot requests include aiming state and alternate attack flags', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false } });
+        await connected;
+
+        sendShoot(net, [0.1, 0.05, -1], 'machinegun', true);
+        const payload = ws.sent[ws.sent.length - 1];
+
+        assert.equal(payload.t, 'shoot');
+        assert.deepEqual(payload.dir, [0.1, 0.05, -1]);
+        assert.equal(payload.weapon, 'machinegun');
+        assert.equal(payload.aiming, true);
+        assert.equal(payload.alternate, false);
+        assert.equal(typeof payload.shotTime, 'number');
+
+        sendShoot(net, [0, 0, -1], 'knife', false, true);
+        const altPayload = ws.sent[ws.sent.length - 1];
+
+        assert.equal(altPayload.weapon, 'knife');
+        assert.equal(altPayload.aiming, false);
+        assert.equal(altPayload.alternate, true);
+        assert.equal(typeof altPayload.shotTime, 'number');
+    } finally {
+        restore();
+    }
+});
+
+test('state snapshots include projectiles and reload timer state', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            hp: 100,
+            armor: 0,
+            credits: 3000,
+            activeWeapon: 'knife',
+            state: 'playing',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false },
+        });
+        await connected;
+
+        ws.emit({
+            t: 'state',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 299000, buyTimeLeftMs: 0, buyPhase: false },
+            projectiles: [{ id: 7, type: 'bomb', pos: [1, 1.2, -3] }],
+            effects: [{ type: 'smoke', pos: [2, 0.12, -4], radius: 3.8, timeLeftMs: 6400 }],
+            players: {
+                1: { hp: 100, armor: 0, credits: 3000, activeWeapon: 'machinegun', hasMachineGun: true, machineGunClip: 5, machineGunReserve: 25, reloading: true, reloadTimeLeftMs: 2400, flashTimeLeftMs: 1800 },
+            },
+        });
+
+        assert.deepEqual(net.projectiles, [{ id: 7, type: 'bomb', pos: [1, 1.2, -3] }]);
+        assert.deepEqual(net.effects, [{ type: 'smoke', pos: [2, 0.12, -4], radius: 3.8, timeLeftMs: 6400 }]);
+        assert.equal(net.players['1'].reloading, true);
+        assert.equal(net.players['1'].reloadTimeLeftMs, 2400);
+        assert.equal(net.players['1'].flashTimeLeftMs, 1800);
+    } finally {
+        restore();
+    }
+});
+
+test('input messages include crouch stance', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true } });
+        await connected;
+
+        sendInput(net, [0, 1.15, 0], 1.2, -0.4, true);
+
+        assert.deepEqual(ws.sent[ws.sent.length - 1], {
+            t: 'input',
+            pos: [0, 1.15, 0],
+            yaw: 1.2,
+            pitch: -0.4,
+            crouching: true,
+        });
     } finally {
         restore();
     }

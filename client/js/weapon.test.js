@@ -1,29 +1,108 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createWeapon, fire, updateWeapon, weaponVerts } from './weapon.js';
+import { createWeapon, fire, getCrosshairGap, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
+import { UTILITY_BOMB, WEAPON_DEFS, WEAPON_MACHINE_GUN, WEAPON_KNIFE, WEAPON_PISTOL } from './economy.js';
+
+function getBounds(verts) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+
+    for (let i = 0; i < verts.length; i += 6) {
+        const x = verts[i];
+        const y = verts[i + 1];
+        const z = verts[i + 2];
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+    }
+
+    return {
+        minX,
+        maxX,
+        minY,
+        maxY,
+        minZ,
+        maxZ,
+    };
+}
+
+function withStubbedRandom(value, fn) {
+    const original = Math.random;
+    Math.random = () => value;
+    try {
+        return fn();
+    } finally {
+        Math.random = original;
+    }
+}
 
 test('fire applies recoil and muzzle-flash state', () => {
     const weapon = createWeapon();
+    setWeaponType(weapon, WEAPON_MACHINE_GUN);
 
     fire(weapon);
 
-    assert.ok(weapon.kickback > 0);
-    assert.ok(weapon.recoilPitch > 0);
-    assert.ok(weapon.flashTime > 0);
+    const slot = weapon.slots[WEAPON_MACHINE_GUN];
+    assert.ok(slot.kickback > 0);
+    assert.ok(slot.recoilPitch > 0);
+    assert.ok(slot.flashTime > 0);
 });
 
 test('updateWeapon settles recoil over time', () => {
     const weapon = createWeapon();
+    setWeaponType(weapon, WEAPON_MACHINE_GUN);
     fire(weapon);
 
-    const recoilPitch = weapon.recoilPitch;
-    const flashTime = weapon.flashTime;
+    const slot = weapon.slots[WEAPON_MACHINE_GUN];
+    const recoilPitch = slot.recoilPitch;
+    const flashTime = slot.flashTime;
 
     updateWeapon(weapon, 0.1, false);
 
-    assert.ok(weapon.recoilPitch < recoilPitch);
-    assert.ok(weapon.flashTime < flashTime);
+    assert.ok(slot.recoilPitch < recoilPitch);
+    assert.ok(slot.flashTime < flashTime);
+});
+
+test('aiming reduces firearm recoil while sustained fire increases it', () => {
+    const hipfireWeapon = createWeapon();
+    setWeaponType(hipfireWeapon, WEAPON_MACHINE_GUN);
+    fire(hipfireWeapon, false);
+    const hipPitch = hipfireWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
+
+    const aimedWeapon = createWeapon();
+    setWeaponType(aimedWeapon, WEAPON_MACHINE_GUN);
+    fire(aimedWeapon, true);
+    const aimedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
+    fire(aimedWeapon, true);
+    const sustainedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
+
+    assert.ok(aimedPitch < hipPitch);
+    assert.ok(sustainedPitch > aimedPitch);
+});
+
+test('crosshair gap shrinks on aim and expands with sustained fire', () => {
+    const weapon = createWeapon();
+    setWeaponType(weapon, WEAPON_PISTOL);
+
+    const hipGap = getCrosshairGap(weapon, false);
+    const aimGap = getCrosshairGap(weapon, true);
+    const crouchGap = getCrosshairGap(weapon, false, true);
+    const movingGap = getCrosshairGap(weapon, false, false, true);
+    fire(weapon, false);
+    const firedGap = getCrosshairGap(weapon, false);
+
+    assert.ok(aimGap < hipGap);
+    assert.ok(crouchGap < hipGap);
+    assert.ok(movingGap > hipGap);
+    assert.ok(firedGap > hipGap);
 });
 
 test('weapon view model includes hands holding the gun', () => {
@@ -36,4 +115,107 @@ test('weapon view model includes hands holding the gun', () => {
     }
 
     assert.ok(mats.has(9));
+});
+
+test('utility selection renders a utility model instead of the knife model', () => {
+    const weapon = createWeapon();
+    setWeaponType(weapon, WEAPON_KNIFE);
+    const knifeVerts = weaponVerts(weapon);
+
+    setWeaponType(weapon, UTILITY_BOMB);
+    const bombVerts = weaponVerts(weapon);
+
+    assert.notDeepEqual(bombVerts, knifeVerts);
+});
+
+test('knife idles upright and uses a horizontal swing on primary attack', () => {
+    const idleWeapon = createWeapon();
+    setWeaponType(idleWeapon, WEAPON_KNIFE);
+    const idleBounds = getBounds(weaponVerts(idleWeapon));
+
+    const leftToRightStart = withStubbedRandom(0.1, () => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon);
+        updateWeapon(weapon, 0.1, false);
+        return {
+            direction: weapon.slots[WEAPON_KNIFE].attackDirection,
+            bounds: getBounds(weaponVerts(weapon)),
+        };
+    });
+
+    const leftToRightEnd = withStubbedRandom(0.1, () => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon);
+        updateWeapon(weapon, 0.5, false);
+        return getBounds(weaponVerts(weapon));
+    });
+
+    const rightToLeftStart = withStubbedRandom(0.9, () => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon);
+        updateWeapon(weapon, 0.1, false);
+        return {
+            direction: weapon.slots[WEAPON_KNIFE].attackDirection,
+            bounds: getBounds(weaponVerts(weapon)),
+        };
+    });
+
+    assert.ok(idleBounds.maxY - idleBounds.minY > idleBounds.maxZ - idleBounds.minZ);
+    assert.equal(leftToRightStart.direction, 1);
+    assert.equal(rightToLeftStart.direction, -1);
+    assert.ok(leftToRightStart.bounds.maxX - leftToRightStart.bounds.minX > idleBounds.maxX - idleBounds.minX);
+    assert.ok(leftToRightStart.bounds.minX < idleBounds.minX - 0.45);
+    assert.ok(leftToRightEnd.maxX > idleBounds.maxX + 0.2);
+    assert.ok(rightToLeftStart.bounds.maxX > idleBounds.maxX + 0.15);
+});
+
+test('knife alternate fire uses a longer animation and a left-to-center stab with right recovery', () => {
+    const idleWeapon = createWeapon();
+    setWeaponType(idleWeapon, WEAPON_KNIFE);
+    const idleBounds = getBounds(weaponVerts(idleWeapon));
+
+    const primaryWeapon = createWeapon();
+    setWeaponType(primaryWeapon, WEAPON_KNIFE);
+    fire(primaryWeapon, false, false);
+    updateWeapon(primaryWeapon, 0.16, false);
+    const primarySlot = primaryWeapon.slots[WEAPON_KNIFE];
+    const primaryBounds = getBounds(weaponVerts(primaryWeapon));
+
+    const heavyWindup = (() => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon, false, true);
+        updateWeapon(weapon, 0.18, false);
+        return {
+            slot: weapon.slots[WEAPON_KNIFE],
+            bounds: getBounds(weaponVerts(weapon)),
+        };
+    })();
+
+    const heavyStab = (() => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon, false, true);
+        updateWeapon(weapon, 0.6, false);
+        return getBounds(weaponVerts(weapon));
+    })();
+
+    const heavyRecover = (() => {
+        const weapon = createWeapon();
+        setWeaponType(weapon, WEAPON_KNIFE);
+        fire(weapon, false, true);
+        updateWeapon(weapon, 0.98, false);
+        return getBounds(weaponVerts(weapon));
+    })();
+
+    assert.equal(primarySlot.attackStyle, 'primary');
+    assert.ok(primarySlot.attackDuration > WEAPON_DEFS[WEAPON_KNIFE].fireRate);
+    assert.equal(heavyWindup.slot.attackStyle, 'alternate');
+    assert.ok(heavyWindup.slot.attackDuration > WEAPON_DEFS[WEAPON_KNIFE].altFireRate);
+    assert.ok(heavyWindup.bounds.minX < idleBounds.minX - 0.35);
+    assert.ok(heavyStab.minZ < primaryBounds.minZ - 0.18);
+    assert.ok(heavyRecover.maxX > idleBounds.maxX + 0.12);
 });
