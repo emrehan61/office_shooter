@@ -1,0 +1,22 @@
+.DS_Store
+Thumbs.db
+
+# Local editor / tool state
+.claude/
+.gocache/
+
+# Node / JS
+node_modules/
+coverage/
+dist/
+
+# Go build outputs
+bin/
+server/fps-server
+*.exe
+*.test
+
+# Logs and env files
+*.log
+.env
+.env.*

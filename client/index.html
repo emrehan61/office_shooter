@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alyo Shooter</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="game"></canvas>
+
+    <!-- HUD -->
+    <div id="crosshair"></div>
+    <div id="network-stats">
+        <span id="ping">PING -- ms</span>
+    </div>
+    <div id="health-bar">
+        <span id="health">100</span> HP
+    </div>
+    <div id="ammo-display">
+        <span id="ammo">250</span> AMMO
+    </div>
+    <div id="killfeed"></div>
+    <div id="damage-flash"></div>
+    <div id="leaderboard">
+        <div class="leaderboard-title">LEADERBOARD</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Player</th>
+                    <th>K</th>
+                    <th>D</th>
+                </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+        </table>
+    </div>
+    <div id="death-screen">
+        <div>YOU DIED</div>
+        <div id="respawn-timer">3</div>
+    </div>
+    <div id="overlay">
+        <div id="overlay-content">
+            <h1>ALYO SHOOTER</h1>
+            <div class="lobby-form">
+                <input type="text" id="name-input" placeholder="Your name" maxlength="12" autocomplete="off">
+                <input type="text" id="server-input" placeholder="host:port" autocomplete="off">
+                <button id="connect-btn">Connect</button>
+            </div>
+            <div id="lobby-panel" style="display:none;">
+                <div id="lobby-status">Connected</div>
+                <div id="player-list"></div>
+                <button id="start-btn" disabled>Start Game</button>
+            </div>
+            <p class="controls">WASD - Move &nbsp; Mouse - Look &nbsp; Space - Jump &nbsp; Click - Shoot &nbsp; Tab - Leaderboard</p>
+        </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

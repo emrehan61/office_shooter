@@ -1,0 +1,10 @@
+{
+  "name": "arena-fps",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:client": "node --test client/js/*.test.js",
+    "test:server": "cd server && GOCACHE=$(pwd)/../.gocache go test ./...",
+    "test": "npm run test:client && npm run test:server"
+  }
+}
