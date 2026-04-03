@@ -28,6 +28,15 @@ import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js'
 import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
+import {
+    createAnnouncer,
+    createKillAnnouncerState,
+    getAnnouncerKillCues,
+    getAnnouncerMatchCues,
+    playAnnouncerCue,
+    primeAnnouncer,
+    snapshotMatchForAnnouncer,
+} from './audio.js';
 
 const SEND_RATE = 1 / 60;
 
@@ -43,6 +52,9 @@ const player = createPlayer();
 const weapon = createWeapon();
 const hud = createHUD();
 const net = createNet();
+const announcer = createAnnouncer();
+let lastAnnouncerMatch = null;
+let killAnnouncerState = createKillAnnouncerState();
 
 window._cam = camera;
 init(canvas);
@@ -57,6 +69,13 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+function warmAudio() {
+    void primeAnnouncer(announcer);
+}
+
+window.addEventListener('pointerdown', warmAudio, { once: true });
+window.addEventListener('keydown', warmAudio, { once: true });
 
 const serverInput = document.getElementById('server-input');
 const nameInput = document.getElementById('name-input');
@@ -192,11 +211,24 @@ function resetAfterDisconnect(message) {
     setBuyMenuOpen(false);
     camera.fov = DEFAULT_FOV;
     localImpactEffects.length = 0;
+    lastAnnouncerMatch = null;
+    killAnnouncerState = createKillAnnouncerState();
 
     if (hud.overlay) hud.overlay.style.display = 'flex';
     showConnectForm();
     setLobbyStatus(message || 'Disconnected from server');
     populatePlayerList();
+}
+
+function syncAnnouncer(match) {
+    const nextState = snapshotMatchForAnnouncer(match);
+    const cues = getAnnouncerMatchCues(lastAnnouncerMatch, nextState, {
+        myTeam: normalizeTeam(player.team),
+    });
+    lastAnnouncerMatch = nextState;
+    for (const cue of cues) {
+        playAnnouncerCue(announcer, cue);
+    }
 }
 
 if (hud.shopPanel) {
@@ -216,6 +248,7 @@ if (connectBtn) {
         const server = (serverInput ? serverInput.value.trim() : '') || 'localhost:8080';
         const url = buildWebSocketURL(server, window.location);
 
+        warmAudio();
         connectBtn.disabled = true;
         setLobbyStatus('Connecting...');
 
@@ -228,6 +261,8 @@ if (connectBtn) {
             showLobbyPanel();
             populatePlayerList();
             setLobbyStatus(net.gameStarted ? 'Match in progress' : 'Connected to lobby');
+            lastAnnouncerMatch = snapshotMatchForAnnouncer(net.match);
+            killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
         } catch (err) {
             resetAfterDisconnect(err.message || 'Connection failed');
         } finally {
@@ -270,6 +305,7 @@ if (startBtn) {
             updateTeamControls();
             return;
         }
+        warmAudio();
         if (startBtn) startBtn.disabled = true;
         setLobbyStatus('Starting match...');
         sendStart(net);
@@ -385,6 +421,12 @@ net.onKill = (msg) => {
     const killerName = msg.killer == net.myId ? 'You' : (net.players[msg.killer]?.name || '?');
     const victimName = msg.victim == net.myId ? 'You' : (net.players[msg.victim]?.name || '?');
     addKill(hud, killerName, victimName);
+
+    const nextKillState = getAnnouncerKillCues(killAnnouncerState, msg, net.myId);
+    killAnnouncerState = nextKillState.state;
+    for (const cue of nextKillState.cues) {
+        playAnnouncerCue(announcer, cue);
+    }
 };
 
 net.onRespawn = (msg) => {
@@ -404,6 +446,7 @@ net.onRound = () => {
     camera.position = player.pos;
     setBuyMenuOpen(false);
     localImpactEffects.length = 0;
+    killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
     if (hud.overlay) hud.overlay.style.display = 'none';
 };
 
@@ -446,6 +489,10 @@ net.onEconomy = (msg) => {
 
 net.onDisconnect = ({ reason }) => {
     resetAfterDisconnect(reason);
+};
+
+net.onMatch = (match) => {
+    syncAnnouncer(match);
 };
 
 function frame(time) {
