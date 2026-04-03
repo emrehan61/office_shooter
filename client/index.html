@@ -10,18 +10,58 @@
     <canvas id="game"></canvas>
 
     <!-- HUD -->
-    <div id="crosshair"></div>
+    <div id="crosshair">
+        <span class="crosshair-arm arm-top"></span>
+        <span class="crosshair-arm arm-right"></span>
+        <span class="crosshair-arm arm-bottom"></span>
+        <span class="crosshair-arm arm-left"></span>
+    </div>
     <div id="network-stats">
         <span id="ping">PING -- ms</span>
+    </div>
+    <div id="match-bar">
+        <div class="team-scoreboard team-blue">
+            <div class="team-score-name">BLUE</div>
+            <div class="team-score-value" id="blue-score">0</div>
+            <div class="team-score-alive">ALIVE <span id="blue-alive">0</span></div>
+        </div>
+        <div class="match-status">
+            <div id="round-label">ROUND 0/30</div>
+            <div id="round-timer">0:00</div>
+            <div id="buy-status">LIVE FIRE</div>
+        </div>
+        <div class="team-scoreboard team-green">
+            <div class="team-score-name">GREEN</div>
+            <div class="team-score-value" id="green-score">0</div>
+            <div class="team-score-alive">ALIVE <span id="green-alive">0</span></div>
+        </div>
     </div>
     <div id="health-bar">
         <span id="health">100</span> HP
     </div>
-    <div id="ammo-display">
-        <span id="ammo">250</span> AMMO
+    <div id="armor-bar">
+        <span id="armor">0</span> AR
     </div>
+    <div id="ammo-display">
+        <span id="ammo">--</span> <span id="ammo-label">KNIFE</span>
+    </div>
+    <div id="weapon-display">
+        <span id="weapon-name">Knife</span>
+    </div>
+    <div id="credits-display">
+        $<span id="credits">300</span>
+    </div>
+    <div id="economy-toast"></div>
+    <div id="buy-countdown">3</div>
+    <div id="round-result-banner">
+        <div id="round-result-title">BLUE TEAM WINS</div>
+        <div id="round-result-subtitle">NEXT ROUND IN 0:05</div>
+    </div>
+    <div id="shop-panel"></div>
+    <div id="loadout-bar"></div>
     <div id="killfeed"></div>
     <div id="damage-flash"></div>
+    <div id="flashbang-screen"></div>
     <div id="leaderboard">
         <div class="leaderboard-title">LEADERBOARD</div>
         <table>
@@ -31,6 +71,7 @@
                     <th>Player</th>
                     <th>K</th>
                     <th>D</th>
+                    <th>$</th>
                 </tr>
             </thead>
             <tbody id="leaderboard-body"></tbody>
@@ -50,10 +91,18 @@
             </div>
             <div id="lobby-panel" style="display:none;">
                 <div id="lobby-status">Connected</div>
+                <div id="team-select">
+                    <div class="team-select-title">Select Team</div>
+                    <div class="team-select-buttons">
+                        <button id="team-blue-btn" class="team-select-btn team-blue">BLUE TEAM (0)</button>
+                        <button id="team-green-btn" class="team-select-btn team-green">GREEN TEAM (0)</button>
+                    </div>
+                    <div id="team-hint">All players must join balanced teams.</div>
+                </div>
                 <div id="player-list"></div>
                 <button id="start-btn" disabled>Start Game</button>
             </div>
-            <p class="controls">WASD - Move &nbsp; Mouse - Look &nbsp; Space - Jump &nbsp; Click - Shoot &nbsp; Tab - Leaderboard</p>
+            <p class="controls">WASD - Move &nbsp; Mouse - Look &nbsp; Right Click - Aim &nbsp; Space - Jump &nbsp; Ctrl/Cmd - Crouch &nbsp; Click - Attack &nbsp; R - Reload &nbsp; 1/2/3 - Weapons &nbsp; 4 - Cycle Utility &nbsp; B - Buy Menu &nbsp; Esc - Close Buy Menu &nbsp; Tab - Leaderboard</p>
         </div>
     </div>
 

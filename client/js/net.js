@@ -2,7 +2,10 @@ export function createNet() {
     return {
         ws: null,
         myId: null,
-        players: {},   // id -> {pos, yaw, pitch, hp, name, alive, shotTime, kills, deaths}
+        players: {},
+        projectiles: [],
+        effects: [],
+        match: createDefaultMatchState(),
         connected: false,
         gameStarted: false,
         connectionError: '',
@@ -16,6 +19,12 @@ export function createNet() {
         onLobby: null,
         onDisconnect: null,
         onShot: null,
+        onEconomy: null,
+        onSelfState: null,
+        onMatch: null,
+        onRound: null,
+        onTeam: null,
+        onStartDenied: null,
     };
 }
 
@@ -28,7 +37,7 @@ export function connect(net, url, name) {
         try {
             previous.close();
         } catch {
-            // Ignore close races from stale sockets.
+            // Ignore stale close races.
         }
     }
 
@@ -120,21 +129,20 @@ function handleMsg(net, msg) {
         case 'welcome': {
             net.myId = msg.id;
             applyGameState(net, msg.state);
+            applyMatchState(net, msg.match);
             const self = ensurePlayer(net, msg.id);
-            if (msg.pos) self.pos = msg.pos;
-            self.alive = true;
+            applyPlayerState(self, msg, true);
+            notifySelfState(net, msg.id, true);
             break;
         }
 
         case 'lobby': {
             const ids = new Set();
             for (const entry of msg.players || []) {
-                const player = ensurePlayer(net, entry.id);
                 const key = normalizeId(entry.id);
+                const player = ensurePlayer(net, entry.id);
                 ids.add(key);
-                player.name = entry.name;
-                player.kills = entry.kills ?? player.kills;
-                player.deaths = entry.deaths ?? player.deaths;
+                applyPlayerState(player, entry, false);
             }
 
             for (const id of Object.keys(net.players)) {
@@ -144,33 +152,32 @@ function handleMsg(net, msg) {
             }
 
             applyGameState(net, msg.state);
+            applyMatchState(net, msg.match);
             if (net.onLobby) net.onLobby(msg);
             break;
         }
 
         case 'start':
-            net.gameStarted = true;
-            break;
-
-        case 'state': {
-            const ps = msg.players || {};
-            for (const id in ps) {
-                const p = ps[id];
-                const target = ensurePlayer(net, id);
-                target.kills = p.kills ?? target.kills;
-                target.deaths = p.deaths ?? target.deaths;
-                target.name = p.name ?? target.name;
-                target.hp = p.hp ?? target.hp;
-                target.alive = (p.hp ?? target.hp) > 0;
-
-                if (Number(id) === net.myId) continue;
-
-                target.pos = p.pos;
-                target.yaw = p.yaw;
-                target.pitch = p.pitch;
+            if (msg.ok === false) {
+                if (net.onStartDenied) net.onStartDenied(msg);
+                break;
             }
+            net.gameStarted = true;
+            applyMatchState(net, msg.match);
             break;
-        }
+
+        case 'team':
+            if (net.onTeam) net.onTeam(msg);
+            break;
+
+        case 'round':
+            applySnapshot(net, msg, true);
+            if (net.onRound) net.onRound(msg);
+            break;
+
+        case 'state':
+            applySnapshot(net, msg, false);
+            break;
 
         case 'hit':
             if (net.onHit) net.onHit(msg);
@@ -180,20 +187,31 @@ function handleMsg(net, msg) {
             if (net.onKill) net.onKill(msg);
             break;
 
-        case 'respawn':
+        case 'respawn': {
+            const target = ensurePlayer(net, msg.id);
+            applyPlayerState(target, msg, true);
             if (msg.id == net.myId) {
+                notifySelfState(net, msg.id, true);
                 if (net.onRespawn) net.onRespawn(msg);
-            } else {
-                const target = ensurePlayer(net, msg.id);
-                target.pos = msg.pos;
-                target.hp = 100;
-                target.alive = true;
             }
             break;
+        }
+
+        case 'economy': {
+            const playerId = msg.id ?? net.myId;
+            const target = ensurePlayer(net, playerId);
+            applyPlayerState(target, msg, false);
+            notifySelfState(net, playerId);
+            if (net.onEconomy) net.onEconomy(msg);
+            break;
+        }
 
         case 'shot': {
             const target = ensurePlayer(net, msg.id);
             target.shotTime = 0.12;
+            if (typeof msg.weapon === 'string') {
+                target.activeWeapon = msg.weapon;
+            }
             if (net.onShot) net.onShot(msg);
             break;
         }
@@ -208,28 +226,94 @@ function handleMsg(net, msg) {
     }
 }
 
-export function sendInput(net, pos, yaw, pitch) {
+function applySnapshot(net, msg, includeSelfTransform) {
+    applyMatchState(net, msg.match);
+    net.projectiles = Array.isArray(msg.projectiles)
+        ? msg.projectiles
+            .filter((projectile) => projectile?.pos && projectile?.type)
+            .map((projectile) => ({
+                id: projectile.id ?? 0,
+                type: projectile.type,
+                pos: [...projectile.pos],
+            }))
+        : [];
+    net.effects = Array.isArray(msg.effects)
+        ? msg.effects
+            .filter((effect) => effect?.pos && effect?.type)
+            .map((effect) => ({
+                type: effect.type,
+                pos: [...effect.pos],
+                radius: effect.radius ?? 0,
+                timeLeftMs: effect.timeLeftMs ?? 0,
+            }))
+        : [];
+    const players = msg.players || {};
+
+    for (const id in players) {
+        const target = ensurePlayer(net, id);
+        const isSelf = Number(id) === net.myId;
+        applyPlayerState(target, players[id], includeSelfTransform || !isSelf);
+        if (isSelf) {
+            notifySelfState(net, id, includeSelfTransform);
+        }
+    }
+}
+
+export function sendInput(net, pos, yaw, pitch, crouching = false) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({
         t: 'input',
         pos: [pos[0], pos[1], pos[2]],
         yaw,
         pitch,
+        crouching: !!crouching,
     }));
 }
 
-export function sendShoot(net, dir) {
+export function sendShoot(net, dir, weapon, aiming = false, alternate = false) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({
         t: 'shoot',
         dir: [dir[0], dir[1], dir[2]],
         shotTime: Math.round(estimateServerTime(net, Date.now())),
+        weapon,
+        aiming: !!aiming,
+        alternate: !!alternate,
+    }));
+}
+
+export function sendThrow(net, dir, weapon) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({
+        t: 'throw',
+        dir: [dir[0], dir[1], dir[2]],
+        weapon,
     }));
 }
 
 export function sendStart(net) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({ t: 'start' }));
+}
+
+export function sendTeam(net, team) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'team', team }));
+}
+
+export function sendBuy(net, item) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'buy', item }));
+}
+
+export function sendReload(net) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'reload' }));
+}
+
+export function sendSwitchWeapon(net, weapon) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'switch', weapon }));
 }
 
 function ensurePlayer(net, id) {
@@ -240,8 +324,25 @@ function ensurePlayer(net, id) {
             yaw: 0,
             pitch: 0,
             hp: 100,
+            armor: 0,
+            credits: 0,
             name: '???',
             alive: true,
+            crouching: false,
+            hasPistol: false,
+            hasMachineGun: false,
+            pistolClip: 0,
+            pistolReserve: 0,
+            machineGunClip: 0,
+            machineGunReserve: 0,
+            bombs: 0,
+            smokes: 0,
+            flashbangs: 0,
+            flashTimeLeftMs: 0,
+            team: '',
+            activeWeapon: 'knife',
+            reloading: false,
+            reloadTimeLeftMs: 0,
             shotTime: 0,
             kills: 0,
             deaths: 0,
@@ -258,11 +359,126 @@ function canSend(net) {
     return !!(net.connected && net.ws && net.ws.readyState === 1);
 }
 
+function applyPlayerState(target, state, includeTransform = true) {
+    target.kills = state.kills ?? target.kills;
+    target.deaths = state.deaths ?? target.deaths;
+    target.name = state.name ?? target.name;
+    target.hp = state.hp ?? target.hp;
+    target.armor = state.armor ?? target.armor;
+    target.credits = state.credits ?? target.credits;
+    target.crouching = state.crouching ?? target.crouching;
+    target.hasPistol = state.hasPistol ?? target.hasPistol;
+    target.hasMachineGun = state.hasMachineGun ?? target.hasMachineGun;
+    target.pistolClip = state.pistolClip ?? target.pistolClip;
+    target.pistolReserve = state.pistolReserve ?? target.pistolReserve;
+    target.machineGunClip = state.machineGunClip ?? target.machineGunClip;
+    target.machineGunReserve = state.machineGunReserve ?? target.machineGunReserve;
+    target.bombs = state.bombs ?? target.bombs;
+    target.smokes = state.smokes ?? target.smokes;
+    target.flashbangs = state.flashbangs ?? target.flashbangs;
+    target.flashTimeLeftMs = state.flashTimeLeftMs ?? target.flashTimeLeftMs;
+    target.team = state.team ?? target.team;
+    target.activeWeapon = state.activeWeapon ?? target.activeWeapon;
+    if (typeof state.reloading === 'boolean') {
+        target.reloading = state.reloading;
+        if (!state.reloading && typeof state.reloadTimeLeftMs !== 'number') {
+            target.reloadTimeLeftMs = 0;
+        }
+    }
+    if (typeof state.reloadTimeLeftMs === 'number') {
+        target.reloadTimeLeftMs = state.reloadTimeLeftMs;
+        target.reloading = typeof state.reloading === 'boolean'
+            ? (state.reloading || state.reloadTimeLeftMs > 0)
+            : state.reloadTimeLeftMs > 0;
+    }
+
+    if (typeof state.alive === 'boolean') {
+        target.alive = state.alive;
+    } else if (typeof state.hp === 'number') {
+        target.alive = state.hp > 0;
+    }
+
+    if (!includeTransform) return;
+
+    if (state.pos) target.pos = [...state.pos];
+    if (typeof state.yaw === 'number') target.yaw = state.yaw;
+    if (typeof state.pitch === 'number') target.pitch = state.pitch;
+}
+
+function applyMatchState(net, match) {
+    if (!match) return;
+
+    net.match.currentRound = match.currentRound ?? net.match.currentRound;
+    net.match.totalRounds = match.totalRounds ?? net.match.totalRounds;
+    net.match.roundTimeLeftMs = match.roundTimeLeftMs ?? net.match.roundTimeLeftMs;
+    net.match.buyTimeLeftMs = match.buyTimeLeftMs ?? net.match.buyTimeLeftMs;
+    net.match.buyPhase = match.buyPhase ?? net.match.buyPhase;
+    net.match.intermission = match.intermission ?? net.match.intermission;
+    net.match.intermissionTimeLeftMs = match.intermissionTimeLeftMs ?? net.match.intermissionTimeLeftMs;
+    net.match.roundWinner = match.roundWinner ?? net.match.roundWinner;
+    net.match.blueScore = match.blueScore ?? net.match.blueScore;
+    net.match.greenScore = match.greenScore ?? net.match.greenScore;
+    net.match.blueAlive = match.blueAlive ?? net.match.blueAlive;
+    net.match.greenAlive = match.greenAlive ?? net.match.greenAlive;
+
+    if (net.onMatch) {
+        net.onMatch(net.match);
+    }
+}
+
+function createDefaultMatchState() {
+    return {
+        currentRound: 0,
+        totalRounds: 0,
+        roundTimeLeftMs: 0,
+        buyTimeLeftMs: 0,
+        buyPhase: false,
+        intermission: false,
+        intermissionTimeLeftMs: 0,
+        roundWinner: '',
+        blueScore: 0,
+        greenScore: 0,
+        blueAlive: 0,
+        greenAlive: 0,
+    };
+}
+
+function notifySelfState(net, id, includeTransform = false) {
+    if (Number(id) !== net.myId || !net.onSelfState) {
+        return;
+    }
+
+    const target = net.players[normalizeId(id)];
+    if (target) {
+        const state = {
+            ...target,
+            pos: target.pos ? [...target.pos] : target.pos,
+        };
+        if (!includeTransform) {
+            delete state.pos;
+            delete state.yaw;
+            delete state.pitch;
+            delete state.crouching;
+        }
+        net.onSelfState(state);
+    }
+}
+
 function applyGameState(net, state) {
     if (state === 'playing') {
         net.gameStarted = true;
     } else if (state === 'waiting') {
         net.gameStarted = false;
+        net.projectiles = [];
+        net.effects = [];
+        net.match.buyPhase = false;
+        net.match.buyTimeLeftMs = 0;
+        net.match.roundTimeLeftMs = 0;
+        net.match.intermission = false;
+        net.match.intermissionTimeLeftMs = 0;
+        net.match.roundWinner = '';
+        net.match.blueAlive = 0;
+        net.match.greenAlive = 0;
     }
 }
 
@@ -271,6 +487,9 @@ function resetSession(net) {
     net.ws = null;
     net.myId = null;
     net.players = {};
+    net.projectiles = [];
+    net.effects = [];
+    net.match = createDefaultMatchState();
     net.connected = false;
     net.gameStarted = false;
     net.latencyMs = null;

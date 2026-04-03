@@ -34,6 +34,14 @@ func addNamedPlayer(g *Game, name string) testPlayer {
 	return testPlayer{id: id, sendCh: sendCh}
 }
 
+func assignPlayerTeam(g *Game, id int, team TeamID) {
+	idx, ok := g.players.indexOf(id)
+	if !ok {
+		panic("expected player to exist")
+	}
+	g.players.team[idx] = team
+}
+
 func readQueuedMessage(t *testing.T, sendCh chan []byte) map[string]any {
 	t.Helper()
 
@@ -104,6 +112,13 @@ func TestRemovePlayerSwapDeleteKeepsRemainingIndexValid(t *testing.T) {
 	second := addNamedPlayer(g, "Two")
 	third := addNamedPlayer(g, "Three")
 
+	thirdIdx, _ := g.players.indexOf(third.id)
+	g.players.credits[thirdIdx] = 725
+	g.players.hasMG[thirdIdx] = true
+	g.players.mgClip[thirdIdx] = 18
+	g.players.mgReserve[thirdIdx] = 26
+	g.players.armor[thirdIdx] = 18
+
 	g.removePlayer(second.id)
 
 	if _, ok := g.players.indexOf(second.id); ok {
@@ -117,6 +132,18 @@ func TestRemovePlayerSwapDeleteKeepsRemainingIndexValid(t *testing.T) {
 	if got := g.players.names[idx]; got != "Three" {
 		t.Fatalf("expected moved player name to stay intact, got %q", got)
 	}
+	if got := g.players.credits[idx]; got != 725 {
+		t.Fatalf("expected moved player credits to stay intact, got %d", got)
+	}
+	if got := g.players.mgClip[idx]; got != 18 {
+		t.Fatalf("expected moved player mg clip to stay intact, got %d", got)
+	}
+	if got := g.players.mgReserve[idx]; got != 26 {
+		t.Fatalf("expected moved player mg reserve to stay intact, got %d", got)
+	}
+	if got := g.players.armor[idx]; got != 18 {
+		t.Fatalf("expected moved player armor to stay intact, got %d", got)
+	}
 
 	if _, ok := g.players.indexOf(first.id); !ok {
 		t.Fatalf("expected untouched player to remain addressable")
@@ -128,7 +155,7 @@ func TestTracePlayerHitHeadshotWinsAndUsesHeadDamage(t *testing.T) {
 	target := Vec3{0, 1.7, 0}
 	headAim := normalize(Vec3{0, -0.28, -5})
 
-	zone, dist, ok := tracePlayerHit(origin, headAim, target)
+	zone, dist, ok := tracePlayerHit(origin, headAim, target, false, hitscanRange)
 	if !ok {
 		t.Fatal("expected headshot hit")
 	}
@@ -138,8 +165,8 @@ func TestTracePlayerHitHeadshotWinsAndUsesHeadDamage(t *testing.T) {
 	if dist <= 0 {
 		t.Fatalf("expected positive distance, got %f", dist)
 	}
-	if dmg := damageForHitZone(zone); dmg != 90 {
-		t.Fatalf("expected head damage 90, got %d", dmg)
+	if dmg := damageForWeapon(WeaponMachineGun, zone); dmg != 32 {
+		t.Fatalf("expected machine gun head damage 32, got %d", dmg)
 	}
 }
 
@@ -148,15 +175,15 @@ func TestTracePlayerHitBodyshotUsesBodyDamage(t *testing.T) {
 	target := Vec3{0, 1.7, 0}
 	bodyAim := normalize(Vec3{0, -0.35, -5})
 
-	zone, _, ok := tracePlayerHit(origin, bodyAim, target)
+	zone, _, ok := tracePlayerHit(origin, bodyAim, target, false, hitscanRange)
 	if !ok {
 		t.Fatal("expected bodyshot hit")
 	}
 	if zone != HitZoneBody {
 		t.Fatalf("expected body zone, got %q", zone)
 	}
-	if dmg := damageForHitZone(zone); dmg != 20 {
-		t.Fatalf("expected body damage 20, got %d", dmg)
+	if dmg := damageForWeapon(WeaponPistol, zone); dmg != 34 {
+		t.Fatalf("expected pistol body damage 34, got %d", dmg)
 	}
 }
 
@@ -165,7 +192,7 @@ func TestTracePlayerHitMissesOutsideHitboxes(t *testing.T) {
 	target := Vec3{0, 1.7, 0}
 	missAim := normalize(Vec3{0, 0, -1})
 
-	if _, _, ok := tracePlayerHit(origin, missAim, target); ok {
+	if _, _, ok := tracePlayerHit(origin, missAim, target, false, hitscanRange); ok {
 		t.Fatal("expected miss")
 	}
 }
@@ -175,12 +202,128 @@ func TestTracePlayerHitLevelShotAtStandingTargetHits(t *testing.T) {
 	target := Vec3{0, 1.7, 0}
 	levelAim := normalize(Vec3{0, 0, -1})
 
-	zone, _, ok := tracePlayerHit(origin, levelAim, target)
+	zone, _, ok := tracePlayerHit(origin, levelAim, target, false, hitscanRange)
 	if !ok {
 		t.Fatal("expected level shot to hit standing target")
 	}
 	if zone != HitZoneHead {
 		t.Fatalf("expected level shot to land on head zone, got %q", zone)
+	}
+}
+
+func TestApplyShotSpreadAimingReducesDeflection(t *testing.T) {
+	baseDir := normalize(Vec3{0.03, -0.01, -1})
+	config := weaponConfigByID(WeaponMachineGun)
+
+	hipDir := applyShotSpread(baseDir, config, false, false, false, 0.012, 42)
+	adsDir := applyShotSpread(baseDir, config, true, false, false, 0.012, 42)
+
+	hipDot := math.Max(-1, math.Min(1, dotVec3(baseDir, hipDir)))
+	adsDot := math.Max(-1, math.Min(1, dotVec3(baseDir, adsDir)))
+	hipAngle := math.Acos(hipDot)
+	adsAngle := math.Acos(adsDot)
+
+	if !(adsAngle < hipAngle) {
+		t.Fatalf("expected aiming spread %f to be tighter than hip spread %f", adsAngle, hipAngle)
+	}
+}
+
+func TestApplyShotSpreadCrouchingReducesDeflection(t *testing.T) {
+	baseDir := normalize(Vec3{0.02, 0.01, -1})
+	config := weaponConfigByID(WeaponPistol)
+
+	standingDir := applyShotSpread(baseDir, config, false, false, false, 0.01, 77)
+	crouchingDir := applyShotSpread(baseDir, config, false, true, false, 0.01, 77)
+
+	standingDot := math.Max(-1, math.Min(1, dotVec3(baseDir, standingDir)))
+	crouchingDot := math.Max(-1, math.Min(1, dotVec3(baseDir, crouchingDir)))
+	standingAngle := math.Acos(standingDot)
+	crouchingAngle := math.Acos(crouchingDot)
+
+	if !(crouchingAngle < standingAngle) {
+		t.Fatalf("expected crouching spread %f to be tighter than standing spread %f", crouchingAngle, standingAngle)
+	}
+}
+
+func TestApplyShotSpreadMovingIncreasesDeflection(t *testing.T) {
+	baseDir := normalize(Vec3{0.01, -0.02, -1})
+	config := weaponConfigByID(WeaponMachineGun)
+
+	standingDir := applyShotSpread(baseDir, config, false, false, false, 0.01, 99)
+	movingDir := applyShotSpread(baseDir, config, false, false, true, 0.01, 99)
+
+	standingDot := math.Max(-1, math.Min(1, dotVec3(baseDir, standingDir)))
+	movingDot := math.Max(-1, math.Min(1, dotVec3(baseDir, movingDir)))
+	standingAngle := math.Acos(standingDot)
+	movingAngle := math.Acos(movingDot)
+
+	if !(movingAngle > standingAngle) {
+		t.Fatalf("expected moving spread %f to be wider than standing spread %f", movingAngle, standingAngle)
+	}
+}
+
+func TestCanStartMatchLockedRequiresBalancedAssignedTeams(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+
+	if ok, reason := g.canStartMatchLocked(); ok || reason != "All players must join a team" {
+		t.Fatalf("expected unassigned-team failure, got ok=%v reason=%q", ok, reason)
+	}
+
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	assignPlayerTeam(g, green.id, TeamBlue)
+	if ok, reason := g.canStartMatchLocked(); ok || reason != "Both teams need players" {
+		t.Fatalf("expected both-teams failure, got ok=%v reason=%q", ok, reason)
+	}
+
+	assignPlayerTeam(g, green.id, TeamGreen)
+	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
+		t.Fatalf("expected balanced teams to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestStartMatchGivesStartingPistolAndCredits(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	assignPlayerTeam(g, green.id, TeamGreen)
+
+	g.startMatchLocked(1000)
+
+	for _, id := range []int{blue.id, green.id} {
+		idx, _ := g.players.indexOf(id)
+		if g.players.credits[idx] != startingCredits {
+			t.Fatalf("expected starting credits %d, got %d", startingCredits, g.players.credits[idx])
+		}
+		if !g.players.hasPistol[idx] {
+			t.Fatalf("expected player %d to start with a pistol", id)
+		}
+		if g.players.hasMG[idx] {
+			t.Fatalf("expected player %d to start without a machine gun", id)
+		}
+		if g.players.pistolClip[idx] != pistolMagSize || g.players.pistolReserve[idx] != 0 {
+			t.Fatalf("expected player %d to start with a full pistol and no reserve, got clip=%d reserve=%d", id, g.players.pistolClip[idx], g.players.pistolReserve[idx])
+		}
+		if g.players.activeWeapon[idx] != WeaponPistol {
+			t.Fatalf("expected player %d to start with pistol selected, got %q", id, g.players.activeWeapon[idx])
+		}
+	}
+}
+
+func TestEffectiveWeaponConfigHeavyKnifeDoublesCooldownAndDamage(t *testing.T) {
+	normal := effectiveWeaponConfig(WeaponKnife, false)
+	heavy := effectiveWeaponConfig(WeaponKnife, true)
+
+	if heavy.FireIntervalMS != normal.FireIntervalMS*2 {
+		t.Fatalf("expected heavy knife cooldown %d, got %d", normal.FireIntervalMS*2, heavy.FireIntervalMS)
+	}
+	if heavy.BodyDamage != normal.BodyDamage*2 {
+		t.Fatalf("expected heavy knife body damage %d, got %d", normal.BodyDamage*2, heavy.BodyDamage)
+	}
+	if heavy.HeadDamage != normal.HeadDamage*2 {
+		t.Fatalf("expected heavy knife head damage %d, got %d", normal.HeadDamage*2, heavy.HeadDamage)
 	}
 }
 
@@ -213,9 +356,12 @@ func TestPositionAtTimeInterpolatesAcrossHistorySamples(t *testing.T) {
 	}
 }
 
-func TestStateTickIncludesKillsAndDeaths(t *testing.T) {
+func TestStateTickIncludesKillsDeathsAndEconomy(t *testing.T) {
 	g := newTestGame()
 	g.state = StatePlaying
+	g.currentRound = 2
+	g.roundEndsAt = 4000
+	g.buyEndsAt = 1500
 
 	host := addNamedPlayer(g, "Host")
 	guest := addNamedPlayer(g, "Guest")
@@ -224,10 +370,38 @@ func TestStateTickIncludesKillsAndDeaths(t *testing.T) {
 	guestIdx, _ := g.players.indexOf(guest.id)
 	g.players.kills[hostIdx] = 7
 	g.players.deaths[hostIdx] = 2
+	g.players.armor[hostIdx] = 35
+	g.players.credits[hostIdx] = 880
+	g.players.hasPistol[hostIdx] = true
+	g.players.pistolClip[hostIdx] = 7
+	g.players.pistolReserve[hostIdx] = 14
+	g.players.activeWeapon[hostIdx] = WeaponPistol
+	g.players.reloadWeapon[hostIdx] = WeaponPistol
+	g.players.reloadEndsAt[hostIdx] = 2800
 	g.players.kills[guestIdx] = 1
 	g.players.deaths[guestIdx] = 5
+	g.players.armor[guestIdx] = 10
+	g.players.credits[guestIdx] = 315
+	g.players.hasMG[guestIdx] = true
+	g.players.mgClip[guestIdx] = 22
+	g.players.mgReserve[guestIdx] = 18
+	g.players.activeWeapon[guestIdx] = WeaponMachineGun
+	g.projectiles = []projectileState{{
+		ID:         4,
+		Type:       WeaponBomb,
+		OwnerID:    host.id,
+		Pos:        Vec3{1, 1.2, -2},
+		Vel:        Vec3{0, 0, 0},
+		DetonateAt: 2500,
+	}}
+	g.effects = []areaEffectState{{
+		Type:      "smoke",
+		Pos:       Vec3{-3, 0.12, 6},
+		Radius:    smokeRadius,
+		ExpiresAt: 7000,
+	}}
 
-	g.stateTick()
+	g.stateTick(1000)
 
 	msg := readQueuedMessage(t, host.sendCh)
 	players, ok := msg["players"].(map[string]any)
@@ -250,11 +424,542 @@ func TestStateTickIncludesKillsAndDeaths(t *testing.T) {
 	if got := int(hostState["deaths"].(float64)); got != 2 {
 		t.Fatalf("expected host deaths 2, got %d", got)
 	}
+	if got := int(hostState["armor"].(float64)); got != 35 {
+		t.Fatalf("expected host armor 35, got %d", got)
+	}
+	if got := int(hostState["pistolClip"].(float64)); got != 7 {
+		t.Fatalf("expected host pistol clip 7, got %d", got)
+	}
+	if got := int(hostState["pistolReserve"].(float64)); got != 14 {
+		t.Fatalf("expected host pistol reserve 14, got %d", got)
+	}
+	if got := int(hostState["credits"].(float64)); got != 880 {
+		t.Fatalf("expected host credits 880, got %d", got)
+	}
+	if got := hostState["activeWeapon"].(string); got != string(WeaponPistol) {
+		t.Fatalf("expected host active weapon pistol, got %q", got)
+	}
+	if got := hostState["reloading"].(bool); !got {
+		t.Fatalf("expected host reload state to be active")
+	}
+	if got := int(hostState["reloadTimeLeftMs"].(float64)); got != 1800 {
+		t.Fatalf("expected host reload time 1800, got %d", got)
+	}
 	if got := int(guestState["kills"].(float64)); got != 1 {
 		t.Fatalf("expected guest kills 1, got %d", got)
 	}
 	if got := int(guestState["deaths"].(float64)); got != 5 {
 		t.Fatalf("expected guest deaths 5, got %d", got)
+	}
+	if got := int(guestState["armor"].(float64)); got != 10 {
+		t.Fatalf("expected guest armor 10, got %d", got)
+	}
+	if got := int(guestState["machineGunClip"].(float64)); got != 22 {
+		t.Fatalf("expected guest machine gun clip 22, got %d", got)
+	}
+	if got := int(guestState["machineGunReserve"].(float64)); got != 18 {
+		t.Fatalf("expected guest machine gun reserve 18, got %d", got)
+	}
+	if got := int(guestState["credits"].(float64)); got != 315 {
+		t.Fatalf("expected guest credits 315, got %d", got)
+	}
+
+	match, ok := msg["match"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected match state, got %#v", msg["match"])
+	}
+	if got := int(match["currentRound"].(float64)); got != 2 {
+		t.Fatalf("expected current round 2, got %d", got)
+	}
+	if got := bool(match["buyPhase"].(bool)); !got {
+		t.Fatalf("expected buy phase to be active")
+	}
+
+	projectiles, ok := msg["projectiles"].([]any)
+	if !ok || len(projectiles) != 1 {
+		t.Fatalf("expected 1 projectile in snapshot, got %#v", msg["projectiles"])
+	}
+	projectile, ok := projectiles[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected projectile object, got %#v", projectiles[0])
+	}
+	if got := projectile["type"].(string); got != string(WeaponBomb) {
+		t.Fatalf("expected bomb projectile, got %q", got)
+	}
+	effects, ok := msg["effects"].([]any)
+	if !ok || len(effects) != 1 {
+		t.Fatalf("expected 1 effect in snapshot, got %#v", msg["effects"])
+	}
+	effect, ok := effects[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected effect object, got %#v", effects[0])
+	}
+	if got := effect["type"].(string); got != "smoke" {
+		t.Fatalf("expected smoke effect, got %q", got)
+	}
+}
+
+func TestApplyDamageUsesArmorBeforeHealth(t *testing.T) {
+	hp, armor, absorbed := applyDamage(100, 12, 20)
+
+	if hp != 92 {
+		t.Fatalf("expected hp 92, got %d", hp)
+	}
+	if armor != 0 {
+		t.Fatalf("expected armor 0, got %d", armor)
+	}
+	if absorbed != 12 {
+		t.Fatalf("expected absorbed damage 12, got %d", absorbed)
+	}
+}
+
+func TestApplyPurchaseLockedBuysWeaponsAndArmor(t *testing.T) {
+	g := newTestGame()
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.state = StatePlaying
+	g.buyEndsAt = 1000
+	g.players.credits[idx] = 5000
+
+	update := g.applyPurchaseLocked(idx, "buy-machinegun", 100)
+	if !update.OK {
+		t.Fatalf("expected machine gun purchase to succeed, got %#v", update)
+	}
+	if !g.players.hasMG[idx] {
+		t.Fatalf("expected player to own machine gun")
+	}
+	if got := g.players.mgClip[idx]; got != machineGunMagSize {
+		t.Fatalf("expected machine gun clip %d, got %d", machineGunMagSize, got)
+	}
+	if got := g.players.mgReserve[idx]; got != machineGunAmmoMax {
+		t.Fatalf("expected machine gun reserve %d, got %d", machineGunAmmoMax, got)
+	}
+	if got := g.players.activeWeapon[idx]; got != WeaponMachineGun {
+		t.Fatalf("expected active weapon machine gun, got %q", got)
+	}
+
+	g.players.armor[idx] = 90
+	g.players.credits[idx] = 500
+	update = g.applyPurchaseLocked(idx, "armor", 100)
+	if !update.OK {
+		t.Fatalf("expected armor purchase to succeed, got %#v", update)
+	}
+	if got := g.players.armor[idx]; got != 100 {
+		t.Fatalf("expected armor capped at 100, got %d", got)
+	}
+
+	update = g.applyPurchaseLocked(idx, "buy-machinegun", 100)
+	if update.OK {
+		t.Fatalf("expected duplicate machine gun purchase to fail")
+	}
+	if update.Reason != "Machine gun already owned" {
+		t.Fatalf("expected duplicate-weapon reason, got %q", update.Reason)
+	}
+
+	g.players.credits[idx] = 600
+	update = g.applyPurchaseLocked(idx, "flashbang", 100)
+	if !update.OK {
+		t.Fatalf("expected flashbang purchase to succeed, got %#v", update)
+	}
+	if got := g.players.flashbangs[idx]; got != 1 {
+		t.Fatalf("expected flashbang count 1, got %d", got)
+	}
+}
+
+func TestReloadWeaponLockedRefillsClipFromReserve(t *testing.T) {
+	g := newTestGame()
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.players.hasMG[idx] = true
+	g.players.mgClip[idx] = 6
+	g.players.mgReserve[idx] = 20
+
+	if !g.reloadWeaponLocked(idx, WeaponMachineGun) {
+		t.Fatalf("expected reload to succeed")
+	}
+	if got := g.players.mgClip[idx]; got != 26 {
+		t.Fatalf("expected reloaded machine gun clip 26, got %d", got)
+	}
+	if got := g.players.mgReserve[idx]; got != 0 {
+		t.Fatalf("expected reserve depleted to 0, got %d", got)
+	}
+}
+
+func TestStartReloadLockedCompletesAfterDelay(t *testing.T) {
+	g := newTestGame()
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.players.hasPistol[idx] = true
+	g.players.pistolClip[idx] = 1
+	g.players.pistolReserve[idx] = 10
+
+	if !g.startReloadLocked(idx, WeaponPistol, 1000) {
+		t.Fatalf("expected reload to start")
+	}
+	if got := g.players.pistolClip[idx]; got != 1 {
+		t.Fatalf("expected clip to stay unchanged during reload start, got %d", got)
+	}
+	if !g.isReloadingLocked(idx, 1500) {
+		t.Fatalf("expected reload to remain active before completion")
+	}
+
+	g.updateReloadsAndProjectilesLocked(4000)
+
+	if g.isReloadingLocked(idx, 4000) {
+		t.Fatalf("expected reload state to clear after completion")
+	}
+	if got := g.players.pistolClip[idx]; got != pistolMagSize {
+		t.Fatalf("expected pistol clip to fill to %d, got %d", pistolMagSize, got)
+	}
+	if got := g.players.pistolReserve[idx]; got != 4 {
+		t.Fatalf("expected reserve to drop to 4, got %d", got)
+	}
+}
+
+func TestSpawnProjectileLockedAddsThrowableState(t *testing.T) {
+	g := newTestGame()
+	player := addNamedPlayer(g, "Host")
+
+	g.spawnProjectileLocked(player.id, WeaponBomb, Vec3{0, 1.7, 0}, normalize(Vec3{0, 0.1, -1}), 1000)
+
+	if len(g.projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(g.projectiles))
+	}
+	if got := g.projectiles[0].Type; got != WeaponBomb {
+		t.Fatalf("expected bomb projectile, got %q", got)
+	}
+	if got := g.projectiles[0].OwnerID; got != player.id {
+		t.Fatalf("expected owner %d, got %d", player.id, got)
+	}
+}
+
+func TestBombDetonationDealsLethalDamageAndRewardsOwner(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	owner := addNamedPlayer(g, "Thrower")
+	victim := addNamedPlayer(g, "Target")
+
+	ownerIdx, _ := g.players.indexOf(owner.id)
+	victimIdx, _ := g.players.indexOf(victim.id)
+	g.players.pos[ownerIdx] = Vec3{8, 1.7, 8}
+	g.players.pos[victimIdx] = Vec3{0, 1.7, 0}
+	g.projectiles = []projectileState{{
+		ID:         1,
+		Type:       WeaponBomb,
+		OwnerID:    owner.id,
+		Pos:        Vec3{0, projectileFloorY, 0},
+		Vel:        Vec3{0, 0, 0},
+		DetonateAt: 1000,
+	}}
+
+	events := g.updateReloadsAndProjectilesLocked(2000)
+
+	if g.players.hp[victimIdx] != 0 {
+		t.Fatalf("expected victim hp 0, got %d", g.players.hp[victimIdx])
+	}
+	if g.players.alive[victimIdx] {
+		t.Fatalf("expected victim to die from bomb")
+	}
+	if g.players.kills[ownerIdx] != 1 {
+		t.Fatalf("expected owner to gain 1 kill, got %d", g.players.kills[ownerIdx])
+	}
+	if g.players.credits[ownerIdx] != startingCredits+bodyHitReward+killReward {
+		t.Fatalf("expected owner credits %d, got %d", startingCredits+bodyHitReward+killReward, g.players.credits[ownerIdx])
+	}
+	if len(g.effects) != 1 {
+		t.Fatalf("expected one lingering bomb effect, got %d", len(g.effects))
+	}
+	if got := g.effects[0].Type; got != "bomb" {
+		t.Fatalf("expected bomb effect type, got %q", got)
+	}
+	if got := g.effects[0].Radius; got != bombRadius {
+		t.Fatalf("expected bomb effect radius %f, got %f", bombRadius, got)
+	}
+	if len(events.broadcasts) < 2 {
+		t.Fatalf("expected hit and kill broadcasts, got %d", len(events.broadcasts))
+	}
+	if len(events.directs[owner.id]) != 1 {
+		t.Fatalf("expected 1 direct reward update, got %d", len(events.directs[owner.id]))
+	}
+}
+
+func TestFlashbangDetonationOnlyFlashesPlayersLookingAtIt(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	front := addNamedPlayer(g, "Front")
+	back := addNamedPlayer(g, "Back")
+
+	frontIdx, _ := g.players.indexOf(front.id)
+	backIdx, _ := g.players.indexOf(back.id)
+	g.players.pos[frontIdx] = Vec3{0, 1.7, 0}
+	g.players.pos[backIdx] = Vec3{1, 1.7, 0}
+	g.players.yaw[frontIdx] = 0
+	g.players.yaw[backIdx] = math.Pi
+	g.projectiles = []projectileState{{
+		ID:         2,
+		Type:       WeaponFlashbang,
+		OwnerID:    front.id,
+		Pos:        Vec3{0, 1.7, -4},
+		Vel:        Vec3{0, 0, 0},
+		DetonateAt: 1000,
+	}}
+
+	g.updateReloadsAndProjectilesLocked(2000)
+
+	if g.flashTimeLeftLocked(frontIdx, 2000) != flashbangDurationMS {
+		t.Fatalf("expected front player to be flashed for %dms, got %d", flashbangDurationMS, g.flashTimeLeftLocked(frontIdx, 2000))
+	}
+	if g.flashTimeLeftLocked(backIdx, 2000) != 0 {
+		t.Fatalf("expected back player to avoid flash, got %d", g.flashTimeLeftLocked(backIdx, 2000))
+	}
+}
+
+func TestSmokeDetonationCreatesLingeringSmokeArea(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	player := addNamedPlayer(g, "Thrower")
+	g.projectiles = []projectileState{{
+		ID:         3,
+		Type:       WeaponSmoke,
+		OwnerID:    player.id,
+		Pos:        Vec3{2, projectileFloorY, -3},
+		Vel:        Vec3{0, 0, 0},
+		DetonateAt: 1000,
+	}}
+
+	g.updateReloadsAndProjectilesLocked(2000)
+
+	if len(g.effects) != 1 {
+		t.Fatalf("expected one smoke effect, got %d", len(g.effects))
+	}
+	if got := g.effects[0].Type; got != "smoke" {
+		t.Fatalf("expected smoke effect type, got %q", got)
+	}
+	if got := g.effects[0].Radius; got != smokeRadius {
+		t.Fatalf("expected smoke radius %f, got %f", smokeRadius, got)
+	}
+}
+
+func TestApplyInputLockedBlocksMovementDuringBuyPhase(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	g.buyEndsAt = 1000
+
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	startPos := g.players.pos[idx]
+	crouchPos := Vec3{startPos[0], crouchEyeHeight, startPos[2]}
+
+	g.applyInputLocked(idx, Vec3{12, 1.7, -8}, 1.25, -0.5, false, 500)
+
+	if got := g.players.pos[idx]; got != startPos {
+		t.Fatalf("expected buy phase to keep position %#v, got %#v", startPos, got)
+	}
+	if got := g.players.yaw[idx]; got != 1.25 {
+		t.Fatalf("expected yaw to keep updating during buy phase, got %f", got)
+	}
+	if got := g.players.pitch[idx]; got != -0.5 {
+		t.Fatalf("expected pitch to keep updating during buy phase, got %f", got)
+	}
+	if got := len(g.players.history[idx]); got != 1 {
+		t.Fatalf("expected no new history sample during buy phase, got %d", got)
+	}
+
+	g.applyInputLocked(idx, crouchPos, 1.25, -0.5, true, 600)
+	if got := g.players.pos[idx][1]; got != crouchEyeHeight {
+		t.Fatalf("expected buy phase to allow crouch eye height %f, got %f", crouchEyeHeight, got)
+	}
+	if !g.players.crouching[idx] {
+		t.Fatalf("expected crouch state to update during buy phase")
+	}
+	if got := len(g.players.history[idx]); got != 2 {
+		t.Fatalf("expected crouch update to add history sample, got %d", got)
+	}
+
+	nextPos := Vec3{12, 1.7, -8}
+	g.applyInputLocked(idx, nextPos, 1.25, -0.5, false, 1200)
+
+	if got := g.players.pos[idx]; got != nextPos {
+		t.Fatalf("expected live phase to update position %#v, got %#v", nextPos, got)
+	}
+	if got := len(g.players.history[idx]); got != 3 {
+		t.Fatalf("expected movement history to resume after buy phase, got %d", got)
+	}
+}
+
+func TestTickAdvancesRoundsAndPreservesLoadout(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.roundEndsAt = 1000
+	g.buyEndsAt = 200
+
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.players.hasPistol[idx] = true
+	g.players.pistolClip[idx] = 6
+	g.players.pistolReserve[idx] = 13
+	g.players.hasMG[idx] = true
+	g.players.mgClip[idx] = 12
+	g.players.mgReserve[idx] = 44
+	g.players.armor[idx] = 42
+	g.players.activeWeapon[idx] = WeaponPistol
+
+	g.tick(1200)
+
+	if g.currentRound != 1 {
+		t.Fatalf("expected cooldown to keep current round at 1, got %d", g.currentRound)
+	}
+	if g.intermissionEndsAt != 1200+roundCooldownMS {
+		t.Fatalf("expected round cooldown to end at %d, got %d", 1200+roundCooldownMS, g.intermissionEndsAt)
+	}
+
+	g.tick(1200 + roundCooldownMS + 1)
+
+	if g.currentRound != 2 {
+		t.Fatalf("expected current round 2 after cooldown, got %d", g.currentRound)
+	}
+	if !g.players.hasPistol[idx] {
+		t.Fatalf("expected pistol ownership to carry into next round")
+	}
+	if g.players.pistolClip[idx] != pistolMagSize {
+		t.Fatalf("expected pistol to start next round reloaded, got clip %d", g.players.pistolClip[idx])
+	}
+	if g.players.pistolReserve[idx] != 12 {
+		t.Fatalf("expected pistol reserve to decrease after reload, got %d", g.players.pistolReserve[idx])
+	}
+	if g.players.mgClip[idx] != machineGunMagSize {
+		t.Fatalf("expected machine gun to start next round reloaded, got clip %d", g.players.mgClip[idx])
+	}
+	if g.players.mgReserve[idx] != 26 {
+		t.Fatalf("expected machine gun reserve to decrease after reload, got %d", g.players.mgReserve[idx])
+	}
+	if g.players.armor[idx] != 42 {
+		t.Fatalf("expected armor to carry into next round, got %d", g.players.armor[idx])
+	}
+	if g.players.activeWeapon[idx] != WeaponPistol {
+		t.Fatalf("expected active weapon to carry into next round, got %q", g.players.activeWeapon[idx])
+	}
+}
+
+func TestTickAwardsRoundWhenOneTeamIsEliminated(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.roundEndsAt = 5000
+	g.buyEndsAt = 1000
+
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	assignPlayerTeam(g, green.id, TeamGreen)
+
+	blueIdx, _ := g.players.indexOf(blue.id)
+	greenIdx, _ := g.players.indexOf(green.id)
+	g.players.hasPistol[blueIdx] = true
+	g.players.pistolClip[blueIdx] = 6
+	g.players.pistolReserve[blueIdx] = 9
+	g.players.activeWeapon[blueIdx] = WeaponPistol
+	g.players.alive[greenIdx] = false
+	g.players.hp[greenIdx] = 0
+
+	g.tick(1200)
+
+	if g.blueScore != 1 {
+		t.Fatalf("expected blue score 1, got %d", g.blueScore)
+	}
+	if g.greenScore != 0 {
+		t.Fatalf("expected green score 0, got %d", g.greenScore)
+	}
+	if g.currentRound != 1 {
+		t.Fatalf("expected cooldown to keep round 1 active, got %d", g.currentRound)
+	}
+	if g.intermissionEndsAt != 1200+roundCooldownMS {
+		t.Fatalf("expected elimination cooldown to end at %d, got %d", 1200+roundCooldownMS, g.intermissionEndsAt)
+	}
+	if g.players.alive[greenIdx] {
+		t.Fatalf("expected eliminated green player to stay dead during cooldown")
+	}
+	g.tick(1200 + roundCooldownMS + 1)
+
+	if g.currentRound != 2 {
+		t.Fatalf("expected round 2 after cooldown, got %d", g.currentRound)
+	}
+	if !g.players.alive[greenIdx] {
+		t.Fatalf("expected eliminated green player to respawn for next round")
+	}
+	if !g.players.hasPistol[blueIdx] || g.players.pistolClip[blueIdx] != pistolMagSize || g.players.pistolReserve[blueIdx] != 8 {
+		t.Fatalf("expected blue loadout to carry into next round with a reloaded pistol, got clip=%d reserve=%d", g.players.pistolClip[blueIdx], g.players.pistolReserve[blueIdx])
+	}
+	if g.players.credits[blueIdx] != startingCredits+roundIncomeCredits {
+		t.Fatalf("expected blue player to receive round income, got %d", g.players.credits[blueIdx])
+	}
+}
+
+func TestStripLoadoutOnDeathLeavesOnlyPistolAndOneMagazine(t *testing.T) {
+	g := newTestGame()
+	player := addNamedPlayer(g, "Player")
+	idx, _ := g.players.indexOf(player.id)
+
+	g.players.hasPistol[idx] = true
+	g.players.hasMG[idx] = true
+	g.players.pistolClip[idx] = 3
+	g.players.pistolReserve[idx] = 14
+	g.players.mgClip[idx] = 22
+	g.players.mgReserve[idx] = 60
+	g.players.bombs[idx] = 1
+	g.players.smokes[idx] = 1
+	g.players.flashbangs[idx] = 1
+	g.players.activeWeapon[idx] = WeaponMachineGun
+
+	g.stripLoadoutOnDeathLocked(idx)
+
+	if !g.players.hasPistol[idx] {
+		t.Fatalf("expected pistol to remain after death")
+	}
+	if g.players.hasMG[idx] {
+		t.Fatalf("expected machine gun to be removed on death")
+	}
+	if g.players.pistolClip[idx] != pistolMagSize || g.players.pistolReserve[idx] != 0 {
+		t.Fatalf("expected one loaded pistol magazine after death, got clip=%d reserve=%d", g.players.pistolClip[idx], g.players.pistolReserve[idx])
+	}
+	if g.players.mgClip[idx] != 0 || g.players.mgReserve[idx] != 0 {
+		t.Fatalf("expected machine gun ammo to be cleared on death, got clip=%d reserve=%d", g.players.mgClip[idx], g.players.mgReserve[idx])
+	}
+	if g.players.bombs[idx] != 0 || g.players.smokes[idx] != 0 || g.players.flashbangs[idx] != 0 {
+		t.Fatalf("expected utility to be cleared on death")
+	}
+	if g.players.activeWeapon[idx] != WeaponPistol {
+		t.Fatalf("expected active weapon to fall back to pistol after death, got %q", g.players.activeWeapon[idx])
+	}
+}
+
+func TestFindHitTargetIgnoresTeammates(t *testing.T) {
+	g := newTestGame()
+	previousGame := game
+	game = g
+	defer func() { game = previousGame }()
+	shooter := addNamedPlayer(g, "Shooter")
+	teammate := addNamedPlayer(g, "Mate")
+	enemy := addNamedPlayer(g, "Enemy")
+	assignPlayerTeam(g, shooter.id, TeamBlue)
+	assignPlayerTeam(g, teammate.id, TeamBlue)
+	assignPlayerTeam(g, enemy.id, TeamGreen)
+
+	shooterIdx, _ := g.players.indexOf(shooter.id)
+	teammateIdx, _ := g.players.indexOf(teammate.id)
+	enemyIdx, _ := g.players.indexOf(enemy.id)
+	g.players.pos[shooterIdx] = Vec3{0, 1.7, 5}
+	g.players.pos[teammateIdx] = Vec3{0, 1.7, 2}
+	g.players.pos[enemyIdx] = Vec3{0, 1.7, 0}
+	now := int64(1000)
+	recordPositionSample(&g.players.history[shooterIdx], now, g.players.pos[shooterIdx], false)
+	recordPositionSample(&g.players.history[teammateIdx], now, g.players.pos[teammateIdx], false)
+	recordPositionSample(&g.players.history[enemyIdx], now, g.players.pos[enemyIdx], false)
+
+	hit := findHitTarget(shooter.id, g.players.pos[shooterIdx], normalize(Vec3{0, 0, -1}), now, hitscanRange)
+	if hit == nil || hit.id != enemy.id {
+		t.Fatalf("expected enemy hit while ignoring teammate, got %#v", hit)
 	}
 }
 

@@ -1,10 +1,165 @@
 import { boxVerts } from './renderer.js';
+import {
+    RELOAD_DURATION_MS,
+    UTILITY_BOMB,
+    UTILITY_FLASHBANG,
+    UTILITY_SMOKE,
+    WEAPON_DEFS,
+    WEAPON_KNIFE,
+    WEAPON_MACHINE_GUN,
+    WEAPON_PISTOL,
+} from './economy.js';
 
-const FIRE_RATE = 0.15; // seconds between shots
+const KNIFE_SLASH_ANIM_SCALE = 1.45;
+const KNIFE_STAB_ANIM_SCALE = 1.3;
 
 export function createWeapon() {
     return {
+        kind: WEAPON_KNIFE,
+        reloadTimeMs: 0,
+        slots: {
+            [WEAPON_KNIFE]: createSlotState(),
+            [WEAPON_PISTOL]: createSlotState(),
+            [WEAPON_MACHINE_GUN]: createSlotState(),
+            [UTILITY_BOMB]: createSlotState(),
+            [UTILITY_SMOKE]: createSlotState(),
+            [UTILITY_FLASHBANG]: createSlotState(),
+        },
+    };
+}
+
+export function setWeaponType(weapon, kind) {
+    if (weapon.slots[kind]) {
+        weapon.kind = kind;
+    }
+}
+
+export function getWeaponType(weapon) {
+    return weapon.kind;
+}
+
+export function setWeaponReloadTime(weapon, reloadTimeMs) {
+    weapon.reloadTimeMs = Math.max(0, reloadTimeMs || 0);
+}
+
+export function updateWeapon(weapon, dt, moving) {
+    for (const [kind, slot] of Object.entries(weapon.slots)) {
+        updateSlot(slot, dt, kind === weapon.kind ? moving : false);
+    }
+}
+
+export function canFire(weapon) {
+    return weapon.slots[weapon.kind].cooldown <= 0;
+}
+
+export function fire(weapon, aiming = false, alternate = false) {
+    const slot = weapon.slots[weapon.kind];
+    const kind = weapon.kind;
+    const def = WEAPON_DEFS[kind] || WEAPON_DEFS[WEAPON_KNIFE];
+    const aimRecoilMultiplier = aiming && def.canAim ? def.adsRecoilMultiplier : 1;
+    const heatScale = 1 + slot.heat * (kind === WEAPON_MACHINE_GUN ? 0.95 : kind === WEAPON_PISTOL ? 0.7 : 0.3);
+    const fireDuration = alternate && kind === WEAPON_KNIFE
+        ? (WEAPON_DEFS[kind].altFireRate || WEAPON_DEFS[kind].fireRate)
+        : WEAPON_DEFS[kind].fireRate;
+    const attackDuration = getAttackDuration(kind, alternate, fireDuration);
+    slot.cooldown = fireDuration;
+    slot.attackDuration = attackDuration;
+    slot.attackTimeLeft = attackDuration;
+    slot.attackStyle = alternate && kind === WEAPON_KNIFE ? 'alternate' : 'primary';
+    slot.attackDirection = kind === WEAPON_KNIFE && !alternate
+        ? (Math.random() < 0.5 ? 1 : -1)
+        : 0;
+    slot.flashTime = kind === WEAPON_KNIFE || kind === UTILITY_BOMB || kind === UTILITY_SMOKE || kind === UTILITY_FLASHBANG
+        ? 0
+        : 0.06;
+    slot.shotIndex += 1;
+
+    if (kind === WEAPON_MACHINE_GUN) {
+        slot.kickback = Math.min(1.35, slot.kickback + 1 * heatScale * aimRecoilMultiplier);
+        slot.recoilPitch = Math.min(0.24, slot.recoilPitch + 0.095 * heatScale * aimRecoilMultiplier);
+        slot.recoilYaw += [-1, 1, -0.7, 0.7][slot.shotIndex % 4] * 0.022 * heatScale * aimRecoilMultiplier;
+        slot.heat = Math.min(1, slot.heat + 0.16);
+        return;
+    }
+
+    if (kind === WEAPON_PISTOL) {
+        slot.kickback = Math.min(1.15, slot.kickback + 0.8 * heatScale * aimRecoilMultiplier);
+        slot.recoilPitch = Math.min(0.18, slot.recoilPitch + 0.08 * heatScale * aimRecoilMultiplier);
+        slot.recoilYaw += [-1, 1][slot.shotIndex % 2] * 0.016 * heatScale * aimRecoilMultiplier;
+        slot.heat = Math.min(1, slot.heat + 0.3);
+        return;
+    }
+
+    if (kind === UTILITY_BOMB || kind === UTILITY_SMOKE || kind === UTILITY_FLASHBANG) {
+        slot.kickback = Math.min(0.8, slot.kickback + 0.75);
+        slot.recoilPitch = Math.min(0.14, slot.recoilPitch + 0.06);
+        slot.recoilYaw += [-1, 1][slot.shotIndex % 2] * 0.02;
+        slot.heat = Math.min(1, slot.heat + 0.18);
+        return;
+    }
+
+    if (alternate && kind === WEAPON_KNIFE) {
+        slot.kickback = Math.min(1.1, slot.kickback + 0.95);
+        slot.recoilPitch = Math.min(0.16, slot.recoilPitch + 0.06);
+        slot.recoilYaw += [-1, 1][slot.shotIndex % 2] * 0.028;
+        slot.heat = Math.min(1, slot.heat + 0.2);
+        return;
+    }
+
+    slot.kickback = Math.min(0.9, slot.kickback + 0.65);
+    slot.recoilPitch = Math.min(0.1, slot.recoilPitch + 0.03);
+    slot.recoilYaw += [-1, 1][slot.shotIndex % 2] * 0.01;
+    slot.heat = Math.min(1, slot.heat + 0.14);
+}
+
+export function weaponVerts(weapon) {
+    const slot = weapon.slots[weapon.kind];
+    const reloadPhase = getReloadPhase(weapon);
+    if (weapon.kind === WEAPON_MACHINE_GUN) return machineGunVerts(slot, reloadPhase);
+    if (weapon.kind === WEAPON_PISTOL) return pistolVerts(slot, reloadPhase);
+    if (weapon.kind === UTILITY_BOMB) return bombVerts(slot, reloadPhase);
+    if (weapon.kind === UTILITY_SMOKE) return smokeVerts(slot, reloadPhase);
+    if (weapon.kind === UTILITY_FLASHBANG) return flashbangVerts(slot, reloadPhase);
+    return knifeVerts(slot, reloadPhase);
+}
+
+export function getCrosshairGap(weapon, aiming = false, crouching = false, moving = false) {
+    const kind = weapon.kind;
+    const slot = weapon.slots[kind];
+    if (!slot) return 12;
+    const crouchMultiplier = crouching ? 0.72 : 1;
+    const heatMultiplier = crouching ? 0.8 : 1;
+    const moveBonus = moving ? 5 : 0;
+    const moveHeatBonus = moving ? 3 : 0;
+
+    if (kind === WEAPON_MACHINE_GUN) {
+        return (aiming ? 7 : 18) * crouchMultiplier + moveBonus + slot.heat * (14 * heatMultiplier + moveHeatBonus);
+    }
+    if (kind === WEAPON_PISTOL) {
+        return (aiming ? 5 : 15) * crouchMultiplier + moveBonus + slot.heat * (10 * heatMultiplier + moveHeatBonus);
+    }
+    if (kind === WEAPON_KNIFE) {
+        return 12 + slot.heat * 4;
+    }
+    return 14 + slot.heat * 5;
+}
+
+export function consumeRecoilDelta(weapon) {
+    const slot = weapon.slots[weapon.kind];
+    const pitch = slot.recoilPitch - slot.appliedPitch;
+    const yaw = slot.recoilYaw - slot.appliedYaw;
+    slot.appliedPitch = slot.recoilPitch;
+    slot.appliedYaw = slot.recoilYaw;
+    return { pitch, yaw };
+}
+
+function createSlotState() {
+    return {
         cooldown: 0,
+        attackDuration: 0,
+        attackTimeLeft: 0,
+        attackStyle: '',
+        attackDirection: 0,
         bobPhase: 0,
         bobWeight: 0,
         kickback: 0,
@@ -14,100 +169,269 @@ export function createWeapon() {
         appliedPitch: 0,
         appliedYaw: 0,
         shotIndex: 0,
+        heat: 0,
     };
 }
 
-export function updateWeapon(weapon, dt, moving) {
-    weapon.cooldown = Math.max(0, weapon.cooldown - dt);
-    weapon.kickback = Math.max(0, weapon.kickback - dt * 9);
-    weapon.recoilPitch = Math.max(0, weapon.recoilPitch - dt * 4.5);
-    weapon.flashTime = Math.max(0, weapon.flashTime - dt);
+function updateSlot(slot, dt, moving) {
+    slot.cooldown = Math.max(0, slot.cooldown - dt);
+    slot.attackTimeLeft = Math.max(0, slot.attackTimeLeft - dt);
+    if (slot.attackTimeLeft <= 0) {
+        slot.attackDuration = 0;
+        slot.attackStyle = '';
+        slot.attackDirection = 0;
+    }
+    slot.kickback = Math.max(0, slot.kickback - dt * 9);
+    slot.heat = Math.max(0, slot.heat - dt * 0.6);
+    slot.recoilPitch = Math.max(0, slot.recoilPitch - dt * 4.5);
+    slot.flashTime = Math.max(0, slot.flashTime - dt);
 
-    if (weapon.recoilYaw > 0) {
-        weapon.recoilYaw = Math.max(0, weapon.recoilYaw - dt * 1.8);
+    if (slot.recoilYaw > 0) {
+        slot.recoilYaw = Math.max(0, slot.recoilYaw - dt * 1.8);
     } else {
-        weapon.recoilYaw = Math.min(0, weapon.recoilYaw + dt * 1.8);
+        slot.recoilYaw = Math.min(0, slot.recoilYaw + dt * 1.8);
     }
 
     if (moving) {
-        weapon.bobWeight = Math.min(1, weapon.bobWeight + dt * 6);
-        weapon.bobPhase += dt * 10;
+        slot.bobWeight = Math.min(1, slot.bobWeight + dt * 6);
+        slot.bobPhase += dt * 10;
     } else {
-        weapon.bobWeight = Math.max(0, weapon.bobWeight - dt * 4);
-        weapon.bobPhase += dt * 3;
+        slot.bobWeight = Math.max(0, slot.bobWeight - dt * 4);
+        slot.bobPhase += dt * 3;
     }
 }
 
-export function canFire(weapon) {
-    return weapon.cooldown <= 0;
+function getAttackBlend(slot, kind) {
+    const phase = getAttackPhase(slot, kind);
+    if (phase <= 0) {
+        return 0;
+    }
+    return Math.sin(phase * Math.PI);
 }
 
-export function fire(weapon) {
-    weapon.cooldown = FIRE_RATE;
-    weapon.kickback = Math.min(1.2, weapon.kickback + 1);
-    weapon.recoilPitch = Math.min(0.18, weapon.recoilPitch + 0.09);
-    const pattern = [-1, 1, -0.6, 0.6];
-    weapon.recoilYaw += pattern[weapon.shotIndex % pattern.length] * 0.02;
-    weapon.flashTime = 0.06;
-    weapon.shotIndex += 1;
+function getAttackPhase(slot, kind) {
+    const duration = slot.attackDuration || WEAPON_DEFS[kind]?.fireRate || 0;
+    if (duration <= 0 || slot.attackTimeLeft <= 0) {
+        return 0;
+    }
+    return Math.min(1, Math.max(0, 1 - slot.attackTimeLeft / duration));
 }
 
-// Generate weapon vertices in view space (no view matrix applied)
-export function weaponVerts(weapon) {
-    const bob = Math.sin(weapon.bobPhase) * 0.02 * weapon.bobWeight;
-    const bobX = Math.cos(weapon.bobPhase * 0.5) * 0.015 * weapon.bobWeight;
-    const kick = weapon.kickback * 0.12;
-    const pitch = -weapon.recoilPitch * 2.5;
-    const yaw = weapon.recoilYaw * 4.5;
-    const roll = -weapon.recoilYaw * 9;
+function machineGunVerts(slot, reloadPhase) {
+    const { ox, oy, oz, pitch, yaw, roll } = baseTransform(slot, 0.3, -0.22, -0.68, reloadPhase);
+    const v = [];
 
-    const ox = 0.26 + bobX;
-    const oy = -0.24 + bob;
-    const oz = -0.58 + kick;
+    appendPart(v, boxVerts(-0.04, -0.09, 0.11, 0.085, 0.18, 0.1, 10), ox, oy, oz, pitch * 0.55, yaw * 0.28, roll * 0.58);
+    appendPart(v, boxVerts(-0.015, -0.26, 0.21, 0.074, 0.145, 0.09, 10), ox, oy, oz, pitch * 0.28, yaw * 0.16, roll * 0.48);
+    appendPart(v, boxVerts(0.015, -0.37, 0.3, 0.066, 0.06, 0.075, 9), ox, oy, oz, pitch * 0.18, yaw * 0.08, roll * 0.34);
+
+    appendPart(v, boxVerts(0.19, -0.035, -0.06, 0.058, 0.16, 0.082, 10), ox, oy, oz, -0.33 + pitch, yaw * 0.46, roll * 0.28);
+    appendPart(v, boxVerts(0.24, -0.2, 0.025, 0.055, 0.135, 0.07, 10), ox, oy, oz, -0.54 + pitch, yaw * 0.3, roll * 0.18);
+    appendPart(v, boxVerts(0.275, -0.3, 0.11, 0.05, 0.06, 0.06, 9), ox, oy, oz, -0.18 + pitch * 0.4, yaw * 0.18, roll * 0.12);
+
+    appendPart(v, boxVerts(0.0, 0.0, 0.06, 0.072, 0.058, 0.28, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.046, 0.0, 0.056, 0.022, 0.24, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.054, -0.004, 0.07, 0.014, 0.048, 0.14, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.002, 0.36, 0.066, 0.05, 0.16, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.042, 0.22, 0.046, 0.02, 0.17, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.12, 0.09, 0.04, 0.09, 0.052, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.058, 0.0, 0.028, 0.024, 0.028, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.115, -0.18, 0.03, 0.092, 0.032, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.008, -0.36 - slot.kickback * 0.05, 0.038, 0.034, 0.27, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.018, -0.64 - slot.kickback * 0.06, 0.013, 0.013, 0.13, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.024, -0.78 - slot.kickback * 0.06, 0.02, 0.02, 0.026, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.078, 0.18, 0.018, 0.018, 0.018, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.08, -0.49, 0.012, 0.018, 0.012, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.094, -0.67, 0.006, 0.03, 0.006, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.042, 0.022, 0.13, 0.01, 0.01, 0.07, 10), ox, oy, oz, pitch, yaw, roll);
+
+    appendFlash(v, slot, ox, oy, oz, pitch, yaw, roll, -0.84);
+    return v;
+}
+
+function pistolVerts(slot, reloadPhase) {
+    const { ox, oy, oz, pitch, yaw, roll } = baseTransform(slot, 0.29, -0.19, -0.54, reloadPhase);
+    const v = [];
+
+    appendPart(v, boxVerts(0.17, -0.03, -0.03, 0.056, 0.15, 0.078, 10), ox, oy, oz, -0.28 + pitch, yaw * 0.42, roll * 0.24);
+    appendPart(v, boxVerts(0.212, -0.18, 0.035, 0.054, 0.138, 0.07, 10), ox, oy, oz, -0.61 + pitch, yaw * 0.32, roll * 0.18);
+    appendPart(v, boxVerts(0.248, -0.285, 0.095, 0.046, 0.055, 0.055, 9), ox, oy, oz, -0.16, yaw * 0.18, roll * 0.1);
+
+    appendPart(v, boxVerts(0.0, -0.012, 0.025, 0.048, 0.046, 0.13, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.032, -0.06, 0.055, 0.028, 0.2, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.048, -0.06, 0.036, 0.008, 0.16, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.026, -0.31 - slot.kickback * 0.06, 0.014, 0.014, 0.1, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.03, -0.415 - slot.kickback * 0.06, 0.018, 0.018, 0.024, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.085, 0.055, 0.028, 0.06, 0.038, 14), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.123, 0.1, 0.03, 0.012, 0.04, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.058, -0.004, 0.028, 0.022, 0.045, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.025, -0.04, 0.016, 0.018, 0.03, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.062, 0.04, 0.016, 0.014, 0.014, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.06, -0.305, 0.009, 0.014, 0.009, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.038, 0.018, -0.02, 0.008, 0.008, 0.06, 10), ox, oy, oz, pitch, yaw, roll);
+
+    appendFlash(v, slot, ox, oy, oz, pitch, yaw, roll, -0.46);
+    return v;
+}
+
+function knifeVerts(slot, reloadPhase) {
+    const phase = getAttackPhase(slot, WEAPON_KNIFE);
+    const attack = getAttackBlend(slot, WEAPON_KNIFE);
+    const heavyAttack = slot.attackStyle === 'alternate' && attack > 0;
+    const base = baseTransform(slot, 0.34, -0.12, -0.3, reloadPhase);
+    let ox = base.ox + 0.06 - attack * 0.05;
+    let oy = base.oy - 0.02 + attack * 0.03;
+    let oz = base.oz - 0.05 - attack * 0.29;
+    let pitch = base.pitch * 0.16 + 0.18 - attack * 1.28;
+    let yaw = base.yaw * 0.2 + 0.34 * (1 - attack);
+    let roll = base.roll * 0.1 - 0.62 * (1 - attack) - attack * 0.08;
+
+    if (heavyAttack) {
+        const windup = Math.min(1, phase / 0.26);
+        const stab = phase <= 0.26 ? 0 : Math.min(1, (phase - 0.26) / 0.42);
+        const recover = phase <= 0.68 ? 0 : Math.min(1, (phase - 0.68) / 0.32);
+        const leftX = mix(0.04, -0.7, windup);
+        const leftY = mix(-0.03, 0.12, windup);
+        const leftZ = mix(-0.04, 0.08, windup);
+        const stabX = mix(-0.7, -0.08, stab);
+        const stabY = mix(0.12, 0.01, stab);
+        const stabZ = mix(0.08, -0.42, stab);
+        ox = base.ox + (phase <= 0.26 ? leftX : phase <= 0.68 ? stabX : mix(-0.08, 0.62, recover));
+        oy = base.oy + (phase <= 0.26 ? leftY : phase <= 0.68 ? stabY : mix(0.01, -0.02, recover));
+        oz = base.oz + (phase <= 0.26 ? leftZ : phase <= 0.68 ? stabZ : mix(-0.42, 0.04, recover));
+        pitch = base.pitch * 0.14 + (phase <= 0.26 ? mix(0.08, -0.52, windup) : phase <= 0.68 ? mix(-0.52, -1.22, stab) : mix(-1.22, -0.08, recover));
+        yaw = base.yaw * 0.16 + (phase <= 0.26 ? mix(0.28, 0.94, windup) : phase <= 0.68 ? mix(0.94, 0.06, stab) : mix(0.06, -0.64, recover));
+        roll = base.roll * 0.08 + (phase <= 0.26 ? mix(-0.44, -1.16, windup) : phase <= 0.68 ? mix(-1.16, -0.18, stab) : mix(-0.18, 0.92, recover));
+    } else if (attack > 0) {
+        const swingDir = slot.attackDirection || 1;
+        const windup = Math.min(1, phase / 0.18);
+        const slash = phase <= 0.18 ? 0 : Math.min(1, (phase - 0.18) / 0.82);
+        const side = ((slash * 2) - 1) * swingDir;
+        ox = base.ox + side * 0.78;
+        oy = base.oy + 0.05 + windup * 0.07 - slash * 0.03;
+        oz = base.oz - 0.02 + windup * 0.05 - slash * 0.12;
+        pitch = base.pitch * 0.12 - 0.12 + windup * 0.08 - slash * 0.26;
+        yaw = base.yaw * 0.16 - side * 1.22;
+        roll = base.roll * 0.08 + side * 2.2;
+    }
 
     const v = [];
-    appendPart(v, boxVerts(-0.02, -0.08, -0.02, 0.06, 0.16, 0.08, 10), ox, oy, oz, pitch * 0.6, yaw * 0.3, roll * 0.6);
-    appendPart(v, boxVerts(-0.02, -0.24, 0.06, 0.065, 0.14, 0.085, 10), ox, oy, oz, pitch * 0.3, yaw * 0.2, roll * 0.5);
-    appendPart(v, boxVerts(0.0, -0.34, 0.12, 0.06, 0.07, 0.075, 9), ox, oy, oz, pitch * 0.2, yaw * 0.1, roll * 0.4);
 
-    appendPart(v, boxVerts(0.13, -0.02, -0.04, 0.055, 0.15, 0.075, 10), ox, oy, oz, -0.35 + pitch, yaw * 0.5, roll * 0.3);
-    appendPart(v, boxVerts(0.16, -0.16, 0.04, 0.055, 0.14, 0.07, 10), ox, oy, oz, -0.55 + pitch, yaw * 0.35, roll * 0.2);
-    appendPart(v, boxVerts(0.18, -0.26, 0.11, 0.055, 0.065, 0.07, 9), ox, oy, oz, -0.2 + pitch * 0.5, yaw * 0.2, roll * 0.15);
+    appendPart(v, boxVerts(0.17, -0.035, 0.045, 0.056, 0.15, 0.078, 10), ox, oy, oz, -0.36 + pitch * 0.28, yaw * 0.42, roll * 0.24);
+    appendPart(v, boxVerts(0.212, -0.19, 0.11, 0.053, 0.136, 0.07, 10), ox, oy, oz, -0.55 + pitch * 0.18, yaw * 0.28, roll * 0.16);
+    appendPart(v, boxVerts(0.245, -0.29, 0.18, 0.047, 0.055, 0.055, 9), ox, oy, oz, -0.14 + pitch * 0.08, yaw * 0.14, roll * 0.08);
 
-    appendPart(v, boxVerts(0, 0, 0, 0.05, 0.05, 0.2, 3), ox, oy, oz, pitch, yaw, roll);
-    appendPart(v, boxVerts(0, 0.02, -0.24 - weapon.kickback * 0.04, 0.018, 0.018, 0.11, 3), ox, oy, oz, pitch, yaw, roll);
-    appendPart(v, boxVerts(0, -0.085, 0.055, 0.028, 0.055, 0.035, 0), ox, oy, oz, pitch, yaw, roll);
-    appendPart(v, boxVerts(0.0, -0.03, 0.01, 0.045, 0.03, 0.12, 10), ox, oy, oz, pitch, yaw, roll);
-
-    if (weapon.flashTime > 0) {
-        const flashScale = 0.5 + (weapon.flashTime / 0.06) * 0.5;
-        appendPart(
-            v,
-            boxVerts(0, 0.02, -0.39, 0.035 * flashScale, 0.03 * flashScale, 0.05 * flashScale, 4),
-            ox,
-            oy,
-            oz,
-            pitch,
-            yaw,
-            roll
-        );
-    }
+    appendPart(v, boxVerts(0.0, -0.075, 0.05, 0.018, 0.08, 0.032, 14), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, -0.155, 0.085, 0.016, 0.035, 0.028, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.0, 0.01, 0.052, 0.014, 0.018, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.09, -0.015 - slot.kickback * 0.03, 0.012, 0.16, 0.026, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.31, -0.035 - slot.kickback * 0.05, 0.009, 0.14, 0.018, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.47, -0.05 - slot.kickback * 0.06, 0.005, 0.055, 0.01, 4), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.16, 0.005, 0.005, 0.12, 0.01, 10), ox, oy, oz, pitch, yaw, roll);
 
     return v;
 }
 
-export function consumeRecoilDelta(weapon) {
-    const pitch = weapon.recoilPitch - weapon.appliedPitch;
-    const yaw = weapon.recoilYaw - weapon.appliedYaw;
-    weapon.appliedPitch = weapon.recoilPitch;
-    weapon.appliedYaw = weapon.recoilYaw;
-    return { pitch, yaw };
+function bombVerts(slot, reloadPhase) {
+    const { ox, oy, oz, pitch, yaw, roll } = baseTransform(slot, 0.24, -0.15, -0.38, reloadPhase);
+    const v = [];
+
+    appendPart(v, boxVerts(0.16, -0.01, -0.01, 0.055, 0.14, 0.075, 10), ox, oy, oz, -0.35 + pitch, yaw * 0.35, roll * 0.2);
+    appendPart(v, boxVerts(0.19, -0.16, 0.03, 0.05, 0.12, 0.07, 9), ox, oy, oz, -0.62 + pitch, yaw * 0.2, roll * 0.1);
+
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.05, 0.05, 0.05, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.055, 0.0, 0.012, 0.02, 0.012, 14), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.085, 0.0, 0.008, 0.012, 0.008, 4), ox, oy, oz, pitch, yaw, roll);
+
+    return v;
+}
+
+function smokeVerts(slot, reloadPhase) {
+    const { ox, oy, oz, pitch, yaw, roll } = baseTransform(slot, 0.23, -0.14, -0.37, reloadPhase);
+    const v = [];
+
+    appendPart(v, boxVerts(0.16, -0.01, -0.01, 0.055, 0.14, 0.075, 10), ox, oy, oz, -0.35 + pitch, yaw * 0.35, roll * 0.2);
+    appendPart(v, boxVerts(0.19, -0.16, 0.03, 0.05, 0.12, 0.07, 9), ox, oy, oz, -0.62 + pitch, yaw * 0.2, roll * 0.1);
+
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.03, 0.06, 0.03, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.038, 0.0, 0.032, 0.01, 0.032, 13), ox, oy, oz, pitch, yaw, roll);
+
+    return v;
+}
+
+function flashbangVerts(slot, reloadPhase) {
+    const { ox, oy, oz, pitch, yaw, roll } = baseTransform(slot, 0.23, -0.14, -0.37, reloadPhase);
+    const v = [];
+
+    appendPart(v, boxVerts(0.16, -0.01, -0.01, 0.055, 0.14, 0.075, 10), ox, oy, oz, -0.35 + pitch, yaw * 0.35, roll * 0.2);
+    appendPart(v, boxVerts(0.19, -0.16, 0.03, 0.05, 0.12, 0.07, 9), ox, oy, oz, -0.62 + pitch, yaw * 0.2, roll * 0.1);
+
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.028, 0.055, 0.028, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.024, 0.051, 0.024, 4), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.04, 0.0, 0.03, 0.008, 0.03, 9), ox, oy, oz, pitch, yaw, roll);
+
+    return v;
+}
+
+function appendFlash(v, slot, ox, oy, oz, pitch, yaw, roll, offsetZ) {
+    if (slot.flashTime <= 0) return;
+    const flashScale = 0.5 + (slot.flashTime / 0.06) * 0.5;
+    appendPart(
+        v,
+        boxVerts(0, 0.02, offsetZ, 0.035 * flashScale, 0.03 * flashScale, 0.05 * flashScale, 4),
+        ox,
+        oy,
+        oz,
+        pitch,
+        yaw,
+        roll
+    );
+}
+
+function baseTransform(slot, baseX, baseY, baseZ, reloadPhase = 0) {
+    const bob = Math.sin(slot.bobPhase) * 0.02 * slot.bobWeight;
+    const bobX = Math.cos(slot.bobPhase * 0.5) * 0.015 * slot.bobWeight;
+    const kick = slot.kickback * 0.12;
+    const reloadOffset = Math.sin(reloadPhase * Math.PI) * 0.26;
+    const reloadPitch = Math.sin(reloadPhase * Math.PI) * 0.95;
+    const reloadYaw = Math.sin(reloadPhase * Math.PI * 2) * 0.08;
+    const pitch = -slot.recoilPitch * 2.5 + reloadPitch;
+    const yaw = slot.recoilYaw * 4.5;
+    const roll = -slot.recoilYaw * 9 + reloadYaw;
+
+    return {
+        ox: baseX + bobX,
+        oy: baseY + bob - reloadOffset * 0.55,
+        oz: baseZ + kick + reloadOffset,
+        pitch,
+        yaw,
+        roll,
+    };
+}
+
+function getReloadPhase(weapon) {
+    if (!weapon.reloadTimeMs) return 0;
+    return Math.min(1, Math.max(0, 1 - weapon.reloadTimeMs / RELOAD_DURATION_MS));
+}
+
+function getAttackDuration(kind, alternate, fireDuration) {
+    if (kind !== WEAPON_KNIFE) {
+        return fireDuration;
+    }
+    return fireDuration * (alternate ? KNIFE_STAB_ANIM_SCALE : KNIFE_SLASH_ANIM_SCALE);
+}
+
+function mix(a, b, t) {
+    return a + (b - a) * t;
 }
 
 function appendPart(out, verts, tx, ty, tz, rx, ry, rz) {
-    const sinX = Math.sin(rx), cosX = Math.cos(rx);
-    const sinY = Math.sin(ry), cosY = Math.cos(ry);
-    const sinZ = Math.sin(rz), cosZ = Math.cos(rz);
+    const sinX = Math.sin(rx);
+    const cosX = Math.cos(rx);
+    const sinY = Math.sin(ry);
+    const cosY = Math.cos(ry);
+    const sinZ = Math.sin(rz);
+    const cosZ = Math.cos(rz);
 
     for (let i = 0; i < verts.length; i += 6) {
         let x = verts[i];

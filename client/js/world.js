@@ -149,6 +149,16 @@ export const SPAWN_POINTS = [
     [0, 1.7, 12],
 ];
 
+const SHOT_BLOCKERS = [
+    ...MAP_WALLS.map(toWallBox),
+    ...OFFICE_BOXES.map((box) => ({
+        min: [box.cx - box.hx, box.cy - box.hy, box.cz - box.hz],
+        max: [box.cx + box.hx, box.cy + box.hy, box.cz + box.hz],
+    })),
+    { min: [-ARENA, -0.2, -ARENA], max: [ARENA, 0, ARENA] },
+    { min: [-ARENA, WALL_HEIGHT, -ARENA], max: [ARENA, WALL_HEIGHT + 0.2, ARENA] },
+];
+
 export function buildWorldGeometry() {
     const verts = [];
 
@@ -294,6 +304,34 @@ export function collideWalls(pos, radius) {
     pos[2] = pz;
 }
 
+export function traceShotImpact(origin, dir, players = {}, shooterId = null, maxRange = 50) {
+    let bestDist = maxRange;
+
+    for (const box of SHOT_BLOCKERS) {
+        const dist = rayAABBIntersection(origin, dir, box.min, box.max, maxRange);
+        if (dist != null && dist < bestDist) {
+            bestDist = dist;
+        }
+    }
+
+    for (const [id, player] of Object.entries(players || {})) {
+        if (player == null || player.alive === false) continue;
+        if (shooterId != null && Number(id) === Number(shooterId)) continue;
+        for (const box of playerHitBoxes(player.pos, !!player.crouching)) {
+            const dist = rayAABBIntersection(origin, dir, box.min, box.max, maxRange);
+            if (dist != null && dist < bestDist) {
+                bestDist = dist;
+            }
+        }
+    }
+
+    return [
+        origin[0] + dir[0] * bestDist,
+        origin[1] + dir[1] * bestDist,
+        origin[2] + dir[2] * bestDist,
+    ];
+}
+
 function closestPointOnSegment(px, pz, ax, az, bx, bz) {
     const abx = bx - ax;
     const abz = bz - az;
@@ -324,4 +362,80 @@ export function rayHitPlayer(origin, dir, targetPos, halfW, halfH) {
     const err = Math.sqrt(ex * ex + ey * ey + ez * ez);
 
     return err < halfW && Math.abs(cy - targetPos[1]) < halfH;
+}
+
+function toWallBox(wall) {
+    const height = wall.height ?? WALL_HEIGHT;
+    const minX = Math.min(wall.x1, wall.x2) - WALL_THICK;
+    const maxX = Math.max(wall.x1, wall.x2) + WALL_THICK;
+    const minZ = Math.min(wall.z1, wall.z2) - WALL_THICK;
+    const maxZ = Math.max(wall.z1, wall.z2) + WALL_THICK;
+    return {
+        min: [minX, 0, minZ],
+        max: [maxX, height, maxZ],
+    };
+}
+
+function playerHitBoxes(pos, crouching) {
+    const eyeHeight = crouching ? 1.15 : 1.7;
+    const footY = pos[1] - eyeHeight;
+
+    if (crouching) {
+        return [
+            {
+                min: [pos[0] - 0.24, footY + 0.92, pos[2] - 0.24],
+                max: [pos[0] + 0.24, footY + 1.3, pos[2] + 0.24],
+            },
+            {
+                min: [pos[0] - 0.42, footY + 0.44, pos[2] - 0.32],
+                max: [pos[0] + 0.42, footY + 0.96, pos[2] + 0.32],
+            },
+        ];
+    }
+
+    return [
+        {
+            min: [pos[0] - 0.24, footY + 1.36, pos[2] - 0.24],
+            max: [pos[0] + 0.24, footY + 1.78, pos[2] + 0.24],
+        },
+        {
+            min: [pos[0] - 0.42, footY + 0.58, pos[2] - 0.32],
+            max: [pos[0] + 0.42, footY + 1.38, pos[2] + 0.32],
+        },
+    ];
+}
+
+function rayAABBIntersection(origin, dir, min, max, maxRange) {
+    let tMin = 0;
+    let tMax = maxRange;
+
+    for (let axis = 0; axis < 3; axis += 1) {
+        const o = origin[axis];
+        const d = dir[axis];
+        const mn = min[axis];
+        const mx = max[axis];
+
+        if (Math.abs(d) < 1e-8) {
+            if (o < mn || o > mx) {
+                return null;
+            }
+            continue;
+        }
+
+        let t1 = (mn - o) / d;
+        let t2 = (mx - o) / d;
+        if (t1 > t2) {
+            const swap = t1;
+            t1 = t2;
+            t2 = swap;
+        }
+
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        if (tMin > tMax) {
+            return null;
+        }
+    }
+
+    return tMin >= 0 && tMin <= maxRange ? tMin : null;
 }

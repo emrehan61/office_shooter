@@ -1,6 +1,7 @@
 const keys = {};
 let mouseDX = 0, mouseDY = 0;
 let mouseDown = false;
+let rightMouseDown = false;
 let locked = false;
 
 export function init(canvas) {
@@ -13,6 +14,10 @@ export function init(canvas) {
 
     document.addEventListener('pointerlockchange', () => {
         locked = document.pointerLockElement === canvas;
+        if (!locked) {
+            mouseDown = false;
+            rightMouseDown = false;
+        }
     });
 
     document.addEventListener('mousemove', (e) => {
@@ -24,9 +29,14 @@ export function init(canvas) {
 
     canvas.addEventListener('mousedown', (e) => {
         if (e.button === 0) mouseDown = true;
+        if (e.button === 2) rightMouseDown = true;
     });
     canvas.addEventListener('mouseup', (e) => {
         if (e.button === 0) mouseDown = false;
+        if (e.button === 2) rightMouseDown = false;
+    });
+    canvas.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
     });
 }
 
@@ -39,4 +49,5 @@ export function consumeMouse() {
 
 export function isKeyDown(code) { return !!keys[code]; }
 export function isMouseDown() { return mouseDown && locked; }
+export function isRightMouseDown() { return rightMouseDown && locked; }
 export function isLocked() { return locked; }

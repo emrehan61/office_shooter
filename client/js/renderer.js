@@ -4,7 +4,7 @@ import { mat4Multiply, mat4Create } from './math.js';
 // Material IDs:
 // 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 4=flash,
 // 5-8/11-12=player armor palettes, 9=skin, 10=gear,
-// 13=glass, 14=wood, 15=screen, 16=plant
+// 13=glass, 14=wood, 15=screen, 16=plant, 17=smoke, 18=impact
 const VS_SRC = `#version 300 es
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec2 aUV;
@@ -106,6 +106,17 @@ vec3 plant(vec2 uv) {
     return vec3(0.15, 0.46, 0.22) + n;
 }
 
+vec3 smokePuff(vec3 p) {
+    float base = noise2D(p.xz * 0.45 + p.yy * 0.12);
+    float detail = noise2D(p.xy * 1.7 + p.zz * 0.08);
+    return mix(vec3(0.42, 0.44, 0.48), vec3(0.66, 0.69, 0.74), base * 0.7 + detail * 0.3);
+}
+
+vec3 impactMarker(vec3 p) {
+    float n = noise2D(p.xy * 15.0 + p.zz * 4.0) * 0.04;
+    return vec3(0.02, 0.02, 0.025) + n;
+}
+
 vec3 armorPaint(float id) {
     vec3 base;
     if (id < 5.5) base = vec3(0.73, 0.18, 0.16);
@@ -145,6 +156,10 @@ void main() {
             emissive = true;
         } else if (m < 17.0) {
             texColor = plant(vWorldPos.xy * 0.8);
+        } else if (m < 18.0) {
+            texColor = smokePuff(vWorldPos);
+        } else if (m < 19.0) {
+            texColor = impactMarker(vWorldPos);
         } else {
             texColor = vec3(0.18, 0.2, 0.24) + noise2D(vWorldPos.xz * 16.0) * 0.06;
         }
