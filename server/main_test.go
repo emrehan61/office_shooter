@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -166,6 +167,42 @@ func TestStateTickIncludesServerTime(t *testing.T) {
 	}
 	if int64(got) != nowMS {
 		t.Fatalf("expected serverTime %d, got %d", nowMS, int64(got))
+	}
+}
+
+func TestBroadcastChatQueuesSanitizedMessageToConnectedPlayers(t *testing.T) {
+	g := newTestGame()
+
+	host := addNamedPlayer(g, "Host")
+	guest := addNamedPlayer(g, "Guest")
+
+	g.broadcastChat(host.id, "  hello\n\nteam   ")
+
+	hostMsg := readQueuedMessage(t, host.sendCh)
+	guestMsg := readQueuedMessage(t, guest.sendCh)
+
+	for _, msg := range []map[string]any{hostMsg, guestMsg} {
+		if got, _ := msg["t"].(string); got != "chat" {
+			t.Fatalf("expected chat message, got %#v", msg["t"])
+		}
+		if got, _ := msg["name"].(string); got != "Host" {
+			t.Fatalf("expected sender name Host, got %#v", msg["name"])
+		}
+		if got, _ := msg["text"].(string); got != "hello team" {
+			t.Fatalf("expected sanitized chat text, got %#v", msg["text"])
+		}
+	}
+}
+
+func TestSanitizeChatTextTrimsWhitespaceAndLimitsRunes(t *testing.T) {
+	input := " \n   alpha\tbeta  " + strings.Repeat("x", maxChatMessageRunes+10)
+	got := sanitizeChatText(input)
+
+	if len([]rune(got)) != maxChatMessageRunes {
+		t.Fatalf("expected chat text length %d, got %d", maxChatMessageRunes, len([]rune(got)))
+	}
+	if got[:10] != "alpha beta" {
+		t.Fatalf("expected sanitized prefix alpha beta, got %q", got[:10])
 	}
 }
 

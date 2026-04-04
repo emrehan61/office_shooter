@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,7 @@ const (
 	respawnDelayMS          = 3 * 1000
 	positionHistoryWindowMS = 1000
 	maxLagCompensationMS    = 250
+	maxChatMessageRunes     = 120
 	hitscanRange            = 50.0
 	knifeRange              = 2.6
 	machineGunCost          = 1800
@@ -565,6 +567,13 @@ type economyUpdate struct {
 	ReloadTimeLeftMS  int64    `json:"reloadTimeLeftMs"`
 }
 
+type chatMessage struct {
+	T    string `json:"t"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
 type weaponConfig struct {
 	ID             WeaponID
 	Label          string
@@ -804,6 +813,47 @@ func (g *Game) sendRawToPlayer(id int, msg []byte) {
 	case sendCh <- msg:
 	default:
 	}
+}
+
+func sanitizeChatText(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) > maxChatMessageRunes {
+		return string(runes[:maxChatMessageRunes])
+	}
+	return text
+}
+
+func (g *Game) broadcastChat(id int, text string) {
+	text = sanitizeChatText(text)
+	if text == "" {
+		return
+	}
+
+	g.mu.RLock()
+	idx, ok := g.players.indexOf(id)
+	if !ok {
+		g.mu.RUnlock()
+		return
+	}
+	name := g.players.names[idx]
+	g.mu.RUnlock()
+
+	msg, err := json.Marshal(chatMessage{
+		T:    "chat",
+		ID:   id,
+		Name: name,
+		Text: text,
+	})
+	if err != nil {
+		return
+	}
+
+	g.broadcast(msg, 0)
 }
 
 func newTickMessages() *tickMessages {
@@ -1127,7 +1177,7 @@ func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
 		next[2] += dir[2] * advanceStep
 	} else {
 		strafeSign := 1.0
-		if ((nowMS / botStrafeFlipMS) + int64(g.players.ids[idx]))%2 == 1 {
+		if ((nowMS/botStrafeFlipMS)+int64(g.players.ids[idx]))%2 == 1 {
 			strafeSign = -1
 		}
 		strafe := Vec3{-dir[2] * strafeSign, 0, dir[0] * strafeSign}
@@ -2463,6 +2513,11 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				"clientTime": clientTime,
 				"serverTime": time.Now().UnixMilli(),
 			})
+
+		case "chat":
+			var text string
+			json.Unmarshal(msg["text"], &text)
+			game.broadcastChat(playerID, text)
 
 		case "input":
 			if !game.isPlaying() {

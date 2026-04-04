@@ -113,7 +113,7 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
         if (hud.crosshair) hud.crosshair.style.display = 'none';
     } else {
         if (hud.deathScreen) hud.deathScreen.style.display = 'none';
-        if (hud.crosshair) hud.crosshair.style.display = ui.buyMenuOpen ? 'none' : 'block';
+        if (hud.crosshair) hud.crosshair.style.display = ui.buyMenuOpen || ui.chatOpen ? 'none' : 'block';
     }
 
     updateLeaderboard(hud, leaderboard);
