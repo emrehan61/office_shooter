@@ -13,6 +13,7 @@ dist/
 # Go build outputs
 bin/
 server/fps-server
+output/office-shooter
 *.exe
 *.test
 
