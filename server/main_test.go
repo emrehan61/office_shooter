@@ -353,6 +353,45 @@ func TestSyncFallbackBotRemovesBotWhenHumanJoinsThatTeam(t *testing.T) {
 	}
 }
 
+func TestTickFallbackBotFiresAtNearestEnemy(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot to exist")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-2, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{2, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 0
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	g.tick(1100)
+
+	msg := readQueuedMessage(t, blue.sendCh)
+	if got, _ := msg["t"].(string); got != "shot" {
+		t.Fatalf("expected bot shot broadcast, got %#v", msg["t"])
+	}
+	if got, _ := msg["id"].(float64); int(got) != g.players.ids[botIdx] {
+		t.Fatalf("expected shot from bot id %d, got %#v", g.players.ids[botIdx], msg["id"])
+	}
+}
+
 func TestStartMatchGivesStartingPistolAndCredits(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")

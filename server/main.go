@@ -1031,6 +1031,33 @@ func (g *Game) canStartMatchLocked() (bool, string) {
 	return true, ""
 }
 
+func (g *Game) nearestEnemyLocked(idx int) int {
+	if idx < 0 || idx >= len(g.players.ids) {
+		return -1
+	}
+
+	bestIdx := -1
+	bestDist := math.MaxFloat64
+	team := normalizeTeam(g.players.team[idx])
+	for i := range g.players.ids {
+		if i == idx || !g.players.alive[i] {
+			continue
+		}
+		if team != TeamNone && normalizeTeam(g.players.team[i]) == team {
+			continue
+		}
+
+		dist := distanceVec3(g.players.pos[idx], g.players.pos[i])
+		if dist >= bestDist {
+			continue
+		}
+		bestDist = dist
+		bestIdx = i
+	}
+
+	return bestIdx
+}
+
 func spawnPointsForTeam(team TeamID) []Vec3 {
 	if normalizeTeam(team) == TeamGreen {
 		return []Vec3{
@@ -1678,6 +1705,114 @@ func (g *Game) updateReloadsAndProjectilesLocked(nowMS int64) *tickMessages {
 	return tm
 }
 
+func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
+	if g.state != StatePlaying || nowMS < g.buyEndsAt || g.isIntermissionLocked(nowMS) {
+		return
+	}
+
+	for idx, botID := range g.players.ids {
+		if !g.players.isBot[idx] || !g.players.alive[idx] {
+			continue
+		}
+
+		targetIdx := g.nearestEnemyLocked(idx)
+		if targetIdx < 0 {
+			continue
+		}
+
+		dir := normalizeVec(Vec3{
+			g.players.pos[targetIdx][0] - g.players.pos[idx][0],
+			g.players.pos[targetIdx][1] - g.players.pos[idx][1],
+			g.players.pos[targetIdx][2] - g.players.pos[idx][2],
+		})
+		g.players.yaw[idx], g.players.pitch[idx] = yawPitchFromDirection(dir)
+
+		if nowMS < g.players.botNextThink[idx] || nowMS < g.players.nextAttackAt[idx] {
+			continue
+		}
+		if g.isReloadingLocked(idx, nowMS) {
+			continue
+		}
+
+		g.players.activeWeapon[idx] = WeaponPistol
+		if g.currentAmmoLocked(idx, WeaponPistol) <= 0 {
+			if g.currentReserveLocked(idx, WeaponPistol) > 0 {
+				g.startReloadLocked(idx, WeaponPistol, nowMS)
+			}
+			g.players.botNextThink[idx] = nowMS + 650
+			continue
+		}
+
+		config := weaponConfigByID(WeaponPistol)
+		if !g.spendAmmoLocked(idx, WeaponPistol, 1) {
+			g.players.botNextThink[idx] = nowMS + 650
+			continue
+		}
+
+		shotTime := nowMS
+		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
+		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], false, bloom, shotTime+int64(botID)*97+nowMS)
+		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
+		g.players.botNextThink[idx] = nowMS + 650
+		shooterPos := positionAtTime(g.players.history[idx], shotTime)
+
+		shotMsg, _ := json.Marshal(map[string]interface{}{
+			"t":         "shot",
+			"id":        botID,
+			"pos":       shooterPos,
+			"dir":       dir,
+			"weapon":    WeaponPistol,
+			"alternate": false,
+		})
+		tm.broadcasts = append(tm.broadcasts, shotMsg)
+
+		hit := findHitTargetLocked(botID, shooterPos, dir, shotTime, config.Range)
+		if hit == nil || !g.players.alive[hit.index] {
+			continue
+		}
+
+		damage := damageForConfig(config, hit.zone)
+		victimID := hit.id
+		victimHP, victimArmor, absorbedDamage := applyDamage(g.players.hp[hit.index], g.players.armor[hit.index], damage)
+		g.players.hp[hit.index] = victimHP
+		g.players.armor[hit.index] = victimArmor
+
+		rewardAmount := rewardForHitZone(hit.zone)
+		if victimHP <= 0 {
+			g.players.alive[hit.index] = false
+			g.players.deaths[hit.index]++
+			g.stripLoadoutOnDeathLocked(hit.index)
+			g.players.kills[idx]++
+			rewardAmount += killReward
+		}
+		g.players.credits[idx] += rewardAmount
+
+		hitMsg, _ := json.Marshal(map[string]interface{}{
+			"t":        "hit",
+			"from":     botID,
+			"to":       victimID,
+			"dmg":      damage,
+			"zone":     hit.zone,
+			"weapon":   WeaponPistol,
+			"hp":       victimHP,
+			"armor":    victimArmor,
+			"absorbed": absorbedDamage,
+		})
+		tm.broadcasts = append(tm.broadcasts, hitMsg)
+
+		if victimHP > 0 {
+			continue
+		}
+
+		killMsg, _ := json.Marshal(map[string]interface{}{
+			"t":      "kill",
+			"killer": botID,
+			"victim": victimID,
+		})
+		tm.broadcasts = append(tm.broadcasts, killMsg)
+	}
+}
+
 func (g *Game) applyEconomyUpdateLocked(idx int, ok bool, kind, item, label, reason string, amount int, nowMS int64) economyUpdate {
 	return economyUpdate{
 		T:                 "economy",
@@ -2084,6 +2219,7 @@ func (g *Game) tick(nowMS int64) {
 			shouldBroadcastState = true
 		default:
 			tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
+			g.tickFallbackBotsLocked(nowMS, tickEvents)
 			if winner := g.roundWinnerByEliminationLocked(); winner != TeamNone {
 				g.beginRoundCooldownLocked(winner, nowMS)
 				shouldBroadcastRound = true
@@ -2568,10 +2704,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
-	game.mu.RLock()
-	defer game.mu.RUnlock()
-
+func findHitTargetLocked(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
 	var best *hitCandidate
 	bestDist := maxRange
 	shooterIdx, shooterOK := game.players.indexOf(shooterID)
@@ -2604,6 +2737,12 @@ func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange flo
 	}
 
 	return best
+}
+
+func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
+	game.mu.RLock()
+	defer game.mu.RUnlock()
+	return findHitTargetLocked(shooterID, origin, dir, shotTime, maxRange)
 }
 
 func recordPositionSample(history *[]positionSample, at int64, pos Vec3, crouching bool) {
@@ -2804,6 +2943,13 @@ func lookDirFromYawPitch(yaw, pitch float64) Vec3 {
 		math.Sin(pitch),
 		-math.Cos(yaw) * math.Cos(pitch),
 	}
+}
+
+func yawPitchFromDirection(dir Vec3) (yaw, pitch float64) {
+	dir = normalizeVec(dir)
+	yaw = math.Atan2(-dir[0], -dir[2])
+	pitch = math.Asin(math.Max(-1, math.Min(1, dir[1])))
+	return yaw, pitch
 }
 
 func maxInt64(a, b int64) int64 {
