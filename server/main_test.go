@@ -392,6 +392,91 @@ func TestTickFallbackBotFiresAtNearestEnemy(t *testing.T) {
 	}
 }
 
+func TestBotShotQualityIsAccurateOneInFiveShots(t *testing.T) {
+	accurate := 0
+	for i := int64(0); i < 10; i++ {
+		if isAccurateBotShot(i) {
+			accurate++
+		}
+	}
+
+	if accurate != 2 {
+		t.Fatalf("expected 2 accurate shots in 10 attempts, got %d", accurate)
+	}
+}
+
+func TestTickFallbackBotMovesTowardNearestEnemyWhenFar(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-12, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{12, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 999999
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	before := g.players.pos[botIdx]
+	g.tick(1100)
+	after := g.players.pos[botIdx]
+
+	if !(after[0] < before[0]) {
+		t.Fatalf("expected bot to move toward enemy on x axis, before=%v after=%v", before, after)
+	}
+}
+
+func TestTickFallbackBotStrafesWhenEnemyIsClose(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-2, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{2, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 999999
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	before := g.players.pos[botIdx]
+	g.tick(1100)
+	after := g.players.pos[botIdx]
+
+	if after[2] == before[2] {
+		t.Fatalf("expected bot to strafe on z axis, before=%v after=%v", before, after)
+	}
+}
+
 func TestStartMatchGivesStartingPistolAndCredits(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")

@@ -75,6 +75,12 @@ const (
 	smokeRadius             = 9.0
 	smokeDurationMS         = 8 * 1000
 	bombEffectDurationMS    = 350
+	botThinkIntervalMS      = 650
+	botPreferredRange       = 6.0
+	botAdvanceSpeed         = 4.8
+	botStrafeSpeed          = 3.6
+	botStrafeFlipMS         = 700
+	botBoundMargin          = 1.0
 )
 
 type GameState int
@@ -180,6 +186,7 @@ type playerStore struct {
 	deaths        []int
 	alive         []bool
 	botNextThink  []int64
+	botShotCount  []int64
 	conns         []*websocket.Conn
 	sendChs       []chan []byte
 	history       [][]positionSample
@@ -287,6 +294,7 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.deaths = append(ps.deaths, 0)
 	ps.alive = append(ps.alive, true)
 	ps.botNextThink = append(ps.botNextThink, 0)
+	ps.botShotCount = append(ps.botShotCount, 0)
 	ps.conns = append(ps.conns, conn)
 	ps.sendChs = append(ps.sendChs, sendCh)
 	ps.history = append(ps.history, []positionSample{{At: nowMS, Pos: spawn, Crouching: false}})
@@ -333,6 +341,7 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.deaths[idx] = ps.deaths[last]
 		ps.alive[idx] = ps.alive[last]
 		ps.botNextThink[idx] = ps.botNextThink[last]
+		ps.botShotCount[idx] = ps.botShotCount[last]
 		ps.conns[idx] = ps.conns[last]
 		ps.sendChs[idx] = ps.sendChs[last]
 		ps.history[idx] = ps.history[last]
@@ -371,6 +380,7 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.deaths = ps.deaths[:last]
 	ps.alive = ps.alive[:last]
 	ps.botNextThink = ps.botNextThink[:last]
+	ps.botShotCount = ps.botShotCount[:last]
 	ps.conns = ps.conns[:last]
 	ps.sendChs = ps.sendChs[:last]
 	ps.history = ps.history[:last]
@@ -1058,6 +1068,88 @@ func (g *Game) nearestEnemyLocked(idx int) int {
 	return bestIdx
 }
 
+func isAccurateBotShot(shotIndex int64) bool {
+	return (shotIndex+1)%5 == 0
+}
+
+func clampBotAxis(v float64) float64 {
+	limit := projectileBounds - botBoundMargin
+	return math.Max(-limit, math.Min(limit, v))
+}
+
+func applyBotAimProfile(dir Vec3, shotIndex int64) Vec3 {
+	dir = normalizeVec(dir)
+	if isAccurateBotShot(shotIndex) {
+		return normalizeVec(Vec3{dir[0], dir[1] + 0.01, dir[2]})
+	}
+
+	right := crossVec3(Vec3{0, 1, 0}, dir)
+	if right[0] == 0 && right[1] == 0 && right[2] == 0 {
+		right = Vec3{1, 0, 0}
+	}
+	right = normalizeVec(right)
+	lateralSign := 1.0
+	if shotIndex%2 == 1 {
+		lateralSign = -1
+	}
+	verticalSign := 1.0
+	if (shotIndex/2)%2 == 1 {
+		verticalSign = -1
+	}
+
+	return normalizeVec(Vec3{
+		dir[0] + right[0]*0.55*lateralSign,
+		dir[1] + 0.18*verticalSign,
+		dir[2] + right[2]*0.55*lateralSign,
+	})
+}
+
+func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
+	if idx < 0 || idx >= len(g.players.ids) || targetIdx < 0 || targetIdx >= len(g.players.ids) {
+		return
+	}
+
+	pos := g.players.pos[idx]
+	target := g.players.pos[targetIdx]
+	flat := Vec3{target[0] - pos[0], 0, target[2] - pos[2]}
+	dist := math.Sqrt(flat[0]*flat[0] + flat[2]*flat[2])
+	if dist < 1e-6 {
+		return
+	}
+
+	dir := normalizeVec(flat)
+	next := pos
+	advanceStep := botAdvanceSpeed / float64(tickRate)
+	strafeStep := botStrafeSpeed / float64(tickRate)
+
+	if dist > botPreferredRange {
+		next[0] += dir[0] * advanceStep
+		next[2] += dir[2] * advanceStep
+	} else {
+		strafeSign := 1.0
+		if ((nowMS / botStrafeFlipMS) + int64(g.players.ids[idx]))%2 == 1 {
+			strafeSign = -1
+		}
+		strafe := Vec3{-dir[2] * strafeSign, 0, dir[0] * strafeSign}
+		next[0] += strafe[0] * strafeStep
+		next[2] += strafe[2] * strafeStep
+		if dist < botPreferredRange*0.55 {
+			next[0] -= dir[0] * advanceStep * 0.35
+			next[2] -= dir[2] * advanceStep * 0.35
+		}
+	}
+
+	next[0] = clampBotAxis(next[0])
+	next[2] = clampBotAxis(next[2])
+	next[1] = standEyeHeight
+	if next == pos {
+		return
+	}
+
+	g.players.pos[idx] = next
+	recordPositionSample(&g.players.history[idx], nowMS, next, false)
+}
+
 func spawnPointsForTeam(team TeamID) []Vec3 {
 	if normalizeTeam(team) == TeamGreen {
 		return []Vec3{
@@ -1720,6 +1812,8 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			continue
 		}
 
+		g.moveFallbackBotLocked(idx, targetIdx, nowMS)
+
 		dir := normalizeVec(Vec3{
 			g.players.pos[targetIdx][0] - g.players.pos[idx][0],
 			g.players.pos[targetIdx][1] - g.players.pos[idx][1],
@@ -1739,21 +1833,24 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			if g.currentReserveLocked(idx, WeaponPistol) > 0 {
 				g.startReloadLocked(idx, WeaponPistol, nowMS)
 			}
-			g.players.botNextThink[idx] = nowMS + 650
+			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
 			continue
 		}
 
 		config := weaponConfigByID(WeaponPistol)
 		if !g.spendAmmoLocked(idx, WeaponPistol, 1) {
-			g.players.botNextThink[idx] = nowMS + 650
+			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
 			continue
 		}
 
 		shotTime := nowMS
 		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
-		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], false, bloom, shotTime+int64(botID)*97+nowMS)
+		dir = applyBotAimProfile(dir, g.players.botShotCount[idx])
+		moving := isMovingAtTime(g.players.history[idx], shotTime)
+		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], moving, bloom, shotTime+int64(botID)*97+nowMS)
 		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
-		g.players.botNextThink[idx] = nowMS + 650
+		g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
+		g.players.botShotCount[idx]++
 		shooterPos := positionAtTime(g.players.history[idx], shotTime)
 
 		shotMsg, _ := json.Marshal(map[string]interface{}{
@@ -1981,6 +2078,7 @@ func (g *Game) resetPlayerForNewMatchLocked(idx int, nowMS int64) {
 	g.players.flashEndsAt[idx] = 0
 	g.players.kills[idx] = 0
 	g.players.deaths[idx] = 0
+	g.players.botShotCount[idx] = 0
 	g.players.shotBloom[idx] = 0
 	g.players.bloomWeapon[idx] = WeaponKnife
 	g.players.lastShotAt[idx] = 0
