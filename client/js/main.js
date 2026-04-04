@@ -1,6 +1,6 @@
 import { createRenderer, uploadWorldGeo, drawWorld, drawDynamic } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
-import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown } from './input.js';
+import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
 import { buildWorldGeometry, traceShotImpact } from './world.js';
 import {
     applyAuthoritativeState,
@@ -23,7 +23,7 @@ import {
 } from './player.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendInput, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { buildAvatarVerts } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js';
@@ -44,13 +44,19 @@ import {
 const SEND_RATE = 1 / 60;
 const REMOTE_RENDER_DELAY_MS = 100;
 const DEATHMATCH_RESPAWN_DELAY_S = 3;
+const CHAT_HISTORY_LIMIT = 8;
+const CHAT_MESSAGE_LIFETIME_MS = 8000;
 
 let lastTime = 0;
 let sendTimer = 0;
 let buyMenuOpen = false;
+let chatOpen = false;
+let restorePointerLockAfterChat = false;
+let lastClosedVisibleChatCount = 0;
 const localImpactEffects = [];
 const worldDynamicVerts = [];
 const mergedEffects = [];
+const chatMessages = [];
 
 const canvas = document.getElementById('game');
 const renderer = createRenderer(canvas);
@@ -96,6 +102,10 @@ const teamSelect = document.getElementById('team-select');
 const teamBlueBtn = document.getElementById('team-blue-btn');
 const teamGreenBtn = document.getElementById('team-green-btn');
 const teamHint = document.getElementById('team-hint');
+const chatPanel = document.getElementById('chat-panel');
+const chatFeed = document.getElementById('chat-feed');
+const chatForm = document.getElementById('chat-form');
+const chatInput = document.getElementById('chat-input');
 const modeTeamBtn = document.getElementById('mode-team-btn');
 const modeDeathmatchBtn = document.getElementById('mode-deathmatch-btn');
 const rejoinPrompt = document.getElementById('rejoin-prompt');
@@ -209,13 +219,164 @@ function updateTeamControls() {
 function setBuyMenuOpen(nextOpen) {
     const allowed = nextOpen && isLocalInMatch() && canOpenBuyMenu(player, net.match);
     buyMenuOpen = !!allowed;
+    syncPointerLockAvailability();
 
     if (buyMenuOpen && document.pointerLockElement === canvas && document.exitPointerLock) {
         document.exitPointerLock();
     }
 }
 
+function isEditableTarget(target) {
+    return target instanceof HTMLElement
+        && (target.tagName === 'INPUT'
+            || target.tagName === 'TEXTAREA'
+            || target.isContentEditable);
+}
+
+function canChat() {
+    return net.connected && net.myId != null;
+}
+
+function syncPointerLockAvailability() {
+    setPointerLockEnabled(!buyMenuOpen && !chatOpen);
+}
+
+function requestPointerLockIfNeeded() {
+    if (!restorePointerLockAfterChat || buyMenuOpen || !net.gameStarted || !player.alive || !canvas.requestPointerLock) {
+        restorePointerLockAfterChat = false;
+        return;
+    }
+
+    restorePointerLockAfterChat = false;
+    try {
+        canvas.requestPointerLock();
+    } catch {
+        // Ignore browsers that reject keyboard-triggered pointer lock restores.
+    }
+}
+
+function getVisibleChatMessages(now = Date.now()) {
+    if (chatOpen) {
+        return chatMessages;
+    }
+    return chatMessages.filter((message) => (message.expiresAt || 0) > now);
+}
+
+function refreshChatVisibility(now = Date.now()) {
+    if (chatOpen || !canChat()) return;
+
+    const visibleCount = getVisibleChatMessages(now).length;
+    if (visibleCount !== lastClosedVisibleChatCount) {
+        renderChat(now);
+    }
+}
+
+function renderChat(now = Date.now()) {
+    if (!chatPanel || !chatFeed) return;
+
+    if (!canChat()) {
+        chatPanel.style.display = 'none';
+        chatPanel.classList.remove('is-open');
+        lastClosedVisibleChatCount = 0;
+        return;
+    }
+
+    const visibleMessages = getVisibleChatMessages(now);
+    lastClosedVisibleChatCount = chatOpen ? 0 : visibleMessages.length;
+    chatPanel.style.display = chatOpen || visibleMessages.length > 0 ? 'flex' : 'none';
+    chatPanel.classList.toggle('is-open', chatOpen);
+    chatFeed.replaceChildren();
+
+    if (visibleMessages.length === 0) {
+        if (!chatOpen) {
+            return;
+        }
+        const empty = document.createElement('div');
+        empty.className = 'chat-entry is-empty';
+        empty.textContent = 'Type a message, press Enter to send, Esc to close.';
+        chatFeed.appendChild(empty);
+        chatFeed.scrollTop = chatFeed.scrollHeight;
+        return;
+    }
+
+    for (const message of visibleMessages) {
+        const row = document.createElement('div');
+        row.className = 'chat-entry';
+        if (message.id === net.myId) {
+            row.classList.add('is-self');
+        }
+
+        const author = document.createElement('span');
+        author.className = 'chat-author';
+        author.textContent = `${message.id === net.myId ? 'YOU' : (message.name || 'PLAYER')}:`;
+
+        const body = document.createElement('span');
+        body.textContent = message.text || '';
+
+        row.append(author, body);
+        chatFeed.appendChild(row);
+    }
+
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+}
+
+function setChatOpen(nextOpen) {
+    const allowed = !!nextOpen && canChat();
+    if (allowed === chatOpen) {
+        if (allowed && chatInput) {
+            chatInput.focus();
+            chatInput.select();
+        }
+        return;
+    }
+
+    if (allowed) {
+        restorePointerLockAfterChat = isLocked();
+        if (restorePointerLockAfterChat && document.exitPointerLock) {
+            document.exitPointerLock();
+        }
+    } else if (chatInput) {
+        chatInput.blur();
+        chatInput.value = '';
+    }
+
+    chatOpen = allowed;
+    syncPointerLockAvailability();
+    renderChat();
+
+    if (chatOpen && chatInput) {
+        chatInput.focus();
+        chatInput.select();
+        return;
+    }
+
+    requestPointerLockIfNeeded();
+}
+
+function clearChat() {
+    chatMessages.length = 0;
+    renderChat();
+}
+
+function pushChatMessage(message) {
+    const text = typeof message?.text === 'string' ? message.text.trim() : '';
+    if (!text) return;
+
+    chatMessages.push({
+        id: typeof message.id === 'number' ? message.id : null,
+        name: typeof message.name === 'string' ? message.name : '',
+        text,
+        expiresAt: Date.now() + CHAT_MESSAGE_LIFETIME_MS,
+    });
+    if (chatMessages.length > CHAT_HISTORY_LIMIT) {
+        chatMessages.splice(0, chatMessages.length - CHAT_HISTORY_LIMIT);
+    }
+    renderChat();
+}
+
 if (serverInput) serverInput.value = getDefaultServerAddress(window.location);
+renderChat();
+syncPointerLockAvailability();
 
 function populatePlayerList() {
     if (!playerList) return;
@@ -304,6 +465,8 @@ function resetAfterDisconnect(message) {
     syncLocalWeaponState();
     sendTimer = 0;
     setBuyMenuOpen(false);
+    setChatOpen(false);
+    clearChat();
     camera.fov = DEFAULT_FOV;
     localImpactEffects.length = 0;
     lastAnnouncerMatch = null;
@@ -341,6 +504,31 @@ if (hud.shopPanel) {
     });
 }
 
+if (chatForm) {
+    chatForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const text = (chatInput ? chatInput.value : '').trim();
+        if (!text) {
+            setChatOpen(false);
+            return;
+        }
+
+        sendChat(net, text);
+        if (chatInput) {
+            chatInput.value = '';
+            chatInput.focus();
+        }
+    });
+}
+
+if (chatInput) {
+    chatInput.addEventListener('keydown', (event) => {
+        if (event.code !== 'Escape') return;
+        event.preventDefault();
+        setChatOpen(false);
+    });
+}
+
 if (connectBtn) {
     connectBtn.addEventListener('click', async () => {
         const name = (nameInput ? nameInput.value.trim() : '') || 'Player';
@@ -357,6 +545,7 @@ if (connectBtn) {
             applyAuthoritativeState(player, msg);
             syncLocalWeaponState();
             camera.position = player.pos;
+            clearChat();
             showLobbyPanel();
             populatePlayerList();
             setLobbyStatus(net.gameStarted
@@ -499,6 +688,25 @@ if (rejoinNoBtn) {
 }
 
 window.addEventListener('keydown', (e) => {
+    if (isEditableTarget(e.target)) {
+        return;
+    }
+
+    if (e.code === 'Escape' && chatOpen) {
+        e.preventDefault();
+        setChatOpen(false);
+        return;
+    }
+
+    if (e.code === 'Enter' && canChat()) {
+        e.preventDefault();
+        setChatOpen(true);
+        return;
+    }
+
+    if (chatOpen) {
+        return;
+    }
     const localInMatch = isLocalInMatch();
     if (e.code === 'Escape' && buyMenuOpen) {
         e.preventDefault();
@@ -571,6 +779,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
+    if (isEditableTarget(e.target) || chatOpen) return;
     if (e.code === 'Tab' && isLocalInMatch()) e.preventDefault();
 });
 
@@ -673,11 +882,16 @@ net.onMatch = (match) => {
     syncAnnouncer(match);
 };
 
+net.onChat = (msg) => {
+    pushChatMessage(msg);
+};
+
 function frame(time) {
     requestAnimationFrame(frame);
 
     const dt = Math.min((time - lastTime) / 1000, 0.05);
     lastTime = time;
+    refreshChatVisibility();
 
     if (net.match.deathmatchVoteActive && net.match.deathmatchVoteEndsAtClientMs) {
         net.match.deathmatchVoteTimeLeftMs = Math.max(0, net.match.deathmatchVoteEndsAtClientMs - Date.now());
@@ -695,19 +909,23 @@ function frame(time) {
         }
     }
 
-    const mouse = consumeMouse();
+    const gameplayInputEnabled = !chatOpen;
+    const rawMouse = consumeMouse();
+    const mouse = gameplayInputEnabled ? rawMouse : { dx: 0, dy: 0 };
     updateCamera(camera, mouse.dx, mouse.dy, canvas.width / canvas.height);
 
     const keys = {
-        forward: isKeyDown('KeyW'),
-        backward: isKeyDown('KeyS'),
-        left: isKeyDown('KeyA'),
-        right: isKeyDown('KeyD'),
+        forward: gameplayInputEnabled && isKeyDown('KeyW'),
+        backward: gameplayInputEnabled && isKeyDown('KeyS'),
+        left: gameplayInputEnabled && isKeyDown('KeyA'),
+        right: gameplayInputEnabled && isKeyDown('KeyD'),
     };
-    const crouchPressed = isKeyDown('ControlLeft')
+    const crouchPressed = gameplayInputEnabled && (
+        isKeyDown('ControlLeft')
         || isKeyDown('ControlRight')
         || isKeyDown('MetaLeft')
-        || isKeyDown('MetaRight');
+        || isKeyDown('MetaRight')
+    );
 
     for (const id in net.players) {
         const remote = net.players[id];
@@ -717,9 +935,9 @@ function frame(time) {
     }
 
     if (localInMatch) {
-        const movementAllowed = canMove(player, net.match);
+        const movementAllowed = gameplayInputEnabled && canMove(player, net.match);
         player.crouching = player.alive && crouchPressed;
-        setAiming(player, player.alive && !net.match.intermission && isRightMouseDown() && !buyMenuOpen);
+        setAiming(player, gameplayInputEnabled && player.alive && !net.match.intermission && isRightMouseDown() && !buyMenuOpen);
         if ((!canOpenBuyMenu(player, net.match) || !player.alive) && buyMenuOpen) {
             setBuyMenuOpen(false);
         }
@@ -738,13 +956,14 @@ function frame(time) {
         updateCamera(camera, 0, 0, canvas.width / canvas.height);
 
         const selectedWeapon = player.activeWeapon;
-        const canAttack = player.alive
+        const canAttack = gameplayInputEnabled
+            && player.alive
             && !net.match.buyPhase
             && !net.match.intermission
             && !hasSpawnProtection(player, net.match)
             && canAttackWithWeapon(player, selectedWeapon);
-        const heavyKnifeAttack = selectedWeapon === WEAPON_KNIFE && isRightMouseDown();
-        const primaryAttack = isMouseDown();
+        const heavyKnifeAttack = selectedWeapon === WEAPON_KNIFE && gameplayInputEnabled && isRightMouseDown();
+        const primaryAttack = gameplayInputEnabled && isMouseDown();
         const attackPressed = heavyKnifeAttack || primaryAttack;
 
         if (attackPressed && canAttack && canFire(weapon)) {
@@ -808,13 +1027,14 @@ function frame(time) {
     }
 
     updateHUD(hud, player, {
-        visible: isKeyDown('Tab') && localInMatch,
+        visible: gameplayInputEnabled && isKeyDown('Tab') && localInMatch,
         players: net.players,
         myId: net.myId,
     }, {
         latencyMs: net.latencyMs,
     }, net.match, {
         buyMenuOpen,
+        chatOpen,
         crosshairGap: getCrosshairGap(
             weapon,
             player.aiming,

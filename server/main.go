@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,7 @@ const (
 	botStrafeSpeed              = 3.6
 	botStrafeFlipMS             = 700
 	botBoundMargin              = 1.0
+	maxChatMessageRunes         = 120
 )
 
 type GameState int
@@ -610,6 +612,13 @@ type economyUpdate struct {
 	ReloadTimeLeftMS          int64    `json:"reloadTimeLeftMs"`
 }
 
+type chatMessage struct {
+	T    string `json:"t"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
 type weaponConfig struct {
 	ID             WeaponID
 	Label          string
@@ -916,6 +925,47 @@ func (g *Game) sendRawToPlayer(id int, msg []byte) {
 	case sendCh <- msg:
 	default:
 	}
+}
+
+func sanitizeChatText(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) > maxChatMessageRunes {
+		return string(runes[:maxChatMessageRunes])
+	}
+	return text
+}
+
+func (g *Game) broadcastChat(id int, text string) {
+	text = sanitizeChatText(text)
+	if text == "" {
+		return
+	}
+
+	g.mu.RLock()
+	idx, ok := g.players.indexOf(id)
+	if !ok {
+		g.mu.RUnlock()
+		return
+	}
+	name := g.players.names[idx]
+	g.mu.RUnlock()
+
+	msg, err := json.Marshal(chatMessage{
+		T:    "chat",
+		ID:   id,
+		Name: name,
+		Text: text,
+	})
+	if err != nil {
+		return
+	}
+
+	g.broadcast(msg, 0)
 }
 
 func newTickMessages() *tickMessages {
@@ -2880,6 +2930,11 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				"clientTime": clientTime,
 				"serverTime": time.Now().UnixMilli(),
 			})
+
+		case "chat":
+			var text string
+			json.Unmarshal(msg["text"], &text)
+			game.broadcastChat(playerID, text)
 
 		case "input":
 			if !game.isPlaying() {

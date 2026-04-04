@@ -29,6 +29,7 @@ export function createNet() {
         onMode: null,
         onRejoin: null,
         onStartDenied: null,
+        onChat: null,
     };
 }
 
@@ -246,6 +247,10 @@ function handleMsg(net, msg) {
         case 'leave':
             delete net.players[normalizeId(msg.id)];
             break;
+
+        case 'chat':
+            if (net.onChat) net.onChat(msg);
+            break;
     }
 }
 
@@ -349,6 +354,11 @@ export function sendReload(net) {
 export function sendSwitchWeapon(net, weapon) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({ t: 'switch', weapon }));
+}
+
+export function sendChat(net, text) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'chat', text }));
 }
 
 function ensurePlayer(net, id) {
