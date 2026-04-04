@@ -67,6 +67,18 @@ Run it on port `8080`:
 docker run --rm -p 8080:8080 office-shooter
 ```
 
+Recommended resource limits for smooth local play:
+
+```bash
+docker run --rm -p 8080:8080 --cpus="2" --memory="1g" office-shooter
+```
+
+If you want extra headroom while hosting on a busy machine, use:
+
+```bash
+docker run --rm -p 8080:8080 --cpus="2" --memory="2g" office-shooter
+```
+
 Then open:
 
 ```text
