@@ -6,10 +6,12 @@ import {
     applyAuthoritativeState,
     canMove,
     canAttackWithWeapon,
+    canOpenBuyMenu,
     canReloadWeapon,
     createPlayer,
     cycleActiveUtility,
     hasWeapon,
+    hasSpawnProtection,
     playerJump,
     resetCombatState,
     resetMatchState,
@@ -205,7 +207,7 @@ function updateTeamControls() {
 }
 
 function setBuyMenuOpen(nextOpen) {
-    const allowed = nextOpen && isLocalInMatch() && net.match.buyPhase && player.alive;
+    const allowed = nextOpen && isLocalInMatch() && canOpenBuyMenu(player, net.match);
     buyMenuOpen = !!allowed;
 
     if (buyMenuOpen && document.pointerLockElement === canvas && document.exitPointerLock) {
@@ -505,7 +507,7 @@ window.addEventListener('keydown', (e) => {
     }
 
     if (e.code === 'KeyB') {
-        if (localInMatch && net.match.buyPhase && player.alive) {
+        if (localInMatch && canOpenBuyMenu(player, net.match)) {
             e.preventDefault();
             setBuyMenuOpen(true);
         }
@@ -718,7 +720,7 @@ function frame(time) {
         const movementAllowed = canMove(player, net.match);
         player.crouching = player.alive && crouchPressed;
         setAiming(player, player.alive && !net.match.intermission && isRightMouseDown() && !buyMenuOpen);
-        if ((!net.match.buyPhase || !player.alive) && buyMenuOpen) {
+        if ((!canOpenBuyMenu(player, net.match) || !player.alive) && buyMenuOpen) {
             setBuyMenuOpen(false);
         }
 
@@ -739,6 +741,7 @@ function frame(time) {
         const canAttack = player.alive
             && !net.match.buyPhase
             && !net.match.intermission
+            && !hasSpawnProtection(player, net.match)
             && canAttackWithWeapon(player, selectedWeapon);
         const heavyKnifeAttack = selectedWeapon === WEAPON_KNIFE && isRightMouseDown();
         const primaryAttack = isMouseDown();

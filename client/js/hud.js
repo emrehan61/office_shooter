@@ -15,7 +15,7 @@ import {
     isUtilityWeapon,
 } from './economy.js';
 import { MODE_DEATHMATCH } from './modes.js';
-import { getUtilityCount, getWeaponAmmoState } from './player.js';
+import { canOpenBuyMenu, getUtilityCount, getWeaponAmmoState } from './player.js';
 import { TEAM_BLUE, TEAM_GREEN, getTeamLabel, normalizeTeam } from './teams.js';
 
 const LOADOUT_SLOT_DEFS = [
@@ -91,7 +91,22 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
         if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
             hud.buyStatusEl.textContent = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
         } else if (isDeathmatch) {
-            hud.buyStatusEl.textContent = 'FREE FOR ALL';
+            const protectionTimeLeftMs = Math.max(0, player.spawnProtectionTimeLeftMs || 0);
+            const loadoutTimeLeftMs = Math.max(0, player.loadoutTimeLeftMs || 0);
+            if (protectionTimeLeftMs > 0 || loadoutTimeLeftMs > 0) {
+                const parts = [];
+                if (protectionTimeLeftMs > 0) {
+                    parts.push(`SAFE ${formatClock(protectionTimeLeftMs)}`);
+                }
+                if (loadoutTimeLeftMs > 0) {
+                    parts.push(ui.buyMenuOpen
+                        ? `LOADOUT ${formatClock(loadoutTimeLeftMs)} • ESC CLOSE`
+                        : `LOADOUT ${formatClock(loadoutTimeLeftMs)} • B OPEN`);
+                }
+                hud.buyStatusEl.textContent = parts.join(' • ');
+            } else {
+                hud.buyStatusEl.textContent = 'FREE FOR ALL';
+            }
         } else if (match.intermission) {
             hud.buyStatusEl.textContent = `ROUND OVER • ${formatClock(match.intermissionTimeLeftMs || 0)}`;
         } else if (match.buyPhase) {
@@ -107,7 +122,7 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     updateLoadoutBar(hud, player);
     updateCountdownSplash(hud, match.buyPhase, match.buyTimeLeftMs || 0);
     updateRoundResultBanner(hud, match);
-    updateShop(hud, player, !!match.buyPhase, !!ui.buyMenuOpen);
+    updateShop(hud, player, match, !!ui.buyMenuOpen);
     updateFlashbangOverlay(hud, player.flashTimeLeftMs || 0);
     updateCrosshair(hud, ui.crosshairGap, !!player.aiming);
 
@@ -271,7 +286,7 @@ function renderBuyMenu(hud) {
 
     const subtitle = document.createElement('div');
     subtitle.className = 'shop-subtitle';
-    subtitle.textContent = 'B opens the menu during buy time. Esc closes it.';
+    subtitle.textContent = 'B opens the menu during buy time or your deathmatch loadout window. Esc closes it.';
     hud.shopPanel.appendChild(subtitle);
 
     for (const section of BUY_MENU_SECTIONS) {
@@ -514,8 +529,11 @@ function updateFlashbangOverlay(hud, flashTimeLeftMs) {
     hud.flashbangScreen.style.opacity = String(0.18 + phase * 0.82);
 }
 
-function updateShop(hud, player, buyPhase, buyMenuOpen) {
+function updateShop(hud, player, match, buyMenuOpen) {
     if (!hud.shopPanel) return;
+
+    const freeLoadout = match.mode === MODE_DEATHMATCH && (player.loadoutTimeLeftMs || 0) > 0;
+    const buyPhase = canOpenBuyMenu(player, match);
 
     hud.shopPanel.style.display = buyPhase && buyMenuOpen ? 'grid' : 'none';
 
@@ -524,11 +542,16 @@ function updateShop(hud, player, buyPhase, buyMenuOpen) {
         if (!item) continue;
 
         const state = getShopItemState(player, item.id);
-        itemEl.dataset.status = state.label;
-        itemEl.classList.toggle('is-affordable', state.canBuy && player.credits >= item.cost);
-        itemEl.classList.toggle('is-expensive', player.credits < item.cost);
+        itemEl.dataset.status = freeLoadout && state.canBuy ? `${state.label} • FREE` : state.label;
+        itemEl.classList.toggle('is-affordable', state.canBuy && (freeLoadout || player.credits >= item.cost));
+        itemEl.classList.toggle('is-expensive', !freeLoadout && player.credits < item.cost);
         itemEl.classList.toggle('is-disabled', !state.canBuy);
         itemEl.disabled = !buyPhase || !buyMenuOpen || !state.canBuy;
+
+        const costEl = itemEl.querySelector('.shop-cost');
+        if (costEl) {
+            costEl.textContent = freeLoadout ? 'FREE' : `$${item.cost}`;
+        }
     }
 }
 

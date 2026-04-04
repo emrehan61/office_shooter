@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     applyAuthoritativeState,
     canAttackWithWeapon,
+    canOpenBuyMenu,
     canMove,
     canReloadWeapon,
     createPlayer,
@@ -120,6 +121,36 @@ test('authoritative state sync updates loadout and death state', () => {
     assert.equal(player.activeWeapon, WEAPON_PISTOL);
     assert.equal(player.alive, false);
     assert.equal(player.respawnTimer, 0);
+});
+
+test('authoritative state sync tracks deathmatch spawn and loadout timers', () => {
+    const player = createPlayer();
+
+    applyAuthoritativeState(player, {
+        spawnProtectionTimeLeftMs: 5000,
+        loadoutTimeLeftMs: 7000,
+    });
+
+    assert.equal(player.spawnProtectionTimeLeftMs, 5000);
+    assert.equal(player.loadoutTimeLeftMs, 7000);
+});
+
+test('deathmatch loadout window allows the buy menu outside team buy phase', () => {
+    const player = createPlayer();
+
+    assert.equal(canOpenBuyMenu(player, { mode: 'deathmatch', buyPhase: false }), false);
+
+    applyAuthoritativeState(player, {
+        loadoutTimeLeftMs: 7000,
+    });
+
+    assert.equal(canOpenBuyMenu(player, { mode: 'deathmatch', buyPhase: false }), true);
+
+    applyAuthoritativeState(player, {
+        alive: false,
+    });
+
+    assert.equal(canOpenBuyMenu(player, { mode: 'deathmatch', buyPhase: false }), false);
 });
 
 test('movement is blocked during buy phase', () => {

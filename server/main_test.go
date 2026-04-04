@@ -420,6 +420,75 @@ func TestResolveDeathmatchVoteRestartsWithAcceptedPlayersOnly(t *testing.T) {
 	}
 }
 
+func TestRespawnPlayerLockedGivesDeathmatchLoadoutAndTimers(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+
+	g.respawnPlayerLocked(idx, 1000)
+
+	if !g.players.hasPistol[idx] || !g.players.hasMG[idx] {
+		t.Fatalf("expected deathmatch spawn to own both guns")
+	}
+	if g.players.pistolClip[idx] != pistolMagSize || g.players.pistolReserve[idx] != pistolAmmoMax {
+		t.Fatalf("expected pistol ammo %d/%d, got %d/%d", pistolMagSize, pistolAmmoMax, g.players.pistolClip[idx], g.players.pistolReserve[idx])
+	}
+	if g.players.mgClip[idx] != machineGunMagSize || g.players.mgReserve[idx] != machineGunAmmoMax {
+		t.Fatalf("expected machine gun ammo %d/%d, got %d/%d", machineGunMagSize, machineGunAmmoMax, g.players.mgClip[idx], g.players.mgReserve[idx])
+	}
+	if g.players.activeWeapon[idx] != WeaponMachineGun {
+		t.Fatalf("expected deathmatch spawn to select machine gun, got %q", g.players.activeWeapon[idx])
+	}
+	if g.spawnProtectionTimeLeftLocked(idx, 1000) != deathmatchSpawnProtectionMS {
+		t.Fatalf("expected spawn protection %d, got %d", deathmatchSpawnProtectionMS, g.spawnProtectionTimeLeftLocked(idx, 1000))
+	}
+	if g.loadoutTimeLeftLocked(idx, 1000) != deathmatchLoadoutWindowMS {
+		t.Fatalf("expected loadout window %d, got %d", deathmatchLoadoutWindowMS, g.loadoutTimeLeftLocked(idx, 1000))
+	}
+}
+
+func TestApplyPurchaseLockedAllowsFreeDeathmatchLoadout(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.state = StatePlaying
+	g.players.credits[idx] = 0
+	g.players.inMatch[idx] = true
+	g.players.alive[idx] = true
+	g.players.loadoutEndsAt[idx] = 5000
+
+	update := g.applyPurchaseLocked(idx, "armor", 1000)
+
+	if !update.OK {
+		t.Fatalf("expected free deathmatch armor purchase, got %#v", update)
+	}
+	if g.players.credits[idx] != 0 {
+		t.Fatalf("expected credits to stay 0 during free loadout, got %d", g.players.credits[idx])
+	}
+	if g.players.armor[idx] != armorPlateAmount {
+		t.Fatalf("expected armor %d, got %d", armorPlateAmount, g.players.armor[idx])
+	}
+}
+
+func TestAwardDeathmatchKillAmmoLockedAddsReserveAmmo(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	player := addNamedPlayer(g, "Host")
+	idx, _ := g.players.indexOf(player.id)
+	g.players.hasPistol[idx] = true
+	g.players.pistolClip[idx] = 1
+	g.players.pistolReserve[idx] = 5
+
+	if !g.awardDeathmatchKillAmmoLocked(idx, WeaponPistol) {
+		t.Fatal("expected deathmatch pistol kill reward ammo to be granted")
+	}
+	if g.players.pistolReserve[idx] != 15 {
+		t.Fatalf("expected reserve ammo 15, got %d", g.players.pistolReserve[idx])
+	}
+}
+
 func TestSyncFallbackBotAddsBotForEmptyTeam(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")

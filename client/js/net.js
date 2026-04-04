@@ -371,6 +371,8 @@ function ensurePlayer(net, id) {
             smokes: 0,
             flashbangs: 0,
             flashTimeLeftMs: 0,
+            spawnProtectionTimeLeftMs: 0,
+            loadoutTimeLeftMs: 0,
             team: '',
             inMatch: true,
             isBot: false,
@@ -419,6 +421,8 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
     target.smokes = state.smokes ?? target.smokes;
     target.flashbangs = state.flashbangs ?? target.flashbangs;
     target.flashTimeLeftMs = state.flashTimeLeftMs ?? target.flashTimeLeftMs;
+    target.spawnProtectionTimeLeftMs = state.spawnProtectionTimeLeftMs ?? target.spawnProtectionTimeLeftMs;
+    target.loadoutTimeLeftMs = state.loadoutTimeLeftMs ?? target.loadoutTimeLeftMs;
     target.team = state.team ?? target.team;
     if (typeof state.inMatch === 'boolean') target.inMatch = state.inMatch;
     if (typeof state.isBot === 'boolean') target.isBot = state.isBot;
@@ -438,8 +442,16 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
 
     if (typeof state.alive === 'boolean') {
         target.alive = state.alive;
+        if (!state.alive) {
+            target.spawnProtectionTimeLeftMs = 0;
+            target.loadoutTimeLeftMs = 0;
+        }
     } else if (typeof state.hp === 'number') {
         target.alive = state.hp > 0;
+        if (state.hp <= 0) {
+            target.spawnProtectionTimeLeftMs = 0;
+            target.loadoutTimeLeftMs = 0;
+        }
     }
 
     if (!includeTransform) return;
