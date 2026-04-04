@@ -6,10 +6,12 @@ import {
     applyAuthoritativeState,
     canMove,
     canAttackWithWeapon,
+    canOpenBuyMenu,
     canReloadWeapon,
     createPlayer,
     cycleActiveUtility,
     hasWeapon,
+    hasSpawnProtection,
     playerJump,
     resetCombatState,
     resetMatchState,
@@ -21,13 +23,14 @@ import {
 } from './player.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendReload, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { buildAvatarVerts } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js';
 import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
+import { MODE_DEATHMATCH, MODE_TEAM, getDeathmatchStartState, getModeLabel, normalizeMode } from './modes.js';
 import {
     createAnnouncer,
     createKillAnnouncerState,
@@ -40,6 +43,7 @@ import {
 
 const SEND_RATE = 1 / 60;
 const REMOTE_RENDER_DELAY_MS = 100;
+const DEATHMATCH_RESPAWN_DELAY_S = 3;
 const CHAT_HISTORY_LIMIT = 8;
 const CHAT_MESSAGE_LIFETIME_MS = 8000;
 
@@ -94,6 +98,7 @@ const lobbyForm = document.querySelector('.lobby-form');
 const lobbyStatus = document.getElementById('lobby-status');
 const playerList = document.getElementById('player-list');
 const startBtn = document.getElementById('start-btn');
+const teamSelect = document.getElementById('team-select');
 const teamBlueBtn = document.getElementById('team-blue-btn');
 const teamGreenBtn = document.getElementById('team-green-btn');
 const teamHint = document.getElementById('team-hint');
@@ -101,26 +106,85 @@ const chatPanel = document.getElementById('chat-panel');
 const chatFeed = document.getElementById('chat-feed');
 const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
+const modeTeamBtn = document.getElementById('mode-team-btn');
+const modeDeathmatchBtn = document.getElementById('mode-deathmatch-btn');
+const rejoinPrompt = document.getElementById('rejoin-prompt');
+const rejoinCopy = document.getElementById('rejoin-copy');
+const rejoinYesBtn = document.getElementById('rejoin-yes-btn');
+const rejoinNoBtn = document.getElementById('rejoin-no-btn');
+let rejoinVoteChoice = null;
 
 function getSelfLobbyPlayer() {
     if (net.myId == null) return null;
     return net.players[String(net.myId)] || null;
 }
 
+function isDeathmatchMode() {
+    return normalizeMode(net.match.mode) === MODE_DEATHMATCH;
+}
+
+function isLocalInMatch() {
+    return net.gameStarted && !!player.inMatch;
+}
+
+function getLobbyStartState() {
+    return isDeathmatchMode()
+        ? getDeathmatchStartState(net.players)
+        : getTeamStartState(net.players);
+}
+
+function updateRejoinPrompt() {
+    const active = !!net.match.deathmatchVoteActive && !!player.inMatch && !player.isBot;
+    if (!active) {
+        rejoinVoteChoice = null;
+        if (rejoinPrompt) rejoinPrompt.style.display = 'none';
+        return;
+    }
+
+    if (rejoinPrompt) rejoinPrompt.style.display = 'block';
+    if (rejoinCopy) {
+        rejoinCopy.textContent = rejoinVoteChoice == null
+            ? 'Play another 10-minute deathmatch?'
+            : (rejoinVoteChoice ? 'You will join the next match automatically.' : 'You will return to the lobby when the vote ends.');
+    }
+    if (rejoinYesBtn) {
+        rejoinYesBtn.disabled = rejoinVoteChoice === true;
+        rejoinYesBtn.classList.toggle('is-active', rejoinVoteChoice === true);
+    }
+    if (rejoinNoBtn) {
+        rejoinNoBtn.disabled = rejoinVoteChoice === false;
+        rejoinNoBtn.classList.toggle('is-active', rejoinVoteChoice === false);
+    }
+}
+
 function updateTeamControls() {
+    const mode = normalizeMode(net.match.mode);
     const counts = getTeamCounts(net.players);
-    const startState = getTeamStartState(net.players);
+    const startState = getLobbyStartState();
     const myTeam = normalizeTeam(getSelfLobbyPlayer()?.team);
     const buttonDefs = [
         { el: teamBlueBtn, team: TEAM_BLUE, count: counts.blue },
         { el: teamGreenBtn, team: TEAM_GREEN, count: counts.green },
     ];
 
+    if (modeTeamBtn) {
+        modeTeamBtn.classList.toggle('is-active', mode === MODE_TEAM);
+        modeTeamBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive;
+    }
+    if (modeDeathmatchBtn) {
+        modeDeathmatchBtn.classList.toggle('is-active', mode === MODE_DEATHMATCH);
+        modeDeathmatchBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive;
+    }
+    if (teamSelect) {
+        teamSelect.style.display = mode === MODE_TEAM ? 'block' : 'none';
+    }
+
     for (const entry of buttonDefs) {
         if (!entry.el) continue;
         entry.el.textContent = `${getTeamLabel(entry.team).toUpperCase()} TEAM (${entry.count})`;
         entry.el.classList.toggle('is-active', myTeam === entry.team);
-        entry.el.disabled = !net.connected
+        entry.el.disabled = mode !== MODE_TEAM
+            || !net.connected
             || net.gameStarted
             || (!canSelectTeam(net.players, net.myId, entry.team) && myTeam !== entry.team);
     }
@@ -128,6 +192,12 @@ function updateTeamControls() {
     if (teamHint) {
         if (!net.connected) {
             teamHint.textContent = 'Connect first.';
+        } else if (net.match.deathmatchVoteActive) {
+            teamHint.textContent = 'Replay vote in progress.';
+        } else if (mode === MODE_DEATHMATCH) {
+            teamHint.textContent = startState.ok
+                ? 'Free-for-all. Solo players get one bot. Match lasts 10:00.'
+                : `${startState.reason}.`;
         } else if (net.gameStarted) {
             teamHint.textContent = 'Match already in progress.';
         } else if (startState.ok) {
@@ -138,13 +208,16 @@ function updateTeamControls() {
     }
 
     if (startBtn) {
-        startBtn.disabled = !net.connected || net.gameStarted || !startState.ok;
+        startBtn.textContent = mode === MODE_DEATHMATCH ? 'Start Deathmatch' : 'Start Game';
+        startBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive || !startState.ok;
         startBtn.title = startState.ok ? '' : startState.reason;
     }
+
+    updateRejoinPrompt();
 }
 
 function setBuyMenuOpen(nextOpen) {
-    const allowed = nextOpen && net.gameStarted && net.match.buyPhase && player.alive;
+    const allowed = nextOpen && isLocalInMatch() && canOpenBuyMenu(player, net.match);
     buyMenuOpen = !!allowed;
     syncPointerLockAvailability();
 
@@ -310,6 +383,15 @@ function populatePlayerList() {
 
     playerList.innerHTML = '';
     const ids = Object.keys(net.players).sort((a, b) => {
+        if (isDeathmatchMode()) {
+            const left = net.players[a] || {};
+            const right = net.players[b] || {};
+            if (!!left.inMatch !== !!right.inMatch) return Number(right.inMatch) - Number(left.inMatch);
+            if (!!left.isBot !== !!right.isBot) return Number(left.isBot) - Number(right.isBot);
+            if ((right.kills || 0) !== (left.kills || 0)) return (right.kills || 0) - (left.kills || 0);
+            if ((left.deaths || 0) !== (right.deaths || 0)) return (left.deaths || 0) - (right.deaths || 0);
+            return Number(a) - Number(b);
+        }
         const orderForTeam = (team) => {
             if (team === TEAM_BLUE) return 0;
             if (team === TEAM_GREEN) return 1;
@@ -333,13 +415,20 @@ function populatePlayerList() {
         const team = normalizeTeam(entry.team);
         const row = document.createElement('div');
         row.className = `player-row team-${team || 'none'}`;
+        row.classList.toggle('is-spectating', net.gameStarted && !entry.inMatch);
         const isSelf = Number(id) === net.myId;
         const badge = document.createElement('span');
         badge.className = `player-team-badge team-${team || 'none'}`;
-        badge.textContent = getTeamLabel(team).toUpperCase();
+        if (isDeathmatchMode()) {
+            badge.classList.toggle('is-bot', !!entry.isBot);
+            badge.textContent = entry.isBot ? 'BOT' : (entry.inMatch ? 'FFA' : 'LOBBY');
+        } else {
+            badge.textContent = getTeamLabel(team).toUpperCase();
+        }
 
         const label = document.createElement('span');
-        label.textContent = isSelf ? `${entry.name || 'You'} (You)` : (entry.name || '???');
+        const baseLabel = isSelf ? `${entry.name || 'You'} (You)` : (entry.name || '???');
+        label.textContent = net.gameStarted && !entry.inMatch ? `${baseLabel} [LOBBY]` : baseLabel;
 
         row.append(badge, label);
         playerList.appendChild(row);
@@ -370,6 +459,9 @@ function syncLocalWeaponState() {
 function resetAfterDisconnect(message) {
     resetMatchState(player);
     player.team = TEAM_NONE;
+    player.inMatch = true;
+    player.isBot = false;
+    rejoinVoteChoice = null;
     syncLocalWeaponState();
     sendTimer = 0;
     setBuyMenuOpen(false);
@@ -387,6 +479,10 @@ function resetAfterDisconnect(message) {
 }
 
 function syncAnnouncer(match) {
+    if (!player.inMatch) {
+        lastAnnouncerMatch = snapshotMatchForAnnouncer(match);
+        return;
+    }
     const nextState = snapshotMatchForAnnouncer(match);
     const cues = getAnnouncerMatchCues(lastAnnouncerMatch, nextState, {
         myTeam: normalizeTeam(player.team),
@@ -452,7 +548,9 @@ if (connectBtn) {
             clearChat();
             showLobbyPanel();
             populatePlayerList();
-            setLobbyStatus(net.gameStarted ? 'Match in progress' : 'Connected to lobby');
+            setLobbyStatus(net.gameStarted
+                ? (player.inMatch ? 'Match in progress' : `${getModeLabel(net.match.mode)} in progress`)
+                : `Connected to ${getModeLabel(net.match.mode)} lobby`);
             lastAnnouncerMatch = snapshotMatchForAnnouncer(net.match);
             killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
         } catch (err) {
@@ -465,14 +563,30 @@ if (connectBtn) {
 
 net.onLobby = (msg) => {
     populatePlayerList();
-    if (msg.state === 'playing') {
-        setLobbyStatus(`Round ${net.match.currentRound}/${net.match.totalRounds}`);
+    if (net.match.deathmatchVoteActive && player.inMatch) {
+        setBuyMenuOpen(false);
+        if (hud.overlay) hud.overlay.style.display = 'flex';
+        showLobbyPanel();
+        setLobbyStatus('Time expired. Vote to play again.');
+    } else if (msg.state === 'playing') {
+        if (player.inMatch) {
+            setLobbyStatus(isDeathmatchMode()
+                ? 'Deathmatch live'
+                : `Round ${net.match.currentRound}/${net.match.totalRounds}`);
+        } else {
+            if (hud.overlay) hud.overlay.style.display = 'flex';
+            showLobbyPanel();
+            setLobbyStatus(`${getModeLabel(net.match.mode)} in progress. Waiting for the next match.`);
+        }
     } else {
         setBuyMenuOpen(false);
         if (hud.overlay) hud.overlay.style.display = 'flex';
         showLobbyPanel();
-        setLobbyStatus(net.match.currentRound === 0 ? 'Connected to lobby' : 'Match finished');
+        setLobbyStatus(net.match.currentRound === 0
+            ? `Connected to ${getModeLabel(net.match.mode)} lobby`
+            : 'Match finished');
     }
+    updateTeamControls();
 };
 
 net.onTeam = (msg) => {
@@ -484,6 +598,27 @@ net.onTeam = (msg) => {
     setLobbyStatus(`${getTeamLabel(msg.team).toUpperCase()} team selected`);
 };
 
+net.onMode = (msg) => {
+    if (msg.ok === false) {
+        setLobbyStatus(msg.reason || 'Mode selection failed');
+        updateTeamControls();
+        return;
+    }
+    setLobbyStatus(`${getModeLabel(msg.mode)} mode selected`);
+    populatePlayerList();
+};
+
+net.onRejoin = (msg) => {
+    if (msg.ok === false) {
+        setLobbyStatus(msg.reason || 'Replay vote failed');
+        updateTeamControls();
+        return;
+    }
+    rejoinVoteChoice = !!msg.yes;
+    setLobbyStatus(msg.yes ? 'Queued for the next deathmatch.' : 'You will return to the lobby.');
+    updateRejoinPrompt();
+};
+
 net.onStartDenied = (msg) => {
     setLobbyStatus(msg.reason || 'Cannot start match');
     updateTeamControls();
@@ -491,7 +626,7 @@ net.onStartDenied = (msg) => {
 
 if (startBtn) {
     startBtn.addEventListener('click', () => {
-        const startState = getTeamStartState(net.players);
+        const startState = getLobbyStartState();
         if (!startState.ok) {
             setLobbyStatus(startState.reason);
             updateTeamControls();
@@ -504,8 +639,21 @@ if (startBtn) {
     });
 }
 
+if (modeTeamBtn) {
+    modeTeamBtn.addEventListener('click', () => {
+        sendMode(net, MODE_TEAM);
+    });
+}
+
+if (modeDeathmatchBtn) {
+    modeDeathmatchBtn.addEventListener('click', () => {
+        sendMode(net, MODE_DEATHMATCH);
+    });
+}
+
 if (teamBlueBtn) {
     teamBlueBtn.addEventListener('click', () => {
+        if (isDeathmatchMode()) return;
         if (!canSelectTeam(net.players, net.myId, TEAM_BLUE)) {
             setLobbyStatus('Blue team would break balance');
             updateTeamControls();
@@ -517,12 +665,25 @@ if (teamBlueBtn) {
 
 if (teamGreenBtn) {
     teamGreenBtn.addEventListener('click', () => {
+        if (isDeathmatchMode()) return;
         if (!canSelectTeam(net.players, net.myId, TEAM_GREEN)) {
             setLobbyStatus('Green team would break balance');
             updateTeamControls();
             return;
         }
         sendTeam(net, TEAM_GREEN);
+    });
+}
+
+if (rejoinYesBtn) {
+    rejoinYesBtn.addEventListener('click', () => {
+        sendRejoin(net, true);
+    });
+}
+
+if (rejoinNoBtn) {
+    rejoinNoBtn.addEventListener('click', () => {
+        sendRejoin(net, false);
     });
 }
 
@@ -546,7 +707,7 @@ window.addEventListener('keydown', (e) => {
     if (chatOpen) {
         return;
     }
-
+    const localInMatch = isLocalInMatch();
     if (e.code === 'Escape' && buyMenuOpen) {
         e.preventDefault();
         setBuyMenuOpen(false);
@@ -554,7 +715,7 @@ window.addEventListener('keydown', (e) => {
     }
 
     if (e.code === 'KeyB') {
-        if (net.gameStarted && net.match.buyPhase && player.alive) {
+        if (localInMatch && canOpenBuyMenu(player, net.match)) {
             e.preventDefault();
             setBuyMenuOpen(true);
         }
@@ -568,9 +729,13 @@ window.addEventListener('keydown', (e) => {
         return;
     }
 
+    if (!localInMatch) {
+        return;
+    }
+
     if (e.code === 'Space' && canMove(player, net.match)) playerJump(player);
-    if (e.code === 'Tab' && net.gameStarted) e.preventDefault();
-    if (e.code === 'KeyR' && net.gameStarted && player.alive) {
+    if (e.code === 'Tab' && localInMatch) e.preventDefault();
+    if (e.code === 'KeyR' && localInMatch && player.alive) {
         e.preventDefault();
         if (canReloadWeapon(player)) {
             startReload(player, RELOAD_DURATION_MS);
@@ -615,22 +780,27 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
     if (isEditableTarget(e.target) || chatOpen) return;
-    if (e.code === 'Tab' && net.gameStarted) e.preventDefault();
+    if (e.code === 'Tab' && isLocalInMatch()) e.preventDefault();
 });
 
 net.onHit = (msg) => {
+    if (!player.inMatch) return;
     if (msg.to == net.myId) {
         applyAuthoritativeState(player, {
             hp: msg.hp,
             armor: msg.armor,
             alive: msg.hp > 0,
         });
+        if (msg.hp <= 0 && isDeathmatchMode()) {
+            player.respawnTimer = DEATHMATCH_RESPAWN_DELAY_S;
+        }
         showDamageFlash(hud, msg.zone);
     }
     if (msg.from == net.myId) showHitMarker(hud);
 };
 
 net.onKill = (msg) => {
+    if (!player.inMatch) return;
     const killerName = msg.killer == net.myId ? 'You' : (net.players[msg.killer]?.name || '?');
     const victimName = msg.victim == net.myId ? 'You' : (net.players[msg.victim]?.name || '?');
     addKill(hud, killerName, victimName);
@@ -643,6 +813,7 @@ net.onKill = (msg) => {
 };
 
 net.onRespawn = (msg) => {
+    if (!player.inMatch) return;
     resetCombatState(player);
     applyAuthoritativeState(player, msg);
     syncLocalWeaponState();
@@ -652,6 +823,7 @@ net.onRespawn = (msg) => {
 };
 
 net.onRound = () => {
+    if (!player.inMatch) return;
     player.vel = [0, 0, 0];
     player.onGround = true;
     player.respawnTimer = 0;
@@ -664,6 +836,7 @@ net.onRound = () => {
 };
 
 net.onShot = (msg) => {
+    if (!player.inMatch) return;
     if (msg.id !== net.myId || msg.weapon === WEAPON_KNIFE || !Array.isArray(msg.pos) || !Array.isArray(msg.dir)) {
         return;
     }
@@ -682,6 +855,7 @@ net.onShot = (msg) => {
 net.onSelfState = (state) => {
     applyAuthoritativeState(player, state);
     syncLocalWeaponState();
+    updateRejoinPrompt();
 };
 
 net.onEconomy = (msg) => {
@@ -719,7 +893,14 @@ function frame(time) {
     lastTime = time;
     refreshChatVisibility();
 
-    if (net.gameStarted) {
+    if (net.match.deathmatchVoteActive && net.match.deathmatchVoteEndsAtClientMs) {
+        net.match.deathmatchVoteTimeLeftMs = Math.max(0, net.match.deathmatchVoteEndsAtClientMs - Date.now());
+        updateRejoinPrompt();
+    }
+
+    const localInMatch = isLocalInMatch();
+
+    if (localInMatch) {
         if (hud.overlay && hud.overlay.style.display !== 'none') {
             hud.overlay.style.display = 'none';
         }
@@ -753,11 +934,11 @@ function frame(time) {
         }
     }
 
-    if (net.gameStarted) {
+    if (localInMatch) {
         const movementAllowed = gameplayInputEnabled && canMove(player, net.match);
         player.crouching = player.alive && crouchPressed;
         setAiming(player, gameplayInputEnabled && player.alive && !net.match.intermission && isRightMouseDown() && !buyMenuOpen);
-        if ((!net.match.buyPhase || !player.alive) && buyMenuOpen) {
+        if ((!canOpenBuyMenu(player, net.match) || !player.alive) && buyMenuOpen) {
             setBuyMenuOpen(false);
         }
 
@@ -779,6 +960,7 @@ function frame(time) {
             && player.alive
             && !net.match.buyPhase
             && !net.match.intermission
+            && !hasSpawnProtection(player, net.match)
             && canAttackWithWeapon(player, selectedWeapon);
         const heavyKnifeAttack = selectedWeapon === WEAPON_KNIFE && gameplayInputEnabled && isRightMouseDown();
         const primaryAttack = gameplayInputEnabled && isMouseDown();
@@ -815,14 +997,14 @@ function frame(time) {
 
     drawWorld(renderer, camera.viewMatrix, camera.projMatrix);
 
-    if (net.gameStarted) {
+    if (localInMatch) {
         const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
         worldDynamicVerts.length = 0;
         for (const id in net.players) {
             if (Number(id) === net.myId) continue;
 
             const remote = net.players[id];
-            if (!remote.alive) continue;
+            if (!remote.inMatch || !remote.alive) continue;
             const remoteView = sampleRemotePlayer(remote, renderServerTimeMs);
             appendVerts(worldDynamicVerts, buildAvatarVerts(id, remote, remoteView));
         }
@@ -845,7 +1027,7 @@ function frame(time) {
     }
 
     updateHUD(hud, player, {
-        visible: gameplayInputEnabled && isKeyDown('Tab') && net.gameStarted,
+        visible: gameplayInputEnabled && isKeyDown('Tab') && localInMatch,
         players: net.players,
         myId: net.myId,
     }, {

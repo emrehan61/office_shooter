@@ -53,6 +53,38 @@ PORT=8090 go run .
 
 The server also serves the browser client, so there is no separate frontend build step right now.
 
+### Run With Docker
+
+Build the container image from the repo root:
+
+```bash
+docker build -t office-shooter .
+```
+
+Run it on port `8080`:
+
+```bash
+docker run --rm -p 8080:8080 office-shooter
+```
+
+Recommended resource limits for smooth local play:
+
+```bash
+docker run --rm -p 8080:8080 --cpus="2" --memory="1g" office-shooter
+```
+
+If you want extra headroom while hosting on a busy machine, use:
+
+```bash
+docker run --rm -p 8080:8080 --cpus="2" --memory="2g" office-shooter
+```
+
+Then open:
+
+```text
+http://localhost:8080
+```
+
 ### Open The Game
 
 On the same machine as the server:

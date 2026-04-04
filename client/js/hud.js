@@ -14,7 +14,8 @@ import {
     WEAPON_PISTOL,
     isUtilityWeapon,
 } from './economy.js';
-import { getUtilityCount, getWeaponAmmoState } from './player.js';
+import { MODE_DEATHMATCH } from './modes.js';
+import { canOpenBuyMenu, getUtilityCount, getWeaponAmmoState } from './player.js';
 import { TEAM_BLUE, TEAM_GREEN, getTeamLabel, normalizeTeam } from './teams.js';
 
 const LOADOUT_SLOT_DEFS = [
@@ -37,10 +38,12 @@ export function createHUD() {
         roundEl: document.getElementById('round-label'),
         roundTimerEl: document.getElementById('round-timer'),
         buyStatusEl: document.getElementById('buy-status'),
+        blueScoreNameEl: document.getElementById('blue-score-name'),
         blueScoreEl: document.getElementById('blue-score'),
+        blueScoreMetaEl: document.getElementById('blue-score-meta'),
+        greenScoreNameEl: document.getElementById('green-score-name'),
         greenScoreEl: document.getElementById('green-score'),
-        blueAliveEl: document.getElementById('blue-alive'),
-        greenAliveEl: document.getElementById('green-alive'),
+        greenScoreMetaEl: document.getElementById('green-score-meta'),
         countdownSplash: document.getElementById('buy-countdown'),
         roundResultBanner: document.getElementById('round-result-banner'),
         roundResultTitle: document.getElementById('round-result-title'),
@@ -72,19 +75,44 @@ export function createHUD() {
 }
 
 export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui = {}) {
+    const isDeathmatch = match.mode === MODE_DEATHMATCH;
+    const matchBar = getMatchBarDisplay(player, match, leaderboard);
     if (hud.healthEl) hud.healthEl.textContent = player.hp;
     if (hud.armorEl) hud.armorEl.textContent = player.armor;
     if (hud.creditsEl) hud.creditsEl.textContent = player.credits;
     if (hud.pingEl) hud.pingEl.textContent = formatPing(network.latencyMs);
     if (hud.weaponEl) hud.weaponEl.textContent = WEAPON_DEFS[player.activeWeapon]?.label || 'Knife';
-    if (hud.roundEl) hud.roundEl.textContent = `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
+    if (hud.roundEl) hud.roundEl.textContent = isDeathmatch
+        ? 'DEATHMATCH'
+        : `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
     if (hud.roundTimerEl) hud.roundTimerEl.textContent = formatClock(match.roundTimeLeftMs || 0);
-    if (hud.blueScoreEl) hud.blueScoreEl.textContent = String(match.blueScore || 0);
-    if (hud.greenScoreEl) hud.greenScoreEl.textContent = String(match.greenScore || 0);
-    if (hud.blueAliveEl) hud.blueAliveEl.textContent = String(match.blueAlive || 0);
-    if (hud.greenAliveEl) hud.greenAliveEl.textContent = String(match.greenAlive || 0);
+    if (hud.blueScoreNameEl) hud.blueScoreNameEl.textContent = matchBar.left.name;
+    if (hud.blueScoreEl) hud.blueScoreEl.textContent = matchBar.left.value;
+    if (hud.blueScoreMetaEl) hud.blueScoreMetaEl.textContent = matchBar.left.meta;
+    if (hud.greenScoreNameEl) hud.greenScoreNameEl.textContent = matchBar.right.name;
+    if (hud.greenScoreEl) hud.greenScoreEl.textContent = matchBar.right.value;
+    if (hud.greenScoreMetaEl) hud.greenScoreMetaEl.textContent = matchBar.right.meta;
     if (hud.buyStatusEl) {
-        if (match.intermission) {
+        if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
+            hud.buyStatusEl.textContent = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
+        } else if (isDeathmatch) {
+            const protectionTimeLeftMs = Math.max(0, player.spawnProtectionTimeLeftMs || 0);
+            const loadoutTimeLeftMs = Math.max(0, player.loadoutTimeLeftMs || 0);
+            if (protectionTimeLeftMs > 0 || loadoutTimeLeftMs > 0) {
+                const parts = [];
+                if (protectionTimeLeftMs > 0) {
+                    parts.push(`SAFE ${formatClock(protectionTimeLeftMs)}`);
+                }
+                if (loadoutTimeLeftMs > 0) {
+                    parts.push(ui.buyMenuOpen
+                        ? `LOADOUT ${formatClock(loadoutTimeLeftMs)} • ESC CLOSE`
+                        : `LOADOUT ${formatClock(loadoutTimeLeftMs)} • B OPEN`);
+                }
+                hud.buyStatusEl.textContent = parts.join(' • ');
+            } else {
+                hud.buyStatusEl.textContent = 'FREE FOR ALL';
+            }
+        } else if (match.intermission) {
             hud.buyStatusEl.textContent = `ROUND OVER • ${formatClock(match.intermissionTimeLeftMs || 0)}`;
         } else if (match.buyPhase) {
             hud.buyStatusEl.textContent = ui.buyMenuOpen
@@ -99,7 +127,7 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     updateLoadoutBar(hud, player);
     updateCountdownSplash(hud, match.buyPhase, match.buyTimeLeftMs || 0);
     updateRoundResultBanner(hud, match);
-    updateShop(hud, player, !!match.buyPhase, !!ui.buyMenuOpen);
+    updateShop(hud, player, match, !!ui.buyMenuOpen);
     updateFlashbangOverlay(hud, player.flashTimeLeftMs || 0);
     updateCrosshair(hud, ui.crosshairGap, !!player.aiming);
 
@@ -177,6 +205,7 @@ export function formatPing(latencyMs) {
 
 export function buildLeaderboardRows(players, myId) {
     return Object.entries(players || {})
+        .filter(([, player]) => player?.inMatch !== false)
         .map(([id, player]) => ({
             id: Number(id),
             name: player.name || `Player ${id}`,
@@ -195,7 +224,47 @@ export function buildLeaderboardRows(players, myId) {
         });
 }
 
+export function getMatchBarDisplay(player = {}, match = {}, leaderboard = {}) {
+    if (match.mode === MODE_DEATHMATCH) {
+        const rows = buildLeaderboardRows(leaderboard.players, leaderboard.myId);
+        const rank = rows.findIndex((row) => row.isSelf) + 1;
+        return {
+            left: {
+                name: 'KILLS',
+                value: String(player.kills || 0),
+                meta: rank > 0 ? `RANK #${rank}` : 'RANK --',
+            },
+            right: {
+                name: 'DEATHS',
+                value: String(player.deaths || 0),
+                meta: `PLAYERS ${rows.length}`,
+            },
+        };
+    }
+
+    return {
+        left: {
+            name: 'BLUE',
+            value: String(match.blueScore || 0),
+            meta: `ALIVE ${match.blueAlive || 0}`,
+        },
+        right: {
+            name: 'GREEN',
+            value: String(match.greenScore || 0),
+            meta: `ALIVE ${match.greenAlive || 0}`,
+        },
+    };
+}
+
 export function getRoundResultDisplay(match = {}) {
+    if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
+        return {
+            visible: true,
+            title: 'PLAY AGAIN?',
+            subtitle: `NEXT MATCH VOTE ENDS IN ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`,
+        };
+    }
+
     if (!match.intermission || (match.intermissionTimeLeftMs || 0) <= 0) {
         return { visible: false, title: '', subtitle: '' };
     }
@@ -254,7 +323,7 @@ function renderBuyMenu(hud) {
 
     const subtitle = document.createElement('div');
     subtitle.className = 'shop-subtitle';
-    subtitle.textContent = 'B opens the menu during buy time. Esc closes it.';
+    subtitle.textContent = 'B opens the menu during buy time or your deathmatch loadout window. Esc closes it.';
     hud.shopPanel.appendChild(subtitle);
 
     for (const section of BUY_MENU_SECTIONS) {
@@ -497,8 +566,11 @@ function updateFlashbangOverlay(hud, flashTimeLeftMs) {
     hud.flashbangScreen.style.opacity = String(0.18 + phase * 0.82);
 }
 
-function updateShop(hud, player, buyPhase, buyMenuOpen) {
+function updateShop(hud, player, match, buyMenuOpen) {
     if (!hud.shopPanel) return;
+
+    const freeLoadout = match.mode === MODE_DEATHMATCH && (player.loadoutTimeLeftMs || 0) > 0;
+    const buyPhase = canOpenBuyMenu(player, match);
 
     hud.shopPanel.style.display = buyPhase && buyMenuOpen ? 'grid' : 'none';
 
@@ -507,11 +579,16 @@ function updateShop(hud, player, buyPhase, buyMenuOpen) {
         if (!item) continue;
 
         const state = getShopItemState(player, item.id);
-        itemEl.dataset.status = state.label;
-        itemEl.classList.toggle('is-affordable', state.canBuy && player.credits >= item.cost);
-        itemEl.classList.toggle('is-expensive', player.credits < item.cost);
+        itemEl.dataset.status = freeLoadout && state.canBuy ? `${state.label} • FREE` : state.label;
+        itemEl.classList.toggle('is-affordable', state.canBuy && (freeLoadout || player.credits >= item.cost));
+        itemEl.classList.toggle('is-expensive', !freeLoadout && player.credits < item.cost);
         itemEl.classList.toggle('is-disabled', !state.canBuy);
         itemEl.disabled = !buyPhase || !buyMenuOpen || !state.canBuy;
+
+        const costEl = itemEl.querySelector('.shop-cost');
+        if (costEl) {
+            costEl.textContent = freeLoadout ? 'FREE' : `$${item.cost}`;
+        }
     }
 }
 

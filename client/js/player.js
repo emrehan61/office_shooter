@@ -16,6 +16,7 @@ import {
     canAimWeapon,
     isUtilityWeapon,
 } from './economy.js';
+import { MODE_DEATHMATCH } from './modes.js';
 import { TEAM_NONE, normalizeTeam } from './teams.js';
 
 const BASE_SPEED = 10;
@@ -46,7 +47,13 @@ export function createPlayer() {
         smokes: 0,
         flashbangs: 0,
         flashTimeLeftMs: 0,
+        spawnProtectionTimeLeftMs: 0,
+        loadoutTimeLeftMs: 0,
         team: TEAM_NONE,
+        inMatch: true,
+        isBot: false,
+        kills: 0,
+        deaths: 0,
         activeWeapon: WEAPON_KNIFE,
         aiming: false,
         reloading: false,
@@ -69,6 +76,8 @@ export function resetMatchState(player) {
     player.bombs = 0;
     player.smokes = 0;
     player.flashbangs = 0;
+    player.spawnProtectionTimeLeftMs = 0;
+    player.loadoutTimeLeftMs = 0;
     player.activeWeapon = WEAPON_KNIFE;
     resetCombatState(player);
 }
@@ -80,6 +89,8 @@ export function resetCombatState(player) {
     player.reloading = false;
     player.reloadTimeLeftMs = 0;
     player.flashTimeLeftMs = 0;
+    player.spawnProtectionTimeLeftMs = 0;
+    player.loadoutTimeLeftMs = 0;
     player.aiming = false;
     player.crouching = false;
     player.alive = true;
@@ -93,6 +104,8 @@ export function applyAuthoritativeState(player, state) {
     if (typeof state.hp === 'number') player.hp = clamp(state.hp, 0, MAX_HP);
     if (typeof state.armor === 'number') player.armor = clamp(state.armor, 0, MAX_ARMOR);
     if (typeof state.credits === 'number') player.credits = Math.max(0, state.credits);
+    if (typeof state.kills === 'number') player.kills = Math.max(0, state.kills);
+    if (typeof state.deaths === 'number') player.deaths = Math.max(0, state.deaths);
     if (typeof state.hasPistol === 'boolean') player.hasPistol = state.hasPistol;
     if (typeof state.hasMachineGun === 'boolean') player.hasMachineGun = state.hasMachineGun;
     if (typeof state.pistolClip === 'number') player.pistolClip = clampAmmo(state.pistolClip, PISTOL_MAG_SIZE);
@@ -103,7 +116,11 @@ export function applyAuthoritativeState(player, state) {
     if (typeof state.smokes === 'number') player.smokes = clampInventory(state.smokes, GRENADE_MAX);
     if (typeof state.flashbangs === 'number') player.flashbangs = clampInventory(state.flashbangs, GRENADE_MAX);
     if (typeof state.flashTimeLeftMs === 'number') player.flashTimeLeftMs = Math.max(0, state.flashTimeLeftMs);
+    if (typeof state.spawnProtectionTimeLeftMs === 'number') player.spawnProtectionTimeLeftMs = Math.max(0, state.spawnProtectionTimeLeftMs);
+    if (typeof state.loadoutTimeLeftMs === 'number') player.loadoutTimeLeftMs = Math.max(0, state.loadoutTimeLeftMs);
     if (typeof state.team === 'string') player.team = normalizeTeam(state.team);
+    if (typeof state.inMatch === 'boolean') player.inMatch = state.inMatch;
+    if (typeof state.isBot === 'boolean') player.isBot = state.isBot;
     if (typeof state.reloadTimeLeftMs === 'number') {
         player.reloadTimeLeftMs = Math.max(0, state.reloadTimeLeftMs);
         player.reloading = player.reloadTimeLeftMs > 0;
@@ -123,6 +140,9 @@ export function applyAuthoritativeState(player, state) {
         }
         if (state.alive) {
             player.respawnTimer = 0;
+        } else {
+            player.spawnProtectionTimeLeftMs = 0;
+            player.loadoutTimeLeftMs = 0;
         }
         player.alive = state.alive;
     }
@@ -197,6 +217,16 @@ export function playerJump(player) {
 
 export function canMove(player, match = {}) {
     return player.alive && !match.buyPhase && !match.intermission;
+}
+
+export function hasSpawnProtection(player, match = {}) {
+    return match.mode === MODE_DEATHMATCH && player.alive && (player.spawnProtectionTimeLeftMs || 0) > 0;
+}
+
+export function canOpenBuyMenu(player, match = {}) {
+    if (!player.alive) return false;
+    if (match.buyPhase) return true;
+    return match.mode === MODE_DEATHMATCH && (player.loadoutTimeLeftMs || 0) > 0;
 }
 
 export function getMoveSpeed(player) {

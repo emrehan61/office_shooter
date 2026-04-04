@@ -1,3 +1,5 @@
+import { MODE_DEATHMATCH } from './modes.js';
+
 const ANNOUNCER_AUDIO_URL = new URL('../audio/anouncer.mp3', import.meta.url);
 
 const RAW_ANNOUNCER_SEGMENTS = {
@@ -34,9 +36,11 @@ export function createAnnouncer() {
 
 export function snapshotMatchForAnnouncer(match = {}) {
     return {
+        mode: match.mode || '',
         buyPhase: !!match.buyPhase,
         buyTimeLeftMs: Math.max(0, match.buyTimeLeftMs || 0),
         intermission: !!match.intermission,
+        deathmatchVoteActive: !!match.deathmatchVoteActive,
         roundWinner: match.roundWinner || '',
         currentRound: match.currentRound || 0,
         totalRounds: match.totalRounds || 0,
@@ -65,7 +69,7 @@ export function getAnnouncerMatchCues(previous, next, context = {}) {
         cues.push('lockAndLoad');
     }
 
-    if (!previous.intermission && next.intermission) {
+    if (!previous.intermission && next.intermission && next.mode !== MODE_DEATHMATCH) {
         const resultCue = getRoundResultCue(next, context.myTeam);
         if (resultCue) {
             cues.push(resultCue);
