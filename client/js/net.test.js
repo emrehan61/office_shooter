@@ -183,6 +183,40 @@ test('state snapshots refresh kills and deaths for the leaderboard', async () =>
     }
 });
 
+test('kill messages update leaderboard counters immediately', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            state: 'playing',
+            match: { mode: 'deathmatch', currentRound: 1, totalRounds: 0, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false },
+        });
+        await connected;
+        ws.emit({
+            t: 'state',
+            match: { mode: 'deathmatch', currentRound: 1, totalRounds: 0, roundTimeLeftMs: 299000, buyTimeLeftMs: 0, buyPhase: false },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100, kills: 0, deaths: 0, inMatch: true },
+                2: { pos: [5, 1.7, 5], yaw: 0, pitch: 0, hp: 100, kills: 0, deaths: 0, inMatch: true, name: 'Target' },
+            },
+        });
+
+        ws.emit({ t: 'kill', killer: 1, victim: 2 });
+
+        assert.equal(net.players['1'].kills, 1);
+        assert.equal(net.players['2'].deaths, 1);
+    } finally {
+        restore();
+    }
+});
+
 test('remote players can be sampled smoothly between server-timed snapshots', async () => {
     const restore = installFakeWebSocket();
     try {

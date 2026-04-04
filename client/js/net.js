@@ -196,6 +196,17 @@ function handleMsg(net, msg) {
             break;
 
         case 'kill':
+            if (msg.killer != null) {
+                const killer = ensurePlayer(net, msg.killer);
+                if (msg.killer !== msg.victim) {
+                    killer.kills = (killer.kills ?? 0) + 1;
+                }
+            }
+            if (msg.victim != null) {
+                const victim = ensurePlayer(net, msg.victim);
+                victim.deaths = (victim.deaths ?? 0) + 1;
+                victim.alive = false;
+            }
             if (net.onKill) net.onKill(msg);
             break;
 
