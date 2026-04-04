@@ -289,6 +289,107 @@ canvas { display: block; width: 100vw; height: 100vh; }
     color: #ffdf93;
 }
 
+#chat-panel {
+    position: fixed;
+    left: 30px;
+    bottom: 108px;
+    width: min(360px, calc(100vw - 60px));
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 21;
+    pointer-events: none;
+}
+#chat-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 176px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+}
+#chat-feed::-webkit-scrollbar {
+    display: none;
+}
+#chat-panel.is-open {
+    width: min(420px, calc(100vw - 60px));
+}
+#chat-panel.is-open #chat-feed {
+    max-height: min(46vh, 360px);
+    padding-right: 6px;
+    pointer-events: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(159, 199, 255, 0.45) rgba(7, 11, 18, 0.25);
+}
+#chat-panel.is-open #chat-feed::-webkit-scrollbar {
+    display: block;
+    width: 8px;
+}
+#chat-panel.is-open #chat-feed::-webkit-scrollbar-track {
+    background: rgba(7, 11, 18, 0.3);
+    border-radius: 999px;
+}
+#chat-panel.is-open #chat-feed::-webkit-scrollbar-thumb {
+    background: rgba(159, 199, 255, 0.45);
+    border-radius: 999px;
+}
+.chat-entry {
+    padding: 8px 10px;
+    border: 1px solid rgba(130, 180, 255, 0.14);
+    border-radius: 10px;
+    background: rgba(7, 11, 18, 0.84);
+    color: #e7effc;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.35;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+}
+.chat-entry.is-self {
+    border-color: rgba(255, 214, 122, 0.26);
+    background: rgba(24, 18, 8, 0.9);
+}
+.chat-entry.is-empty {
+    color: #9aa9bf;
+    border-style: dashed;
+    background: rgba(6, 10, 16, 0.64);
+}
+.chat-author {
+    display: inline-block;
+    margin-right: 8px;
+    color: #9fc7ff;
+    font-weight: bold;
+    letter-spacing: 0.8px;
+}
+.chat-entry.is-self .chat-author {
+    color: #ffe29e;
+}
+#chat-form {
+    display: none;
+    pointer-events: auto;
+}
+#chat-panel.is-open #chat-form {
+    display: block;
+}
+#chat-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid rgba(135, 178, 255, 0.26);
+    border-radius: 10px;
+    background: rgba(7, 11, 18, 0.94);
+    color: #f6fbff;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    outline: none;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+#chat-input::placeholder {
+    color: rgba(214, 230, 255, 0.38);
+}
+#chat-input:focus {
+    border-color: rgba(158, 203, 255, 0.52);
+}
+
 #buy-countdown {
     position: fixed;
     left: 50%;
@@ -795,6 +896,12 @@ button:disabled {
     #ammo-display,
     #credits-display {
         font-size: 22px;
+    }
+
+    #chat-panel {
+        left: 14px;
+        bottom: 118px;
+        width: calc(100vw - 28px);
     }
 
     #armor-bar {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyPong, createNet, connect, estimateServerTime, sampleRemotePlayer, sendBuy, sendInput, sendReload, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { applyPong, createNet, connect, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendReload, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { applyAuthoritativeState, createPlayer } from './player.js';
 
 class FakeWebSocket {
@@ -288,6 +288,30 @@ test('economy messages update local player state and action requests send ids', 
         assert.equal(net.players['1'].pistolClip, 7);
         assert.equal(net.players['1'].pistolReserve, 21);
         assert.equal(net.players['1'].activeWeapon, 'pistol');
+    } finally {
+        restore();
+    }
+});
+
+test('chat messages are sent and delivered through the chat callback', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const received = [];
+        net.onChat = (msg) => received.push(msg);
+
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false } });
+        await connected;
+
+        sendChat(net, 'hello squad');
+        assert.deepEqual(ws.sent[ws.sent.length - 1], { t: 'chat', text: 'hello squad' });
+
+        ws.emit({ t: 'chat', id: 2, name: 'Guest', text: 'copy that' });
+        assert.deepEqual(received, [{ t: 'chat', id: 2, name: 'Guest', text: 'copy that' }]);
     } finally {
         restore();
     }
