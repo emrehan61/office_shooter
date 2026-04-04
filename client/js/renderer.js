@@ -202,7 +202,19 @@ export function createRenderer(canvas) {
     setupAttribs(gl);
     gl.bindVertexArray(null);
 
-    return { gl, program, uMVP, uLightDir, worldVAO, worldVBO, dynVAO, dynVBO, vertCount: 0 };
+    return {
+        gl,
+        program,
+        uMVP,
+        uLightDir,
+        worldVAO,
+        worldVBO,
+        dynVAO,
+        dynVBO,
+        vertCount: 0,
+        dynBufferBytes: 0,
+        dynScratch: null,
+    };
 }
 
 export function uploadWorldGeo(r, geometry) {
@@ -233,16 +245,53 @@ export function drawWorld(r, viewMatrix, projMatrix) {
 
 export function drawDynamic(r, vertices, mvp) {
     const { gl, program, uMVP, dynVAO, dynVBO } = r;
-    const data = new Float32Array(vertices);
+    const data = toDynamicFloat32Array(r, vertices);
+    if (data.length === 0) {
+        return;
+    }
 
     gl.useProgram(program);
     gl.uniformMatrix4fv(uMVP, false, mvp);
 
     gl.bindVertexArray(dynVAO);
     gl.bindBuffer(gl.ARRAY_BUFFER, dynVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    ensureDynamicBufferCapacity(r, data.length * 4);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
     gl.drawArrays(gl.TRIANGLES, 0, data.length / 6);
     gl.bindVertexArray(null);
+}
+
+function ensureDynamicBufferCapacity(r, requiredBytes) {
+    if (requiredBytes <= r.dynBufferBytes) {
+        return;
+    }
+
+    r.dynBufferBytes = nextPowerOfTwo(requiredBytes);
+    r.gl.bufferData(r.gl.ARRAY_BUFFER, r.dynBufferBytes, r.gl.DYNAMIC_DRAW);
+}
+
+function toDynamicFloat32Array(r, vertices) {
+    if (vertices instanceof Float32Array) {
+        return vertices;
+    }
+
+    const length = vertices.length;
+    if (!r.dynScratch || r.dynScratch.length < length) {
+        r.dynScratch = new Float32Array(nextPowerOfTwo(length || 1));
+    }
+
+    for (let i = 0; i < length; i += 1) {
+        r.dynScratch[i] = vertices[i];
+    }
+    return r.dynScratch.subarray(0, length);
+}
+
+function nextPowerOfTwo(value) {
+    let next = 1;
+    while (next < value) {
+        next <<= 1;
+    }
+    return next;
 }
 
 function setupAttribs(gl) {

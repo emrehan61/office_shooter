@@ -43,3 +43,11 @@ test('team start state requires full balanced assignments', () => {
         4: { team: TEAM_GREEN },
     }), { ok: true, reason: '' });
 });
+
+test('team start state allows a one-player size gap when both teams are occupied', () => {
+    assert.deepEqual(getTeamStartState({
+        1: { team: TEAM_BLUE },
+        2: { team: TEAM_GREEN },
+        3: { team: TEAM_GREEN },
+    }), { ok: true, reason: '' });
+});

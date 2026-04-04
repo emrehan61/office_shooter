@@ -150,6 +150,25 @@ func TestRemovePlayerSwapDeleteKeepsRemainingIndexValid(t *testing.T) {
 	}
 }
 
+func TestStateTickIncludesServerTime(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+
+	host := addNamedPlayer(g, "Host")
+	nowMS := int64(1234)
+
+	g.stateTick(nowMS)
+
+	msg := readQueuedMessage(t, host.sendCh)
+	got, ok := msg["serverTime"].(float64)
+	if !ok {
+		t.Fatalf("expected serverTime number, got %#v", msg["serverTime"])
+	}
+	if int64(got) != nowMS {
+		t.Fatalf("expected serverTime %d, got %d", nowMS, int64(got))
+	}
+}
+
 func TestTracePlayerHitHeadshotWinsAndUsesHeadDamage(t *testing.T) {
 	origin := Vec3{0, 1.7, 5}
 	target := Vec3{0, 1.7, 0}
@@ -280,6 +299,181 @@ func TestCanStartMatchLockedRequiresBalancedAssignedTeams(t *testing.T) {
 	assignPlayerTeam(g, green.id, TeamGreen)
 	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
 		t.Fatalf("expected balanced teams to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestSyncFallbackBotAddsBotForEmptyTeam(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	if len(g.players.ids) != 2 {
+		t.Fatalf("expected 2 occupants after bot sync, got %d", len(g.players.ids))
+	}
+
+	foundBot := false
+	for i := range g.players.ids {
+		if g.players.isBot[i] && g.players.team[i] == TeamGreen {
+			foundBot = true
+		}
+	}
+	if !foundBot {
+		t.Fatal("expected fallback bot on green team")
+	}
+}
+
+func TestCanStartMatchLockedAllowsOneHumanVersusBot(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
+		t.Fatalf("expected bot-backed roster to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestSyncFallbackBotRemovesBotWhenHumanJoinsThatTeam(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+	assignPlayerTeam(g, green.id, TeamGreen)
+	g.syncFallbackBotLocked(1001)
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			t.Fatal("expected bot to be removed once green human joins")
+		}
+	}
+}
+
+func TestTickFallbackBotFiresAtNearestEnemy(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot to exist")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-2, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{2, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 0
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	g.tick(1100)
+
+	msg := readQueuedMessage(t, blue.sendCh)
+	if got, _ := msg["t"].(string); got != "shot" {
+		t.Fatalf("expected bot shot broadcast, got %#v", msg["t"])
+	}
+	if got, _ := msg["id"].(float64); int(got) != g.players.ids[botIdx] {
+		t.Fatalf("expected shot from bot id %d, got %#v", g.players.ids[botIdx], msg["id"])
+	}
+}
+
+func TestBotShotQualityIsAccurateOneInFiveShots(t *testing.T) {
+	accurate := 0
+	for i := int64(0); i < 10; i++ {
+		if isAccurateBotShot(i) {
+			accurate++
+		}
+	}
+
+	if accurate != 2 {
+		t.Fatalf("expected 2 accurate shots in 10 attempts, got %d", accurate)
+	}
+}
+
+func TestTickFallbackBotMovesTowardNearestEnemyWhenFar(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-12, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{12, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 999999
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	before := g.players.pos[botIdx]
+	g.tick(1100)
+	after := g.players.pos[botIdx]
+
+	if !(after[0] < before[0]) {
+		t.Fatalf("expected bot to move toward enemy on x axis, before=%v after=%v", before, after)
+	}
+}
+
+func TestTickFallbackBotStrafesWhenEnemyIsClose(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	g.syncFallbackBotLocked(1000)
+
+	playerIdx, _ := g.players.indexOf(blue.id)
+	botIdx := -1
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			botIdx = i
+			break
+		}
+	}
+	if botIdx < 0 {
+		t.Fatal("expected fallback bot")
+	}
+
+	g.state = StatePlaying
+	g.currentRound = 1
+	g.buyEndsAt = 0
+	g.players.pos[playerIdx] = Vec3{-2, standEyeHeight, 0}
+	g.players.pos[botIdx] = Vec3{2, standEyeHeight, 0}
+	g.players.botNextThink[botIdx] = 999999
+	recordPositionSample(&g.players.history[playerIdx], 1000, g.players.pos[playerIdx], false)
+	recordPositionSample(&g.players.history[botIdx], 1000, g.players.pos[botIdx], false)
+
+	before := g.players.pos[botIdx]
+	g.tick(1100)
+	after := g.players.pos[botIdx]
+
+	if after[2] == before[2] {
+		t.Fatalf("expected bot to strafe on z axis, before=%v after=%v", before, after)
 	}
 }
 

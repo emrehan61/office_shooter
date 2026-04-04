@@ -248,11 +248,13 @@ function applySnapshot(net, msg, includeSelfTransform) {
             }))
         : [];
     const players = msg.players || {};
+    const serverTimeMs = typeof msg.serverTime === 'number' ? msg.serverTime : null;
+    syncSnapshotClock(net, serverTimeMs);
 
     for (const id in players) {
         const target = ensurePlayer(net, id);
         const isSelf = Number(id) === net.myId;
-        applyPlayerState(target, players[id], includeSelfTransform || !isSelf);
+        applyPlayerState(target, players[id], includeSelfTransform || !isSelf, serverTimeMs);
         if (isSelf) {
             notifySelfState(net, id, includeSelfTransform);
         }
@@ -321,14 +323,22 @@ function ensurePlayer(net, id) {
     if (!net.players[key]) {
         net.players[key] = {
             pos: [0, 1.7, 0],
+            prevPos: [0, 1.7, 0],
+            targetPos: [0, 1.7, 0],
             yaw: 0,
+            prevYaw: 0,
+            targetYaw: 0,
             pitch: 0,
+            prevPitch: 0,
+            targetPitch: 0,
             hp: 100,
             armor: 0,
             credits: 0,
             name: '???',
             alive: true,
             crouching: false,
+            prevCrouching: false,
+            targetCrouching: false,
             hasPistol: false,
             hasMachineGun: false,
             pistolClip: 0,
@@ -346,6 +356,14 @@ function ensurePlayer(net, id) {
             shotTime: 0,
             kills: 0,
             deaths: 0,
+            prevSnapshotServerTimeMs: 0,
+            targetSnapshotServerTimeMs: 0,
+            renderSample: {
+                pos: [0, 1.7, 0],
+                yaw: 0,
+                pitch: 0,
+                crouching: false,
+            },
         };
     }
     return net.players[key];
@@ -359,7 +377,7 @@ function canSend(net) {
     return !!(net.connected && net.ws && net.ws.readyState === 1);
 }
 
-function applyPlayerState(target, state, includeTransform = true) {
+function applyPlayerState(target, state, includeTransform = true, serverTimeMs = null) {
     target.kills = state.kills ?? target.kills;
     target.deaths = state.deaths ?? target.deaths;
     target.name = state.name ?? target.name;
@@ -400,9 +418,10 @@ function applyPlayerState(target, state, includeTransform = true) {
 
     if (!includeTransform) return;
 
-    if (state.pos) target.pos = [...state.pos];
-    if (typeof state.yaw === 'number') target.yaw = state.yaw;
-    if (typeof state.pitch === 'number') target.pitch = state.pitch;
+    const nextPos = state.pos ? cloneVec3(state.pos) : target.pos;
+    const nextYaw = typeof state.yaw === 'number' ? state.yaw : target.yaw;
+    const nextPitch = typeof state.pitch === 'number' ? state.pitch : target.pitch;
+    applyTransformState(target, nextPos, nextYaw, nextPitch, target.crouching, serverTimeMs);
 }
 
 function applyMatchState(net, match) {
@@ -542,4 +561,126 @@ export function applyPong(net, msg, receivedAt = Date.now()) {
 
 export function estimateServerTime(net, clientTime = Date.now()) {
     return clientTime + (net.serverClockOffsetMs || 0);
+}
+
+export function sampleRemotePlayer(player, renderServerTimeMs) {
+    if (!player) {
+        return null;
+    }
+
+    const sample = player.renderSample || {
+        pos: [0, 1.7, 0],
+        yaw: 0,
+        pitch: 0,
+        crouching: false,
+    };
+    player.renderSample = sample;
+
+    const fromTime = player.prevSnapshotServerTimeMs || 0;
+    const toTime = player.targetSnapshotServerTimeMs || 0;
+    const span = toTime - fromTime;
+    if (span <= 0 || !Number.isFinite(renderServerTimeMs)) {
+        copyVec3(sample.pos, player.targetPos || player.pos);
+        sample.yaw = player.targetYaw ?? player.yaw;
+        sample.pitch = player.targetPitch ?? player.pitch;
+        sample.crouching = player.targetCrouching ?? player.crouching;
+        return sample;
+    }
+
+    const t = clamp01((renderServerTimeMs - fromTime) / span);
+    lerpVec3Into(sample.pos, player.prevPos, player.targetPos, t);
+    sample.yaw = lerpAngle(player.prevYaw ?? player.yaw, player.targetYaw ?? player.yaw, t);
+    sample.pitch = lerp(player.prevPitch ?? player.pitch, player.targetPitch ?? player.pitch, t);
+    sample.crouching = t >= 0.5 ? !!player.targetCrouching : !!player.prevCrouching;
+    return sample;
+}
+
+function applyTransformState(target, nextPos, nextYaw, nextPitch, nextCrouching, serverTimeMs) {
+    target.pos = cloneVec3(nextPos);
+    target.yaw = nextYaw;
+    target.pitch = nextPitch;
+
+    if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs)) {
+        syncRemoteSnapshotTarget(target, target.pos, target.yaw, target.pitch, nextCrouching, 0);
+        return;
+    }
+
+    const hasTimedSnapshot = target.targetSnapshotServerTimeMs > 0;
+    if (!hasTimedSnapshot || serverTimeMs <= target.targetSnapshotServerTimeMs) {
+        syncRemoteSnapshotTarget(target, target.pos, target.yaw, target.pitch, nextCrouching, serverTimeMs);
+        return;
+    }
+
+    target.prevPos = cloneVec3(target.targetPos || target.pos);
+    target.prevYaw = target.targetYaw ?? target.yaw;
+    target.prevPitch = target.targetPitch ?? target.pitch;
+    target.prevCrouching = target.targetCrouching ?? target.crouching;
+    target.prevSnapshotServerTimeMs = target.targetSnapshotServerTimeMs;
+    target.targetPos = cloneVec3(target.pos);
+    target.targetYaw = target.yaw;
+    target.targetPitch = target.pitch;
+    target.targetCrouching = !!nextCrouching;
+    target.targetSnapshotServerTimeMs = serverTimeMs;
+}
+
+function syncRemoteSnapshotTarget(target, pos, yaw, pitch, crouching, serverTimeMs) {
+    target.prevPos = cloneVec3(pos);
+    target.targetPos = cloneVec3(pos);
+    target.prevYaw = yaw;
+    target.targetYaw = yaw;
+    target.prevPitch = pitch;
+    target.targetPitch = pitch;
+    target.prevCrouching = !!crouching;
+    target.targetCrouching = !!crouching;
+    target.prevSnapshotServerTimeMs = serverTimeMs;
+    target.targetSnapshotServerTimeMs = serverTimeMs;
+}
+
+function cloneVec3(vec) {
+    return [vec[0] ?? 0, vec[1] ?? 0, vec[2] ?? 0];
+}
+
+function copyVec3(target, source) {
+    target[0] = source?.[0] ?? 0;
+    target[1] = source?.[1] ?? 0;
+    target[2] = source?.[2] ?? 0;
+}
+
+function lerpVec3Into(target, from, to, t) {
+    target[0] = lerp(from?.[0] ?? 0, to?.[0] ?? 0, t);
+    target[1] = lerp(from?.[1] ?? 0, to?.[1] ?? 0, t);
+    target[2] = lerp(from?.[2] ?? 0, to?.[2] ?? 0, t);
+}
+
+function lerp(from, to, t) {
+    return from + (to - from) * t;
+}
+
+function lerpAngle(from, to, t) {
+    const delta = normalizeAngle(to - from);
+    return from + delta * t;
+}
+
+function normalizeAngle(angle) {
+    let normalized = angle;
+    while (normalized > Math.PI) normalized -= Math.PI * 2;
+    while (normalized < -Math.PI) normalized += Math.PI * 2;
+    return normalized;
+}
+
+function clamp01(value) {
+    if (value <= 0) return 0;
+    if (value >= 1) return 1;
+    return value;
+}
+
+function syncSnapshotClock(net, serverTimeMs, receivedAt = Date.now()) {
+    if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs)) {
+        return;
+    }
+
+    const offset = serverTimeMs - receivedAt;
+    net.serverClockOffsetMs = net.serverClockOffsetMs === 0
+        ? offset
+        : net.serverClockOffsetMs * 0.85 + offset * 0.15;
 }

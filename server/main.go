@@ -75,6 +75,12 @@ const (
 	smokeRadius             = 9.0
 	smokeDurationMS         = 8 * 1000
 	bombEffectDurationMS    = 350
+	botThinkIntervalMS      = 650
+	botPreferredRange       = 6.0
+	botAdvanceSpeed         = 4.8
+	botStrafeSpeed          = 3.6
+	botStrafeFlipMS         = 700
+	botBoundMargin          = 1.0
 )
 
 type GameState int
@@ -150,6 +156,7 @@ type areaEffectSnapshot struct {
 type playerStore struct {
 	ids           []int
 	names         []string
+	isBot         []bool
 	pos           []Vec3
 	yaw           []float64
 	pitch         []float64
@@ -178,6 +185,8 @@ type playerStore struct {
 	kills         []int
 	deaths        []int
 	alive         []bool
+	botNextThink  []int64
+	botShotCount  []int64
 	conns         []*websocket.Conn
 	sendChs       []chan []byte
 	history       [][]positionSample
@@ -246,12 +255,16 @@ func (ps *playerStore) indexOf(id int) (int, bool) {
 	return idx, ok
 }
 
-func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64) chan []byte {
-	sendCh := make(chan []byte, 64)
+func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64, isBot bool) chan []byte {
+	var sendCh chan []byte
+	if !isBot {
+		sendCh = make(chan []byte, 64)
+	}
 	idx := len(ps.ids)
 
 	ps.ids = append(ps.ids, id)
 	ps.names = append(ps.names, "")
+	ps.isBot = append(ps.isBot, isBot)
 	ps.pos = append(ps.pos, spawn)
 	ps.yaw = append(ps.yaw, 0)
 	ps.pitch = append(ps.pitch, 0)
@@ -280,6 +293,8 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.kills = append(ps.kills, 0)
 	ps.deaths = append(ps.deaths, 0)
 	ps.alive = append(ps.alive, true)
+	ps.botNextThink = append(ps.botNextThink, 0)
+	ps.botShotCount = append(ps.botShotCount, 0)
 	ps.conns = append(ps.conns, conn)
 	ps.sendChs = append(ps.sendChs, sendCh)
 	ps.history = append(ps.history, []positionSample{{At: nowMS, Pos: spawn, Crouching: false}})
@@ -296,6 +311,7 @@ func (ps *playerStore) removeAt(idx int) {
 		movedID := ps.ids[last]
 		ps.ids[idx] = ps.ids[last]
 		ps.names[idx] = ps.names[last]
+		ps.isBot[idx] = ps.isBot[last]
 		ps.pos[idx] = ps.pos[last]
 		ps.yaw[idx] = ps.yaw[last]
 		ps.pitch[idx] = ps.pitch[last]
@@ -324,6 +340,8 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.kills[idx] = ps.kills[last]
 		ps.deaths[idx] = ps.deaths[last]
 		ps.alive[idx] = ps.alive[last]
+		ps.botNextThink[idx] = ps.botNextThink[last]
+		ps.botShotCount[idx] = ps.botShotCount[last]
 		ps.conns[idx] = ps.conns[last]
 		ps.sendChs[idx] = ps.sendChs[last]
 		ps.history[idx] = ps.history[last]
@@ -332,6 +350,7 @@ func (ps *playerStore) removeAt(idx int) {
 
 	ps.ids = ps.ids[:last]
 	ps.names = ps.names[:last]
+	ps.isBot = ps.isBot[:last]
 	ps.pos = ps.pos[:last]
 	ps.yaw = ps.yaw[:last]
 	ps.pitch = ps.pitch[:last]
@@ -360,6 +379,8 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.kills = ps.kills[:last]
 	ps.deaths = ps.deaths[:last]
 	ps.alive = ps.alive[:last]
+	ps.botNextThink = ps.botNextThink[:last]
+	ps.botShotCount = ps.botShotCount[:last]
 	ps.conns = ps.conns[:last]
 	ps.sendChs = ps.sendChs[:last]
 	ps.history = ps.history[:last]
@@ -370,7 +391,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if len(g.players.ids) >= maxPlayers {
+	if g.humanCountLocked() >= maxPlayers {
 		return 0, nil, false
 	}
 
@@ -378,7 +399,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 	g.nextID++
 
 	spawn := spawnPoints[rand.Intn(len(spawnPoints))]
-	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli())
+	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli(), false)
 	return id, sendCh, true
 }
 
@@ -390,7 +411,9 @@ func (g *Game) removePlayer(id int) {
 		return
 	}
 	g.players.removeAt(idx)
-	if len(g.players.ids) == 0 {
+	nowMS := time.Now().UnixMilli()
+	g.syncFallbackBotLocked(nowMS)
+	if g.humanCountLocked() == 0 {
 		g.state = StateWaiting
 		g.currentRound = 0
 		g.roundEndsAt = 0
@@ -506,6 +529,7 @@ type playerState struct {
 
 type playerStateMessage struct {
 	T           string               `json:"t"`
+	ServerTime  int64                `json:"serverTime"`
 	Players     map[int]playerState  `json:"players"`
 	Projectiles []projectileSnapshot `json:"projectiles,omitempty"`
 	Effects     []areaEffectSnapshot `json:"effects,omitempty"`
@@ -679,6 +703,7 @@ func (g *Game) buildPlayerStateMessageLocked(messageType string, nowMS int64) pl
 
 	return playerStateMessage{
 		T:           messageType,
+		ServerTime:  nowMS,
 		Players:     state,
 		Projectiles: projectiles,
 		Effects:     effects,
@@ -846,8 +871,44 @@ func otherTeam(team TeamID) TeamID {
 	return TeamNone
 }
 
+func teamDisplayName(team TeamID) string {
+	switch normalizeTeam(team) {
+	case TeamBlue:
+		return "Blue"
+	case TeamGreen:
+		return "Green"
+	default:
+		return "None"
+	}
+}
+
 func (g *Game) teamCountsLocked() (blue, green int) {
 	for _, team := range g.players.team {
+		switch normalizeTeam(team) {
+		case TeamBlue:
+			blue++
+		case TeamGreen:
+			green++
+		}
+	}
+	return blue, green
+}
+
+func (g *Game) humanCountLocked() int {
+	count := 0
+	for i := range g.players.ids {
+		if !g.players.isBot[i] {
+			count++
+		}
+	}
+	return count
+}
+
+func (g *Game) humanTeamCountsLocked() (blue, green int) {
+	for i, team := range g.players.team {
+		if g.players.isBot[i] {
+			continue
+		}
 		switch normalizeTeam(team) {
 		case TeamBlue:
 			blue++
@@ -874,7 +935,7 @@ func (g *Game) aliveCountsLocked() (blue, green int) {
 }
 
 func (g *Game) preferredTeamLocked() TeamID {
-	blue, green := g.teamCountsLocked()
+	blue, green := g.humanTeamCountsLocked()
 	if blue > green {
 		return TeamGreen
 	}
@@ -887,7 +948,7 @@ func (g *Game) canAssignTeamLocked(idx int, desired TeamID) bool {
 		return false
 	}
 
-	blue, green := g.teamCountsLocked()
+	blue, green := g.humanTeamCountsLocked()
 	current := normalizeTeam(g.players.team[idx])
 	if current == desired {
 		return true
@@ -906,12 +967,67 @@ func (g *Game) canAssignTeamLocked(idx int, desired TeamID) bool {
 	return absInt(blue-green) <= 1
 }
 
+func (g *Game) addFallbackBotLocked(team TeamID, nowMS int64) {
+	team = normalizeTeam(team)
+	if team == TeamNone {
+		return
+	}
+
+	id := g.nextID
+	g.nextID++
+	spawns := spawnPointsForTeam(team)
+	spawn := spawns[rand.Intn(len(spawns))]
+	g.players.add(id, nil, spawn, nowMS, true)
+	idx, ok := g.players.indexOf(id)
+	if !ok {
+		return
+	}
+	g.players.names[idx] = fmt.Sprintf("BOT %s", teamDisplayName(team))
+	g.players.team[idx] = team
+	g.resetPlayerForNewMatchLocked(idx, nowMS)
+}
+
+func (g *Game) syncFallbackBotLocked(nowMS int64) {
+	blueHumans, greenHumans := g.humanTeamCountsLocked()
+	desiredTeam := TeamNone
+	switch {
+	case blueHumans > 0 && greenHumans == 0:
+		desiredTeam = TeamGreen
+	case greenHumans > 0 && blueHumans == 0:
+		desiredTeam = TeamBlue
+	}
+
+	for i := len(g.players.ids) - 1; i >= 0; i-- {
+		if !g.players.isBot[i] {
+			continue
+		}
+		if desiredTeam == TeamNone || normalizeTeam(g.players.team[i]) != desiredTeam {
+			g.players.removeAt(i)
+		}
+	}
+
+	if desiredTeam == TeamNone {
+		return
+	}
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] && normalizeTeam(g.players.team[i]) == desiredTeam {
+			return
+		}
+	}
+
+	g.addFallbackBotLocked(desiredTeam, nowMS)
+}
+
 func (g *Game) canStartMatchLocked() (bool, string) {
-	if len(g.players.ids) < 2 {
-		return false, "Need at least 2 players"
+	if g.humanCountLocked() < 1 {
+		return false, "Need at least 1 player"
 	}
 	blue, green := g.teamCountsLocked()
-	for _, team := range g.players.team {
+	for i, team := range g.players.team {
+		if g.players.isBot[i] {
+			continue
+		}
 		if normalizeTeam(team) == TeamNone {
 			return false, "All players must join a team"
 		}
@@ -919,10 +1035,119 @@ func (g *Game) canStartMatchLocked() (bool, string) {
 	if blue == 0 || green == 0 {
 		return false, "Both teams need players"
 	}
-	if blue != green {
-		return false, "Teams must be even"
+	if absInt(blue-green) > 1 {
+		return false, "Teams must stay within one player"
 	}
 	return true, ""
+}
+
+func (g *Game) nearestEnemyLocked(idx int) int {
+	if idx < 0 || idx >= len(g.players.ids) {
+		return -1
+	}
+
+	bestIdx := -1
+	bestDist := math.MaxFloat64
+	team := normalizeTeam(g.players.team[idx])
+	for i := range g.players.ids {
+		if i == idx || !g.players.alive[i] {
+			continue
+		}
+		if team != TeamNone && normalizeTeam(g.players.team[i]) == team {
+			continue
+		}
+
+		dist := distanceVec3(g.players.pos[idx], g.players.pos[i])
+		if dist >= bestDist {
+			continue
+		}
+		bestDist = dist
+		bestIdx = i
+	}
+
+	return bestIdx
+}
+
+func isAccurateBotShot(shotIndex int64) bool {
+	return (shotIndex+1)%5 == 0
+}
+
+func clampBotAxis(v float64) float64 {
+	limit := projectileBounds - botBoundMargin
+	return math.Max(-limit, math.Min(limit, v))
+}
+
+func applyBotAimProfile(dir Vec3, shotIndex int64) Vec3 {
+	dir = normalizeVec(dir)
+	if isAccurateBotShot(shotIndex) {
+		return normalizeVec(Vec3{dir[0], dir[1] + 0.01, dir[2]})
+	}
+
+	right := crossVec3(Vec3{0, 1, 0}, dir)
+	if right[0] == 0 && right[1] == 0 && right[2] == 0 {
+		right = Vec3{1, 0, 0}
+	}
+	right = normalizeVec(right)
+	lateralSign := 1.0
+	if shotIndex%2 == 1 {
+		lateralSign = -1
+	}
+	verticalSign := 1.0
+	if (shotIndex/2)%2 == 1 {
+		verticalSign = -1
+	}
+
+	return normalizeVec(Vec3{
+		dir[0] + right[0]*0.55*lateralSign,
+		dir[1] + 0.18*verticalSign,
+		dir[2] + right[2]*0.55*lateralSign,
+	})
+}
+
+func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
+	if idx < 0 || idx >= len(g.players.ids) || targetIdx < 0 || targetIdx >= len(g.players.ids) {
+		return
+	}
+
+	pos := g.players.pos[idx]
+	target := g.players.pos[targetIdx]
+	flat := Vec3{target[0] - pos[0], 0, target[2] - pos[2]}
+	dist := math.Sqrt(flat[0]*flat[0] + flat[2]*flat[2])
+	if dist < 1e-6 {
+		return
+	}
+
+	dir := normalizeVec(flat)
+	next := pos
+	advanceStep := botAdvanceSpeed / float64(tickRate)
+	strafeStep := botStrafeSpeed / float64(tickRate)
+
+	if dist > botPreferredRange {
+		next[0] += dir[0] * advanceStep
+		next[2] += dir[2] * advanceStep
+	} else {
+		strafeSign := 1.0
+		if ((nowMS / botStrafeFlipMS) + int64(g.players.ids[idx]))%2 == 1 {
+			strafeSign = -1
+		}
+		strafe := Vec3{-dir[2] * strafeSign, 0, dir[0] * strafeSign}
+		next[0] += strafe[0] * strafeStep
+		next[2] += strafe[2] * strafeStep
+		if dist < botPreferredRange*0.55 {
+			next[0] -= dir[0] * advanceStep * 0.35
+			next[2] -= dir[2] * advanceStep * 0.35
+		}
+	}
+
+	next[0] = clampBotAxis(next[0])
+	next[2] = clampBotAxis(next[2])
+	next[1] = standEyeHeight
+	if next == pos {
+		return
+	}
+
+	g.players.pos[idx] = next
+	recordPositionSample(&g.players.history[idx], nowMS, next, false)
 }
 
 func spawnPointsForTeam(team TeamID) []Vec3 {
@@ -1572,6 +1797,119 @@ func (g *Game) updateReloadsAndProjectilesLocked(nowMS int64) *tickMessages {
 	return tm
 }
 
+func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
+	if g.state != StatePlaying || nowMS < g.buyEndsAt || g.isIntermissionLocked(nowMS) {
+		return
+	}
+
+	for idx, botID := range g.players.ids {
+		if !g.players.isBot[idx] || !g.players.alive[idx] {
+			continue
+		}
+
+		targetIdx := g.nearestEnemyLocked(idx)
+		if targetIdx < 0 {
+			continue
+		}
+
+		g.moveFallbackBotLocked(idx, targetIdx, nowMS)
+
+		dir := normalizeVec(Vec3{
+			g.players.pos[targetIdx][0] - g.players.pos[idx][0],
+			g.players.pos[targetIdx][1] - g.players.pos[idx][1],
+			g.players.pos[targetIdx][2] - g.players.pos[idx][2],
+		})
+		g.players.yaw[idx], g.players.pitch[idx] = yawPitchFromDirection(dir)
+
+		if nowMS < g.players.botNextThink[idx] || nowMS < g.players.nextAttackAt[idx] {
+			continue
+		}
+		if g.isReloadingLocked(idx, nowMS) {
+			continue
+		}
+
+		g.players.activeWeapon[idx] = WeaponPistol
+		if g.currentAmmoLocked(idx, WeaponPistol) <= 0 {
+			if g.currentReserveLocked(idx, WeaponPistol) > 0 {
+				g.startReloadLocked(idx, WeaponPistol, nowMS)
+			}
+			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
+			continue
+		}
+
+		config := weaponConfigByID(WeaponPistol)
+		if !g.spendAmmoLocked(idx, WeaponPistol, 1) {
+			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
+			continue
+		}
+
+		shotTime := nowMS
+		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
+		dir = applyBotAimProfile(dir, g.players.botShotCount[idx])
+		moving := isMovingAtTime(g.players.history[idx], shotTime)
+		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], moving, bloom, shotTime+int64(botID)*97+nowMS)
+		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
+		g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
+		g.players.botShotCount[idx]++
+		shooterPos := positionAtTime(g.players.history[idx], shotTime)
+
+		shotMsg, _ := json.Marshal(map[string]interface{}{
+			"t":         "shot",
+			"id":        botID,
+			"pos":       shooterPos,
+			"dir":       dir,
+			"weapon":    WeaponPistol,
+			"alternate": false,
+		})
+		tm.broadcasts = append(tm.broadcasts, shotMsg)
+
+		hit := findHitTargetLocked(botID, shooterPos, dir, shotTime, config.Range)
+		if hit == nil || !g.players.alive[hit.index] {
+			continue
+		}
+
+		damage := damageForConfig(config, hit.zone)
+		victimID := hit.id
+		victimHP, victimArmor, absorbedDamage := applyDamage(g.players.hp[hit.index], g.players.armor[hit.index], damage)
+		g.players.hp[hit.index] = victimHP
+		g.players.armor[hit.index] = victimArmor
+
+		rewardAmount := rewardForHitZone(hit.zone)
+		if victimHP <= 0 {
+			g.players.alive[hit.index] = false
+			g.players.deaths[hit.index]++
+			g.stripLoadoutOnDeathLocked(hit.index)
+			g.players.kills[idx]++
+			rewardAmount += killReward
+		}
+		g.players.credits[idx] += rewardAmount
+
+		hitMsg, _ := json.Marshal(map[string]interface{}{
+			"t":        "hit",
+			"from":     botID,
+			"to":       victimID,
+			"dmg":      damage,
+			"zone":     hit.zone,
+			"weapon":   WeaponPistol,
+			"hp":       victimHP,
+			"armor":    victimArmor,
+			"absorbed": absorbedDamage,
+		})
+		tm.broadcasts = append(tm.broadcasts, hitMsg)
+
+		if victimHP > 0 {
+			continue
+		}
+
+		killMsg, _ := json.Marshal(map[string]interface{}{
+			"t":      "kill",
+			"killer": botID,
+			"victim": victimID,
+		})
+		tm.broadcasts = append(tm.broadcasts, killMsg)
+	}
+}
+
 func (g *Game) applyEconomyUpdateLocked(idx int, ok bool, kind, item, label, reason string, amount int, nowMS int64) economyUpdate {
 	return economyUpdate{
 		T:                 "economy",
@@ -1740,6 +2078,7 @@ func (g *Game) resetPlayerForNewMatchLocked(idx int, nowMS int64) {
 	g.players.flashEndsAt[idx] = 0
 	g.players.kills[idx] = 0
 	g.players.deaths[idx] = 0
+	g.players.botShotCount[idx] = 0
 	g.players.shotBloom[idx] = 0
 	g.players.bloomWeapon[idx] = WeaponKnife
 	g.players.lastShotAt[idx] = 0
@@ -1978,6 +2317,7 @@ func (g *Game) tick(nowMS int64) {
 			shouldBroadcastState = true
 		default:
 			tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
+			g.tickFallbackBotsLocked(nowMS, tickEvents)
 			if winner := g.roundWinnerByEliminationLocked(); winner != TeamNone {
 				g.beginRoundCooldownLocked(winner, nowMS)
 				shouldBroadcastRound = true
@@ -2072,6 +2412,12 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				if game.state == StatePlaying && normalizeTeam(game.players.team[idx]) == TeamNone {
 					game.players.team[idx] = game.preferredTeamLocked()
 					game.respawnPlayerLocked(idx, nowMS)
+				}
+				game.syncFallbackBotLocked(nowMS)
+				idx, ok = game.players.indexOf(playerID)
+				if !ok {
+					game.mu.Unlock()
+					continue
 				}
 				welcome := map[string]interface{}{
 					"t":     "welcome",
@@ -2412,6 +2758,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			default:
 				game.players.team[idx] = normalizeTeam(requestedTeam)
 				game.respawnPlayerLocked(idx, nowMS)
+				game.syncFallbackBotLocked(nowMS)
 				response["ok"] = true
 			}
 			game.mu.Unlock()
@@ -2424,6 +2771,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			startDeniedReason := ""
 			game.mu.Lock()
 			if game.state == StateWaiting {
+				game.syncFallbackBotLocked(nowMS)
 				if ok, reason := game.canStartMatchLocked(); !ok {
 					startDeniedReason = reason
 				} else {
@@ -2454,10 +2802,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
-	game.mu.RLock()
-	defer game.mu.RUnlock()
-
+func findHitTargetLocked(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
 	var best *hitCandidate
 	bestDist := maxRange
 	shooterIdx, shooterOK := game.players.indexOf(shooterID)
@@ -2490,6 +2835,12 @@ func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange flo
 	}
 
 	return best
+}
+
+func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange float64) *hitCandidate {
+	game.mu.RLock()
+	defer game.mu.RUnlock()
+	return findHitTargetLocked(shooterID, origin, dir, shotTime, maxRange)
 }
 
 func recordPositionSample(history *[]positionSample, at int64, pos Vec3, crouching bool) {
@@ -2690,6 +3041,13 @@ func lookDirFromYawPitch(yaw, pitch float64) Vec3 {
 		math.Sin(pitch),
 		-math.Cos(yaw) * math.Cos(pitch),
 	}
+}
+
+func yawPitchFromDirection(dir Vec3) (yaw, pitch float64) {
+	dir = normalizeVec(dir)
+	yaw = math.Atan2(-dir[0], -dir[2])
+	pitch = math.Asin(math.Max(-1, math.Min(1, dir[1])))
+	return yaw, pitch
 }
 
 func maxInt64(a, b int64) int64 {

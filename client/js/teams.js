@@ -78,8 +78,8 @@ export function getTeamStartState(players) {
     if (counts.blue === 0 || counts.green === 0) {
         return { ok: false, reason: 'Both teams need players' };
     }
-    if (counts.blue !== counts.green) {
-        return { ok: false, reason: 'Teams must be even' };
+    if (Math.abs(counts.blue - counts.green) > 1) {
+        return { ok: false, reason: 'Teams must stay within one player' };
     }
     return { ok: true, reason: '' };
 }

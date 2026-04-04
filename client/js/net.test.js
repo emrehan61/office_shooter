@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyPong, createNet, connect, estimateServerTime, sendBuy, sendInput, sendReload, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { applyPong, createNet, connect, estimateServerTime, sampleRemotePlayer, sendBuy, sendInput, sendReload, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { applyAuthoritativeState, createPlayer } from './player.js';
 
 class FakeWebSocket {
@@ -147,6 +147,54 @@ test('state snapshots refresh kills and deaths for the leaderboard', async () =>
         assert.equal(net.players['2'].machineGunReserve, 50);
         assert.equal(net.players['2'].credits, 610);
         assert.equal(net.match.buyPhase, true);
+    } finally {
+        restore();
+    }
+});
+
+test('remote players can be sampled smoothly between server-timed snapshots', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            state: 'playing',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true },
+        });
+        await connected;
+
+        ws.emit({
+            t: 'state',
+            serverTime: 1000,
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 299000, buyTimeLeftMs: 9000, buyPhase: true },
+            players: {
+                2: { pos: [0, 1.7, 0], yaw: 0, pitch: 0.1, hp: 100, armor: 0, activeWeapon: 'knife' },
+            },
+        });
+        ws.emit({
+            t: 'state',
+            serverTime: 1100,
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 298900, buyTimeLeftMs: 8900, buyPhase: true },
+            players: {
+                2: { pos: [10, 1.2, -4], yaw: Math.PI, pitch: -0.3, crouching: true, hp: 100, armor: 0, activeWeapon: 'knife' },
+            },
+        });
+
+        const sampled = sampleRemotePlayer(net.players['2'], 1050);
+
+        assert.ok(sampled);
+        assert.equal(sampled.crouching, true);
+        assert.ok(Math.abs(sampled.pos[0] - 5) < 1e-9);
+        assert.ok(Math.abs(sampled.pos[1] - 1.45) < 1e-9);
+        assert.ok(Math.abs(sampled.pos[2] + 2) < 1e-9);
+        assert.ok(Math.abs(sampled.yaw - Math.PI * 0.5) < 1e-9);
+        assert.ok(Math.abs(sampled.pitch + 0.1) < 1e-9);
     } finally {
         restore();
     }
