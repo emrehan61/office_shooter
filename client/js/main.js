@@ -21,7 +21,7 @@ import {
 } from './player.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, sendBuy, sendInput, sendReload, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendInput, sendReload, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { buildAvatarVerts } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js';
@@ -39,11 +39,14 @@ import {
 } from './audio.js';
 
 const SEND_RATE = 1 / 60;
+const REMOTE_RENDER_DELAY_MS = 100;
 
 let lastTime = 0;
 let sendTimer = 0;
 let buyMenuOpen = false;
 const localImpactEffects = [];
+const worldDynamicVerts = [];
+const mergedEffects = [];
 
 const canvas = document.getElementById('game');
 const renderer = createRenderer(canvas);
@@ -593,38 +596,27 @@ function frame(time) {
     drawWorld(renderer, camera.viewMatrix, camera.projMatrix);
 
     if (net.gameStarted) {
-        const avatars = [];
+        const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
+        worldDynamicVerts.length = 0;
         for (const id in net.players) {
             if (Number(id) === net.myId) continue;
 
             const remote = net.players[id];
             if (!remote.alive) continue;
-            avatars.push(...buildAvatarVerts(id, remote));
+            const remoteView = sampleRemotePlayer(remote, renderServerTimeMs);
+            appendVerts(worldDynamicVerts, buildAvatarVerts(id, remote, remoteView));
         }
 
-        if (avatars.length > 0) {
+        appendVerts(worldDynamicVerts, buildProjectileVerts(net.projectiles));
+        mergedEffects.length = 0;
+        appendItems(mergedEffects, net.effects);
+        appendItems(mergedEffects, localImpactEffects);
+        appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects));
+
+        if (worldDynamicVerts.length > 0) {
             const mvp = mat4Create();
             mat4Multiply(mvp, camera.projMatrix, camera.viewMatrix);
-            drawDynamic(renderer, avatars, mvp);
-            const projectileVerts = buildProjectileVerts(net.projectiles);
-            if (projectileVerts.length > 0) {
-                drawDynamic(renderer, projectileVerts, mvp);
-            }
-            const effectVerts = buildEffectVerts([...net.effects, ...localImpactEffects]);
-            if (effectVerts.length > 0) {
-                drawDynamic(renderer, effectVerts, mvp);
-            }
-        } else if (net.projectiles.length > 0 || net.effects.length > 0 || localImpactEffects.length > 0) {
-            const mvp = mat4Create();
-            mat4Multiply(mvp, camera.projMatrix, camera.viewMatrix);
-            const projectileVerts = buildProjectileVerts(net.projectiles);
-            if (projectileVerts.length > 0) {
-                drawDynamic(renderer, projectileVerts, mvp);
-            }
-            const effectVerts = buildEffectVerts([...net.effects, ...localImpactEffects]);
-            if (effectVerts.length > 0) {
-                drawDynamic(renderer, effectVerts, mvp);
-            }
+            drawDynamic(renderer, worldDynamicVerts, mvp);
         }
 
         if (player.alive) {
@@ -652,6 +644,18 @@ function frame(time) {
             )
         ),
     });
+}
+
+function appendVerts(target, source) {
+    for (let i = 0; i < source.length; i += 1) {
+        target.push(source[i]);
+    }
+}
+
+function appendItems(target, source) {
+    for (let i = 0; i < source.length; i += 1) {
+        target.push(source[i]);
+    }
 }
 
 requestAnimationFrame(frame);

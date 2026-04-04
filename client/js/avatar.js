@@ -17,6 +17,7 @@ const SKIN_MAT = 9;
 const GEAR_MAT = 10;
 const FLASH_MAT = 4;
 const GUN_MAT = 3;
+const BOX_CACHE = new Map();
 
 export function getPlayerPalette(id, team = '') {
     const normalizedTeam = normalizeTeam(team);
@@ -30,10 +31,10 @@ export function getPlayerPalette(id, team = '') {
     return PLAYER_PALETTES[index];
 }
 
-export function buildAvatarVerts(playerId, player) {
+export function buildAvatarVerts(playerId, player, pose = player) {
     const palette = getPlayerPalette(playerId, player?.team);
     const shotKick = Math.max(0, player.shotTime || 0) / 0.12;
-    const crouching = !!player.crouching;
+    const crouching = !!pose.crouching;
     const eyeHeight = crouching ? CROUCH_EYE_HEIGHT : STAND_EYE_HEIGHT;
     const headY = crouching ? 1.24 : 1.65;
     const headTopY = crouching ? 1.39 : 1.83;
@@ -53,36 +54,36 @@ export function buildAvatarVerts(playerId, player) {
     const gunY = crouching ? 0.74 : 0.9;
     const verts = [];
 
-    appendPart(verts, boxVerts(0, headY, 0, 0.17, 0.22, 0.17, SKIN_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0, headTopY, 0.01, 0.18, 0.05, 0.18, palette.primary), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0, headsetY, 0.16, 0.08, 0.04, 0.03, GEAR_MAT), player.pos, player.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, headY, 0, 0.17, 0.22, 0.17, SKIN_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, headTopY, 0.01, 0.18, 0.05, 0.18, palette.primary), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, headsetY, 0.16, 0.08, 0.04, 0.03, GEAR_MAT), pose.pos, pose.yaw, eyeHeight);
 
-    appendPart(verts, boxVerts(0, chestY, 0, 0.27, 0.32, 0.18, palette.primary), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0, plateY, 0.17, 0.19, 0.16, 0.03, palette.accent), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0, beltY, 0, 0.22, 0.16, 0.16, palette.accent), player.pos, player.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, chestY, 0, 0.27, 0.32, 0.18, palette.primary), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, plateY, 0.17, 0.19, 0.16, 0.03, palette.accent), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0, beltY, 0, 0.22, 0.16, 0.16, palette.accent), pose.pos, pose.yaw, eyeHeight);
 
-    appendPart(verts, boxVerts(-0.12, thighY, 0, 0.1, crouching ? 0.22 : 0.32, 0.11, GEAR_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0.12, thighY, 0, 0.1, crouching ? 0.22 : 0.32, 0.11, GEAR_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(-0.12, shinY, 0.01, 0.1, crouching ? 0.16 : 0.22, 0.11, palette.primary), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0.12, shinY, 0.01, 0.1, crouching ? 0.16 : 0.22, 0.11, palette.primary), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(-0.12, footY, 0.08, 0.13, 0.05, 0.18, GEAR_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0.12, footY, 0.08, 0.13, 0.05, 0.18, GEAR_MAT), player.pos, player.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(-0.12, thighY, 0, 0.1, crouching ? 0.22 : 0.32, 0.11, GEAR_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0.12, thighY, 0, 0.1, crouching ? 0.22 : 0.32, 0.11, GEAR_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(-0.12, shinY, 0.01, 0.1, crouching ? 0.16 : 0.22, 0.11, palette.primary), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0.12, shinY, 0.01, 0.1, crouching ? 0.16 : 0.22, 0.11, palette.primary), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(-0.12, footY, 0.08, 0.13, 0.05, 0.18, GEAR_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0.12, footY, 0.08, 0.13, 0.05, 0.18, GEAR_MAT), pose.pos, pose.yaw, eyeHeight);
 
-    appendPart(verts, boxVerts(-0.36, leftShoulderY, -0.02, 0.08, 0.18, 0.09, palette.primary), player.pos, player.yaw, eyeHeight, 0.28, 0, 0.25);
-    appendPart(verts, boxVerts(-0.42, leftElbowY, -0.06, 0.07, 0.16, 0.08, SKIN_MAT), player.pos, player.yaw, eyeHeight, 0.2, 0, 0.08);
-    appendPart(verts, boxVerts(-0.45, leftHandY, -0.1, 0.06, 0.06, 0.07, SKIN_MAT), player.pos, player.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(-0.36, leftShoulderY, -0.02, 0.08, 0.18, 0.09, palette.primary), pose.pos, pose.yaw, eyeHeight, 0.28, 0, 0.25);
+    appendPart(verts, getBoxVerts(-0.42, leftElbowY, -0.06, 0.07, 0.16, 0.08, SKIN_MAT), pose.pos, pose.yaw, eyeHeight, 0.2, 0, 0.08);
+    appendPart(verts, getBoxVerts(-0.45, leftHandY, -0.1, 0.06, 0.06, 0.07, SKIN_MAT), pose.pos, pose.yaw, eyeHeight);
 
-    appendPart(verts, boxVerts(0.34, rightShoulderY, -0.08, 0.08, 0.18, 0.09, palette.primary), player.pos, player.yaw, eyeHeight, -0.35 - shotKick * 0.2, -0.08, -0.15);
-    appendPart(verts, boxVerts(0.42, rightElbowY, -0.25 - shotKick * 0.04, 0.07, 0.17, 0.08, SKIN_MAT), player.pos, player.yaw, eyeHeight, -0.75 - shotKick * 0.45, -0.08, -0.05);
-    appendPart(verts, boxVerts(0.46, rightHandY, -0.42 - shotKick * 0.06, 0.06, 0.06, 0.08, SKIN_MAT), player.pos, player.yaw, eyeHeight, -0.2, 0, 0);
+    appendPart(verts, getBoxVerts(0.34, rightShoulderY, -0.08, 0.08, 0.18, 0.09, palette.primary), pose.pos, pose.yaw, eyeHeight, -0.35 - shotKick * 0.2, -0.08, -0.15);
+    appendPart(verts, getBoxVerts(0.42, rightElbowY, -0.25 - shotKick * 0.04, 0.07, 0.17, 0.08, SKIN_MAT), pose.pos, pose.yaw, eyeHeight, -0.75 - shotKick * 0.45, -0.08, -0.05);
+    appendPart(verts, getBoxVerts(0.46, rightHandY, -0.42 - shotKick * 0.06, 0.06, 0.06, 0.08, SKIN_MAT), pose.pos, pose.yaw, eyeHeight, -0.2, 0, 0);
 
-    appendPart(verts, boxVerts(0.1, gunY, -0.44 - shotKick * 0.08, 0.05, 0.05, 0.22, GUN_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0.1, gunY + 0.04, -0.69 - shotKick * 0.1, 0.02, 0.02, 0.1, GUN_MAT), player.pos, player.yaw, eyeHeight);
-    appendPart(verts, boxVerts(0.1, gunY - 0.12, -0.28, 0.03, 0.08, 0.04, GUN_MAT), player.pos, player.yaw, eyeHeight, 0.45, 0, 0);
+    appendPart(verts, getBoxVerts(0.1, gunY, -0.44 - shotKick * 0.08, 0.05, 0.05, 0.22, GUN_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0.1, gunY + 0.04, -0.69 - shotKick * 0.1, 0.02, 0.02, 0.1, GUN_MAT), pose.pos, pose.yaw, eyeHeight);
+    appendPart(verts, getBoxVerts(0.1, gunY - 0.12, -0.28, 0.03, 0.08, 0.04, GUN_MAT), pose.pos, pose.yaw, eyeHeight, 0.45, 0, 0);
 
     if (shotKick > 0) {
         const flash = 0.03 + shotKick * 0.025;
-        appendPart(verts, boxVerts(0.1, gunY - 0.06, -0.83, flash, flash * 0.8, flash * 0.7, FLASH_MAT), player.pos, player.yaw, eyeHeight);
+        appendPart(verts, getBoxVerts(0.1, gunY - 0.06, -0.83, flash, flash * 0.8, flash * 0.7, FLASH_MAT), pose.pos, pose.yaw, eyeHeight);
     }
 
     return verts;
@@ -128,4 +129,14 @@ function appendPart(out, verts, pos, yaw, eyeHeight = STAND_EYE_HEIGHT, rx = 0, 
             verts[i + 5]
         );
     }
+}
+
+function getBoxVerts(cx, cy, cz, hw, hh, hd, mat) {
+    const key = `${cx}|${cy}|${cz}|${hw}|${hh}|${hd}|${mat}`;
+    let verts = BOX_CACHE.get(key);
+    if (!verts) {
+        verts = boxVerts(cx, cy, cz, hw, hh, hd, mat);
+        BOX_CACHE.set(key, verts);
+    }
+    return verts;
 }

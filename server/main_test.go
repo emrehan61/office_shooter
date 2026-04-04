@@ -150,6 +150,25 @@ func TestRemovePlayerSwapDeleteKeepsRemainingIndexValid(t *testing.T) {
 	}
 }
 
+func TestStateTickIncludesServerTime(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+
+	host := addNamedPlayer(g, "Host")
+	nowMS := int64(1234)
+
+	g.stateTick(nowMS)
+
+	msg := readQueuedMessage(t, host.sendCh)
+	got, ok := msg["serverTime"].(float64)
+	if !ok {
+		t.Fatalf("expected serverTime number, got %#v", msg["serverTime"])
+	}
+	if int64(got) != nowMS {
+		t.Fatalf("expected serverTime %d, got %d", nowMS, int64(got))
+	}
+}
+
 func TestTracePlayerHitHeadshotWinsAndUsesHeadDamage(t *testing.T) {
 	origin := Vec3{0, 1.7, 5}
 	target := Vec3{0, 1.7, 0}

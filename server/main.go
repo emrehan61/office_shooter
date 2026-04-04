@@ -506,6 +506,7 @@ type playerState struct {
 
 type playerStateMessage struct {
 	T           string               `json:"t"`
+	ServerTime  int64                `json:"serverTime"`
 	Players     map[int]playerState  `json:"players"`
 	Projectiles []projectileSnapshot `json:"projectiles,omitempty"`
 	Effects     []areaEffectSnapshot `json:"effects,omitempty"`
@@ -679,6 +680,7 @@ func (g *Game) buildPlayerStateMessageLocked(messageType string, nowMS int64) pl
 
 	return playerStateMessage{
 		T:           messageType,
+		ServerTime:  nowMS,
 		Players:     state,
 		Projectiles: projectiles,
 		Effects:     effects,
