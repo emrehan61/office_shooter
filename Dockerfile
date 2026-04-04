@@ -10,8 +10,9 @@ RUN go mod download
 WORKDIR /src
 COPY server ./server
 
+WORKDIR /src/server
 RUN CGO_ENABLED=0 \
-    go build -trimpath -ldflags="-s -w" -o /out/office-shooter ./server
+    go build -trimpath -ldflags="-s -w" -o /out/office-shooter .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
