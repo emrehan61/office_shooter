@@ -101,6 +101,8 @@ test('authoritative state sync updates loadout and death state', () => {
         hp: 0,
         armor: 18,
         credits: 725,
+        kills: 3,
+        deaths: 1,
         team: TEAM_BLUE,
         hasPistol: true,
         pistolClip: 7,
@@ -113,6 +115,8 @@ test('authoritative state sync updates loadout and death state', () => {
     assert.equal(player.hp, 0);
     assert.equal(player.armor, 18);
     assert.equal(player.credits, 725);
+    assert.equal(player.kills, 3);
+    assert.equal(player.deaths, 1);
     assert.equal(player.team, TEAM_BLUE);
     assert.equal(player.hasPistol, true);
     assert.equal(player.pistolClip, 7);

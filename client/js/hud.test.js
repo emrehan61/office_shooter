@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildLeaderboardRows, getRoundResultDisplay, getShopItemState } from './hud.js';
+import { buildLeaderboardRows, getMatchBarDisplay, getRoundResultDisplay, getShopItemState } from './hud.js';
 
 test('leaderboard rows sort by kills descending then deaths ascending', () => {
     const rows = buildLeaderboardRows({
@@ -15,6 +15,24 @@ test('leaderboard rows sort by kills descending then deaths ascending', () => {
     assert.equal(rows[0].kills, 4);
     assert.equal(rows[0].deaths, 1);
     assert.equal(rows[0].credits, 250);
+});
+
+test('match bar shows deathmatch kills, deaths, rank, and player count', () => {
+    assert.deepEqual(getMatchBarDisplay(
+        { kills: 4, deaths: 2 },
+        { mode: 'deathmatch' },
+        {
+            players: {
+                1: { name: 'Alpha', kills: 4, deaths: 2, inMatch: true },
+                2: { name: 'Bravo', kills: 6, deaths: 3, inMatch: true },
+                3: { name: 'Charlie', kills: 4, deaths: 5, inMatch: true },
+            },
+            myId: 1,
+        },
+    ), {
+        left: { name: 'KILLS', value: '4', meta: 'RANK #2' },
+        right: { name: 'DEATHS', value: '2', meta: 'PLAYERS 3' },
+    });
 });
 
 test('shop item state reflects ownership, ammo gates, and grenade stock', () => {

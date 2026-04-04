@@ -38,10 +38,12 @@ export function createHUD() {
         roundEl: document.getElementById('round-label'),
         roundTimerEl: document.getElementById('round-timer'),
         buyStatusEl: document.getElementById('buy-status'),
+        blueScoreNameEl: document.getElementById('blue-score-name'),
         blueScoreEl: document.getElementById('blue-score'),
+        blueScoreMetaEl: document.getElementById('blue-score-meta'),
+        greenScoreNameEl: document.getElementById('green-score-name'),
         greenScoreEl: document.getElementById('green-score'),
-        blueAliveEl: document.getElementById('blue-alive'),
-        greenAliveEl: document.getElementById('green-alive'),
+        greenScoreMetaEl: document.getElementById('green-score-meta'),
         countdownSplash: document.getElementById('buy-countdown'),
         roundResultBanner: document.getElementById('round-result-banner'),
         roundResultTitle: document.getElementById('round-result-title'),
@@ -74,6 +76,7 @@ export function createHUD() {
 
 export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui = {}) {
     const isDeathmatch = match.mode === MODE_DEATHMATCH;
+    const matchBar = getMatchBarDisplay(player, match, leaderboard);
     if (hud.healthEl) hud.healthEl.textContent = player.hp;
     if (hud.armorEl) hud.armorEl.textContent = player.armor;
     if (hud.creditsEl) hud.creditsEl.textContent = player.credits;
@@ -83,10 +86,12 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
         ? 'DEATHMATCH'
         : `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
     if (hud.roundTimerEl) hud.roundTimerEl.textContent = formatClock(match.roundTimeLeftMs || 0);
-    if (hud.blueScoreEl) hud.blueScoreEl.textContent = isDeathmatch ? '-' : String(match.blueScore || 0);
-    if (hud.greenScoreEl) hud.greenScoreEl.textContent = isDeathmatch ? '-' : String(match.greenScore || 0);
-    if (hud.blueAliveEl) hud.blueAliveEl.textContent = isDeathmatch ? '-' : String(match.blueAlive || 0);
-    if (hud.greenAliveEl) hud.greenAliveEl.textContent = isDeathmatch ? '-' : String(match.greenAlive || 0);
+    if (hud.blueScoreNameEl) hud.blueScoreNameEl.textContent = matchBar.left.name;
+    if (hud.blueScoreEl) hud.blueScoreEl.textContent = matchBar.left.value;
+    if (hud.blueScoreMetaEl) hud.blueScoreMetaEl.textContent = matchBar.left.meta;
+    if (hud.greenScoreNameEl) hud.greenScoreNameEl.textContent = matchBar.right.name;
+    if (hud.greenScoreEl) hud.greenScoreEl.textContent = matchBar.right.value;
+    if (hud.greenScoreMetaEl) hud.greenScoreMetaEl.textContent = matchBar.right.meta;
     if (hud.buyStatusEl) {
         if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
             hud.buyStatusEl.textContent = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
@@ -217,6 +222,38 @@ export function buildLeaderboardRows(players, myId) {
             if (a.name !== b.name) return a.name.localeCompare(b.name);
             return a.id - b.id;
         });
+}
+
+export function getMatchBarDisplay(player = {}, match = {}, leaderboard = {}) {
+    if (match.mode === MODE_DEATHMATCH) {
+        const rows = buildLeaderboardRows(leaderboard.players, leaderboard.myId);
+        const rank = rows.findIndex((row) => row.isSelf) + 1;
+        return {
+            left: {
+                name: 'KILLS',
+                value: String(player.kills || 0),
+                meta: rank > 0 ? `RANK #${rank}` : 'RANK --',
+            },
+            right: {
+                name: 'DEATHS',
+                value: String(player.deaths || 0),
+                meta: `PLAYERS ${rows.length}`,
+            },
+        };
+    }
+
+    return {
+        left: {
+            name: 'BLUE',
+            value: String(match.blueScore || 0),
+            meta: `ALIVE ${match.blueAlive || 0}`,
+        },
+        right: {
+            name: 'GREEN',
+            value: String(match.greenScore || 0),
+            meta: `ALIVE ${match.greenAlive || 0}`,
+        },
+    };
 }
 
 export function getRoundResultDisplay(match = {}) {

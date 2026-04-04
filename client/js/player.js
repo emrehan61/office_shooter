@@ -52,6 +52,8 @@ export function createPlayer() {
         team: TEAM_NONE,
         inMatch: true,
         isBot: false,
+        kills: 0,
+        deaths: 0,
         activeWeapon: WEAPON_KNIFE,
         aiming: false,
         reloading: false,
@@ -102,6 +104,8 @@ export function applyAuthoritativeState(player, state) {
     if (typeof state.hp === 'number') player.hp = clamp(state.hp, 0, MAX_HP);
     if (typeof state.armor === 'number') player.armor = clamp(state.armor, 0, MAX_ARMOR);
     if (typeof state.credits === 'number') player.credits = Math.max(0, state.credits);
+    if (typeof state.kills === 'number') player.kills = Math.max(0, state.kills);
+    if (typeof state.deaths === 'number') player.deaths = Math.max(0, state.deaths);
     if (typeof state.hasPistol === 'boolean') player.hasPistol = state.hasPistol;
     if (typeof state.hasMachineGun === 'boolean') player.hasMachineGun = state.hasMachineGun;
     if (typeof state.pistolClip === 'number') player.pistolClip = clampAmmo(state.pistolClip, PISTOL_MAG_SIZE);
