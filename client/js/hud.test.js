@@ -63,3 +63,15 @@ test('round result display shows winner and cooldown text', () => {
         subtitle: 'MATCH ENDS IN 0:05',
     });
 });
+
+test('round result display shows the deathmatch replay vote countdown', () => {
+    assert.deepEqual(getRoundResultDisplay({
+        mode: 'deathmatch',
+        deathmatchVoteActive: true,
+        deathmatchVoteTimeLeftMs: 8000,
+    }), {
+        visible: true,
+        title: 'PLAY AGAIN?',
+        subtitle: 'NEXT MATCH VOTE ENDS IN 0:08',
+    });
+});

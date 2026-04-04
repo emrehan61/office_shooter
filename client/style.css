@@ -698,6 +698,10 @@ button:disabled {
     margin: 18px auto 14px;
     max-width: 520px;
 }
+#mode-select {
+    margin: 18px auto 10px;
+    max-width: 520px;
+}
 .team-select-title {
     color: #d5e9ff;
     font-size: 15px;
@@ -713,6 +717,10 @@ button:disabled {
 .team-select-btn {
     min-width: 180px;
 }
+.team-select-btn.is-active {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16) inset;
+    background: rgba(255, 214, 112, 0.18);
+}
 .team-select-btn.team-blue {
     background: rgba(36, 92, 168, 0.24);
     border-color: rgba(120, 182, 255, 0.38);
@@ -720,9 +728,6 @@ button:disabled {
 .team-select-btn.team-green {
     background: rgba(34, 122, 70, 0.22);
     border-color: rgba(124, 224, 153, 0.34);
-}
-.team-select-btn.is-active {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16) inset;
 }
 #team-hint {
     margin-top: 10px;
@@ -753,6 +758,9 @@ button:disabled {
 .player-row.empty {
     color: #777;
 }
+.player-row.is-spectating {
+    opacity: 0.7;
+}
 .player-team-badge {
     min-width: 88px;
     padding: 2px 8px;
@@ -772,6 +780,29 @@ button:disabled {
 .player-team-badge.team-none {
     background: rgba(255, 255, 255, 0.08);
     color: #aeb7c5;
+}
+.player-team-badge.is-bot {
+    background: rgba(255, 213, 111, 0.16);
+    color: #ffe6b8;
+}
+#rejoin-prompt {
+    margin: 18px auto 14px;
+    max-width: 520px;
+    padding: 14px 16px;
+    border: 1px solid rgba(255, 214, 120, 0.24);
+    border-radius: 14px;
+    background: rgba(28, 20, 6, 0.68);
+}
+.rejoin-title {
+    color: #ffe39d;
+    font-size: 15px;
+    letter-spacing: 1.4px;
+    margin-bottom: 8px;
+}
+#rejoin-copy {
+    color: #d5d9e1;
+    font-size: 13px;
+    margin-bottom: 12px;
 }
 
 @media (max-width: 720px) {

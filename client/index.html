@@ -91,6 +91,13 @@
             </div>
             <div id="lobby-panel" style="display:none;">
                 <div id="lobby-status">Connected</div>
+                <div id="mode-select">
+                    <div class="team-select-title">Select Mode</div>
+                    <div class="team-select-buttons">
+                        <button id="mode-team-btn" class="team-select-btn">TEAM</button>
+                        <button id="mode-deathmatch-btn" class="team-select-btn">DEATHMATCH</button>
+                    </div>
+                </div>
                 <div id="team-select">
                     <div class="team-select-title">Select Team</div>
                     <div class="team-select-buttons">
@@ -98,6 +105,14 @@
                         <button id="team-green-btn" class="team-select-btn team-green">GREEN TEAM (0)</button>
                     </div>
                     <div id="team-hint">All players must join balanced teams.</div>
+                </div>
+                <div id="rejoin-prompt" style="display:none;">
+                    <div class="rejoin-title">PLAY AGAIN?</div>
+                    <div id="rejoin-copy">Play another 10-minute deathmatch?</div>
+                    <div class="team-select-buttons">
+                        <button id="rejoin-yes-btn" class="team-select-btn">YES</button>
+                        <button id="rejoin-no-btn" class="team-select-btn">NO</button>
+                    </div>
                 </div>
                 <div id="player-list"></div>
                 <button id="start-btn" disabled>Start Game</button>

@@ -1,3 +1,5 @@
+import { MODE_TEAM, normalizeMode } from './modes.js';
+
 export function createNet() {
     return {
         ws: null,
@@ -24,6 +26,8 @@ export function createNet() {
         onMatch: null,
         onRound: null,
         onTeam: null,
+        onMode: null,
+        onRejoin: null,
         onStartDenied: null,
     };
 }
@@ -170,6 +174,14 @@ function handleMsg(net, msg) {
             if (net.onTeam) net.onTeam(msg);
             break;
 
+        case 'mode':
+            if (net.onMode) net.onMode(msg);
+            break;
+
+        case 'rejoin':
+            if (net.onRejoin) net.onRejoin(msg);
+            break;
+
         case 'round':
             applySnapshot(net, msg, true);
             if (net.onRound) net.onRound(msg);
@@ -303,6 +315,16 @@ export function sendTeam(net, team) {
     net.ws.send(JSON.stringify({ t: 'team', team }));
 }
 
+export function sendMode(net, mode) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'mode', mode: normalizeMode(mode) }));
+}
+
+export function sendRejoin(net, yes) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'rejoin', yes: !!yes }));
+}
+
 export function sendBuy(net, item) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({ t: 'buy', item }));
@@ -350,6 +372,8 @@ function ensurePlayer(net, id) {
             flashbangs: 0,
             flashTimeLeftMs: 0,
             team: '',
+            inMatch: true,
+            isBot: false,
             activeWeapon: 'knife',
             reloading: false,
             reloadTimeLeftMs: 0,
@@ -396,6 +420,8 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
     target.flashbangs = state.flashbangs ?? target.flashbangs;
     target.flashTimeLeftMs = state.flashTimeLeftMs ?? target.flashTimeLeftMs;
     target.team = state.team ?? target.team;
+    if (typeof state.inMatch === 'boolean') target.inMatch = state.inMatch;
+    if (typeof state.isBot === 'boolean') target.isBot = state.isBot;
     target.activeWeapon = state.activeWeapon ?? target.activeWeapon;
     if (typeof state.reloading === 'boolean') {
         target.reloading = state.reloading;
@@ -427,6 +453,7 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
 function applyMatchState(net, match) {
     if (!match) return;
 
+    net.match.mode = normalizeMode(match.mode ?? net.match.mode);
     net.match.currentRound = match.currentRound ?? net.match.currentRound;
     net.match.totalRounds = match.totalRounds ?? net.match.totalRounds;
     net.match.roundTimeLeftMs = match.roundTimeLeftMs ?? net.match.roundTimeLeftMs;
@@ -439,6 +466,13 @@ function applyMatchState(net, match) {
     net.match.greenScore = match.greenScore ?? net.match.greenScore;
     net.match.blueAlive = match.blueAlive ?? net.match.blueAlive;
     net.match.greenAlive = match.greenAlive ?? net.match.greenAlive;
+    net.match.deathmatchVoteActive = match.deathmatchVoteActive ?? net.match.deathmatchVoteActive;
+    net.match.deathmatchVoteTimeLeftMs = match.deathmatchVoteTimeLeftMs ?? net.match.deathmatchVoteTimeLeftMs;
+    if (typeof match.deathmatchVoteTimeLeftMs === 'number') {
+        net.match.deathmatchVoteEndsAtClientMs = Date.now() + Math.max(0, match.deathmatchVoteTimeLeftMs);
+    } else if (match.deathmatchVoteActive === false) {
+        net.match.deathmatchVoteEndsAtClientMs = 0;
+    }
 
     if (net.onMatch) {
         net.onMatch(net.match);
@@ -447,6 +481,7 @@ function applyMatchState(net, match) {
 
 function createDefaultMatchState() {
     return {
+        mode: MODE_TEAM,
         currentRound: 0,
         totalRounds: 0,
         roundTimeLeftMs: 0,
@@ -459,6 +494,9 @@ function createDefaultMatchState() {
         greenScore: 0,
         blueAlive: 0,
         greenAlive: 0,
+        deathmatchVoteActive: false,
+        deathmatchVoteTimeLeftMs: 0,
+        deathmatchVoteEndsAtClientMs: 0,
     };
 }
 
@@ -498,6 +536,9 @@ function applyGameState(net, state) {
         net.match.roundWinner = '';
         net.match.blueAlive = 0;
         net.match.greenAlive = 0;
+        net.match.deathmatchVoteActive = false;
+        net.match.deathmatchVoteTimeLeftMs = 0;
+        net.match.deathmatchVoteEndsAtClientMs = 0;
     }
 }
 

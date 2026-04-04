@@ -14,6 +14,7 @@ import {
     WEAPON_PISTOL,
     isUtilityWeapon,
 } from './economy.js';
+import { MODE_DEATHMATCH } from './modes.js';
 import { getUtilityCount, getWeaponAmmoState } from './player.js';
 import { TEAM_BLUE, TEAM_GREEN, getTeamLabel, normalizeTeam } from './teams.js';
 
@@ -72,19 +73,26 @@ export function createHUD() {
 }
 
 export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui = {}) {
+    const isDeathmatch = match.mode === MODE_DEATHMATCH;
     if (hud.healthEl) hud.healthEl.textContent = player.hp;
     if (hud.armorEl) hud.armorEl.textContent = player.armor;
     if (hud.creditsEl) hud.creditsEl.textContent = player.credits;
     if (hud.pingEl) hud.pingEl.textContent = formatPing(network.latencyMs);
     if (hud.weaponEl) hud.weaponEl.textContent = WEAPON_DEFS[player.activeWeapon]?.label || 'Knife';
-    if (hud.roundEl) hud.roundEl.textContent = `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
+    if (hud.roundEl) hud.roundEl.textContent = isDeathmatch
+        ? 'DEATHMATCH'
+        : `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
     if (hud.roundTimerEl) hud.roundTimerEl.textContent = formatClock(match.roundTimeLeftMs || 0);
-    if (hud.blueScoreEl) hud.blueScoreEl.textContent = String(match.blueScore || 0);
-    if (hud.greenScoreEl) hud.greenScoreEl.textContent = String(match.greenScore || 0);
-    if (hud.blueAliveEl) hud.blueAliveEl.textContent = String(match.blueAlive || 0);
-    if (hud.greenAliveEl) hud.greenAliveEl.textContent = String(match.greenAlive || 0);
+    if (hud.blueScoreEl) hud.blueScoreEl.textContent = isDeathmatch ? '-' : String(match.blueScore || 0);
+    if (hud.greenScoreEl) hud.greenScoreEl.textContent = isDeathmatch ? '-' : String(match.greenScore || 0);
+    if (hud.blueAliveEl) hud.blueAliveEl.textContent = isDeathmatch ? '-' : String(match.blueAlive || 0);
+    if (hud.greenAliveEl) hud.greenAliveEl.textContent = isDeathmatch ? '-' : String(match.greenAlive || 0);
     if (hud.buyStatusEl) {
-        if (match.intermission) {
+        if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
+            hud.buyStatusEl.textContent = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
+        } else if (isDeathmatch) {
+            hud.buyStatusEl.textContent = 'FREE FOR ALL';
+        } else if (match.intermission) {
             hud.buyStatusEl.textContent = `ROUND OVER • ${formatClock(match.intermissionTimeLeftMs || 0)}`;
         } else if (match.buyPhase) {
             hud.buyStatusEl.textContent = ui.buyMenuOpen
@@ -177,6 +185,7 @@ export function formatPing(latencyMs) {
 
 export function buildLeaderboardRows(players, myId) {
     return Object.entries(players || {})
+        .filter(([, player]) => player?.inMatch !== false)
         .map(([id, player]) => ({
             id: Number(id),
             name: player.name || `Player ${id}`,
@@ -196,6 +205,14 @@ export function buildLeaderboardRows(players, myId) {
 }
 
 export function getRoundResultDisplay(match = {}) {
+    if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
+        return {
+            visible: true,
+            title: 'PLAY AGAIN?',
+            subtitle: `NEXT MATCH VOTE ENDS IN ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`,
+        };
+    }
+
     if (!match.intermission || (match.intermissionTimeLeftMs || 0) <= 0) {
         return { visible: false, title: '', subtitle: '' };
     }

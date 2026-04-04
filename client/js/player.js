@@ -47,6 +47,8 @@ export function createPlayer() {
         flashbangs: 0,
         flashTimeLeftMs: 0,
         team: TEAM_NONE,
+        inMatch: true,
+        isBot: false,
         activeWeapon: WEAPON_KNIFE,
         aiming: false,
         reloading: false,
@@ -104,6 +106,8 @@ export function applyAuthoritativeState(player, state) {
     if (typeof state.flashbangs === 'number') player.flashbangs = clampInventory(state.flashbangs, GRENADE_MAX);
     if (typeof state.flashTimeLeftMs === 'number') player.flashTimeLeftMs = Math.max(0, state.flashTimeLeftMs);
     if (typeof state.team === 'string') player.team = normalizeTeam(state.team);
+    if (typeof state.inMatch === 'boolean') player.inMatch = state.inMatch;
+    if (typeof state.isBot === 'boolean') player.isBot = state.isBot;
     if (typeof state.reloadTimeLeftMs === 'number') {
         player.reloadTimeLeftMs = Math.max(0, state.reloadTimeLeftMs);
         player.reloading = player.reloadTimeLeftMs > 0;
