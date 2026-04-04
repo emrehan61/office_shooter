@@ -150,6 +150,7 @@ type areaEffectSnapshot struct {
 type playerStore struct {
 	ids           []int
 	names         []string
+	isBot         []bool
 	pos           []Vec3
 	yaw           []float64
 	pitch         []float64
@@ -178,6 +179,7 @@ type playerStore struct {
 	kills         []int
 	deaths        []int
 	alive         []bool
+	botNextThink  []int64
 	conns         []*websocket.Conn
 	sendChs       []chan []byte
 	history       [][]positionSample
@@ -246,12 +248,16 @@ func (ps *playerStore) indexOf(id int) (int, bool) {
 	return idx, ok
 }
 
-func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64) chan []byte {
-	sendCh := make(chan []byte, 64)
+func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64, isBot bool) chan []byte {
+	var sendCh chan []byte
+	if !isBot {
+		sendCh = make(chan []byte, 64)
+	}
 	idx := len(ps.ids)
 
 	ps.ids = append(ps.ids, id)
 	ps.names = append(ps.names, "")
+	ps.isBot = append(ps.isBot, isBot)
 	ps.pos = append(ps.pos, spawn)
 	ps.yaw = append(ps.yaw, 0)
 	ps.pitch = append(ps.pitch, 0)
@@ -280,6 +286,7 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.kills = append(ps.kills, 0)
 	ps.deaths = append(ps.deaths, 0)
 	ps.alive = append(ps.alive, true)
+	ps.botNextThink = append(ps.botNextThink, 0)
 	ps.conns = append(ps.conns, conn)
 	ps.sendChs = append(ps.sendChs, sendCh)
 	ps.history = append(ps.history, []positionSample{{At: nowMS, Pos: spawn, Crouching: false}})
@@ -296,6 +303,7 @@ func (ps *playerStore) removeAt(idx int) {
 		movedID := ps.ids[last]
 		ps.ids[idx] = ps.ids[last]
 		ps.names[idx] = ps.names[last]
+		ps.isBot[idx] = ps.isBot[last]
 		ps.pos[idx] = ps.pos[last]
 		ps.yaw[idx] = ps.yaw[last]
 		ps.pitch[idx] = ps.pitch[last]
@@ -324,6 +332,7 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.kills[idx] = ps.kills[last]
 		ps.deaths[idx] = ps.deaths[last]
 		ps.alive[idx] = ps.alive[last]
+		ps.botNextThink[idx] = ps.botNextThink[last]
 		ps.conns[idx] = ps.conns[last]
 		ps.sendChs[idx] = ps.sendChs[last]
 		ps.history[idx] = ps.history[last]
@@ -332,6 +341,7 @@ func (ps *playerStore) removeAt(idx int) {
 
 	ps.ids = ps.ids[:last]
 	ps.names = ps.names[:last]
+	ps.isBot = ps.isBot[:last]
 	ps.pos = ps.pos[:last]
 	ps.yaw = ps.yaw[:last]
 	ps.pitch = ps.pitch[:last]
@@ -360,6 +370,7 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.kills = ps.kills[:last]
 	ps.deaths = ps.deaths[:last]
 	ps.alive = ps.alive[:last]
+	ps.botNextThink = ps.botNextThink[:last]
 	ps.conns = ps.conns[:last]
 	ps.sendChs = ps.sendChs[:last]
 	ps.history = ps.history[:last]
@@ -370,7 +381,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if len(g.players.ids) >= maxPlayers {
+	if g.humanCountLocked() >= maxPlayers {
 		return 0, nil, false
 	}
 
@@ -378,7 +389,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 	g.nextID++
 
 	spawn := spawnPoints[rand.Intn(len(spawnPoints))]
-	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli())
+	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli(), false)
 	return id, sendCh, true
 }
 
@@ -390,7 +401,9 @@ func (g *Game) removePlayer(id int) {
 		return
 	}
 	g.players.removeAt(idx)
-	if len(g.players.ids) == 0 {
+	nowMS := time.Now().UnixMilli()
+	g.syncFallbackBotLocked(nowMS)
+	if g.humanCountLocked() == 0 {
 		g.state = StateWaiting
 		g.currentRound = 0
 		g.roundEndsAt = 0
@@ -848,8 +861,44 @@ func otherTeam(team TeamID) TeamID {
 	return TeamNone
 }
 
+func teamDisplayName(team TeamID) string {
+	switch normalizeTeam(team) {
+	case TeamBlue:
+		return "Blue"
+	case TeamGreen:
+		return "Green"
+	default:
+		return "None"
+	}
+}
+
 func (g *Game) teamCountsLocked() (blue, green int) {
 	for _, team := range g.players.team {
+		switch normalizeTeam(team) {
+		case TeamBlue:
+			blue++
+		case TeamGreen:
+			green++
+		}
+	}
+	return blue, green
+}
+
+func (g *Game) humanCountLocked() int {
+	count := 0
+	for i := range g.players.ids {
+		if !g.players.isBot[i] {
+			count++
+		}
+	}
+	return count
+}
+
+func (g *Game) humanTeamCountsLocked() (blue, green int) {
+	for i, team := range g.players.team {
+		if g.players.isBot[i] {
+			continue
+		}
 		switch normalizeTeam(team) {
 		case TeamBlue:
 			blue++
@@ -876,7 +925,7 @@ func (g *Game) aliveCountsLocked() (blue, green int) {
 }
 
 func (g *Game) preferredTeamLocked() TeamID {
-	blue, green := g.teamCountsLocked()
+	blue, green := g.humanTeamCountsLocked()
 	if blue > green {
 		return TeamGreen
 	}
@@ -889,7 +938,7 @@ func (g *Game) canAssignTeamLocked(idx int, desired TeamID) bool {
 		return false
 	}
 
-	blue, green := g.teamCountsLocked()
+	blue, green := g.humanTeamCountsLocked()
 	current := normalizeTeam(g.players.team[idx])
 	if current == desired {
 		return true
@@ -908,12 +957,67 @@ func (g *Game) canAssignTeamLocked(idx int, desired TeamID) bool {
 	return absInt(blue-green) <= 1
 }
 
+func (g *Game) addFallbackBotLocked(team TeamID, nowMS int64) {
+	team = normalizeTeam(team)
+	if team == TeamNone {
+		return
+	}
+
+	id := g.nextID
+	g.nextID++
+	spawns := spawnPointsForTeam(team)
+	spawn := spawns[rand.Intn(len(spawns))]
+	g.players.add(id, nil, spawn, nowMS, true)
+	idx, ok := g.players.indexOf(id)
+	if !ok {
+		return
+	}
+	g.players.names[idx] = fmt.Sprintf("BOT %s", teamDisplayName(team))
+	g.players.team[idx] = team
+	g.resetPlayerForNewMatchLocked(idx, nowMS)
+}
+
+func (g *Game) syncFallbackBotLocked(nowMS int64) {
+	blueHumans, greenHumans := g.humanTeamCountsLocked()
+	desiredTeam := TeamNone
+	switch {
+	case blueHumans > 0 && greenHumans == 0:
+		desiredTeam = TeamGreen
+	case greenHumans > 0 && blueHumans == 0:
+		desiredTeam = TeamBlue
+	}
+
+	for i := len(g.players.ids) - 1; i >= 0; i-- {
+		if !g.players.isBot[i] {
+			continue
+		}
+		if desiredTeam == TeamNone || normalizeTeam(g.players.team[i]) != desiredTeam {
+			g.players.removeAt(i)
+		}
+	}
+
+	if desiredTeam == TeamNone {
+		return
+	}
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] && normalizeTeam(g.players.team[i]) == desiredTeam {
+			return
+		}
+	}
+
+	g.addFallbackBotLocked(desiredTeam, nowMS)
+}
+
 func (g *Game) canStartMatchLocked() (bool, string) {
-	if len(g.players.ids) < 2 {
-		return false, "Need at least 2 players"
+	if g.humanCountLocked() < 1 {
+		return false, "Need at least 1 player"
 	}
 	blue, green := g.teamCountsLocked()
-	for _, team := range g.players.team {
+	for i, team := range g.players.team {
+		if g.players.isBot[i] {
+			continue
+		}
 		if normalizeTeam(team) == TeamNone {
 			return false, "All players must join a team"
 		}
@@ -921,8 +1025,8 @@ func (g *Game) canStartMatchLocked() (bool, string) {
 	if blue == 0 || green == 0 {
 		return false, "Both teams need players"
 	}
-	if blue != green {
-		return false, "Teams must be even"
+	if absInt(blue-green) > 1 {
+		return false, "Teams must stay within one player"
 	}
 	return true, ""
 }
@@ -2075,6 +2179,12 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 					game.players.team[idx] = game.preferredTeamLocked()
 					game.respawnPlayerLocked(idx, nowMS)
 				}
+				game.syncFallbackBotLocked(nowMS)
+				idx, ok = game.players.indexOf(playerID)
+				if !ok {
+					game.mu.Unlock()
+					continue
+				}
 				welcome := map[string]interface{}{
 					"t":     "welcome",
 					"id":    playerID,
@@ -2414,6 +2524,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			default:
 				game.players.team[idx] = normalizeTeam(requestedTeam)
 				game.respawnPlayerLocked(idx, nowMS)
+				game.syncFallbackBotLocked(nowMS)
 				response["ok"] = true
 			}
 			game.mu.Unlock()
@@ -2426,6 +2537,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			startDeniedReason := ""
 			game.mu.Lock()
 			if game.state == StateWaiting {
+				game.syncFallbackBotLocked(nowMS)
 				if ok, reason := game.canStartMatchLocked(); !ok {
 					startDeniedReason = reason
 				} else {

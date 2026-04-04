@@ -302,6 +302,57 @@ func TestCanStartMatchLockedRequiresBalancedAssignedTeams(t *testing.T) {
 	}
 }
 
+func TestSyncFallbackBotAddsBotForEmptyTeam(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	if len(g.players.ids) != 2 {
+		t.Fatalf("expected 2 occupants after bot sync, got %d", len(g.players.ids))
+	}
+
+	foundBot := false
+	for i := range g.players.ids {
+		if g.players.isBot[i] && g.players.team[i] == TeamGreen {
+			foundBot = true
+		}
+	}
+	if !foundBot {
+		t.Fatal("expected fallback bot on green team")
+	}
+}
+
+func TestCanStartMatchLockedAllowsOneHumanVersusBot(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
+		t.Fatalf("expected bot-backed roster to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestSyncFallbackBotRemovesBotWhenHumanJoinsThatTeam(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+	assignPlayerTeam(g, green.id, TeamGreen)
+	g.syncFallbackBotLocked(1001)
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			t.Fatal("expected bot to be removed once green human joins")
+		}
+	}
+}
+
 func TestStartMatchGivesStartingPistolAndCredits(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")
