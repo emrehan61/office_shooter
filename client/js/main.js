@@ -1,4 +1,4 @@
-import { createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, vertsToGroup } from './renderer.js';
+import { createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, updateVertPool } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
 import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
 import { buildWorldGeometry, traceShotImpact, loadMap } from './world.js';
@@ -24,7 +24,7 @@ import {
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, getCrosshairOffsetY, getViewPunch, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
 import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
-import { buildAvatarVerts } from './avatar.js';
+import { createAvatarPool, updateAvatarPool, hideAvatarPool } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch } from './math.js';
 import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
@@ -84,6 +84,46 @@ const muzzleFlashLight = new THREE.PointLight(0xffe080, 0, 8, 2);
 muzzleFlashLight.castShadow = false;
 renderer.weaponGroup.add(muzzleFlashLight);
 
+// Pre-allocated tracer pool — avoids per-frame geometry/material allocation
+const tracerGroup = new THREE.Group();
+tracerGroup.name = 'tracers';
+renderer.scene.add(tracerGroup);
+const _tracerGeo = new THREE.CylinderGeometry(0.018, 0.018, 1, 4, 1);
+const _tracerUp = new THREE.Vector3(0, 1, 0);
+const _tracerDir = new THREE.Vector3();
+const _tracerQuat = new THREE.Quaternion();
+const tracerMeshPool = [];
+for (let i = 0; i < MAX_TRACERS; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+        color: 0x000000,
+        emissive: 0xffe080,
+        emissiveIntensity: 4.0,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(_tracerGeo, mat);
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    tracerGroup.add(mesh);
+    tracerMeshPool.push({ mesh, material: mat });
+}
+
+// Pre-allocated avatar mesh pool (GPU transforms instead of CPU vertex math)
+const avatarPool = createAvatarPool(renderer.scene);
+
+// Pre-allocated remote muzzle flash light pool (avoids per-frame PointLight allocation)
+const REMOTE_FLASH_POOL_SIZE = 6;
+const remoteFlashPool = [];
+for (let i = 0; i < REMOTE_FLASH_POOL_SIZE; i++) {
+    const light = new THREE.PointLight(0xffe080, 0, 6, 2);
+    light.castShadow = false;
+    light.visible = false;
+    renderer.scene.add(light);
+    remoteFlashPool.push(light);
+}
+
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -94,14 +134,24 @@ resize();
 
 let currentMapName = 'office_studio';
 
+const loadingScreen = document.getElementById('loading-screen');
+
 async function loadMapByName(name) {
     const resp = await fetch(`maps/${name}.json`);
     if (!resp.ok) return false;
     const data = await resp.json();
     loadMap(data);
+
+    // Show loading screen and yield a frame so the browser paints it
+    // before the synchronous buildWorldGeometry() blocks the main thread.
+    if (loadingScreen) loadingScreen.style.display = 'flex';
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
     const geo = buildWorldGeometry();
     uploadWorldGeo(renderer, geo);
     currentMapName = name;
+
+    if (loadingScreen) loadingScreen.style.display = 'none';
     return true;
 }
 
@@ -894,7 +944,7 @@ net.onKill = (msg) => {
     if (!player.inMatch) return;
     const killerName = msg.killer == net.myId ? 'You' : (net.players[msg.killer]?.name || '?');
     const victimName = msg.victim == net.myId ? 'You' : (net.players[msg.victim]?.name || '?');
-    addKill(hud, killerName, victimName);
+    addKill(hud, killerName, victimName, msg.weapon);
 
     const nextKillState = getAnnouncerKillCues(killAnnouncerState, msg, net.myId);
     killAnnouncerState = nextKillState.state;
@@ -1145,45 +1195,54 @@ function frame(time) {
     muzzleFlashLight.intensity = flashIntensity * 5;
     muzzleFlashLight.position.set(0, 0.02, -0.7);
 
+    // Reset remote flash pool
+    let remoteFlashIdx = 0;
+    for (let i = 0; i < REMOTE_FLASH_POOL_SIZE; i++) {
+        remoteFlashPool[i].visible = false;
+        remoteFlashPool[i].intensity = 0;
+    }
+
     if (localInMatch) {
         const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
-        worldDynamicVerts.length = 0;
+
+        // Update avatar mesh pool (GPU transforms — no per-vertex CPU math)
+        updateAvatarPool(avatarPool, net.players, net.myId, renderServerTimeMs, sampleRemotePlayer);
+
+        // Remote flash lights + footsteps (still need per-player iteration)
         for (const id in net.players) {
             if (Number(id) === net.myId) continue;
-
             const remote = net.players[id];
             if (!remote.inMatch || !remote.alive) continue;
             const remoteView = sampleRemotePlayer(remote, renderServerTimeMs);
-            appendVerts(worldDynamicVerts, buildAvatarVerts(id, remote, remoteView));
 
-            // Remote player muzzle flash light
-            if (remote.shotTime > 0) {
+            if (remote.shotTime > 0 && remoteFlashIdx < REMOTE_FLASH_POOL_SIZE) {
                 const dx = (remoteView.pos?.[0] ?? 0) - camera.position[0];
                 const dz = (remoteView.pos?.[2] ?? 0) - camera.position[2];
-                if (dx * dx + dz * dz < 400) { // within 20 units
-                    const rFlash = new THREE.PointLight(0xffe080, remote.shotTime / 0.12 * 3, 6, 2);
+                if (dx * dx + dz * dz < 400) {
+                    const rFlash = remoteFlashPool[remoteFlashIdx++];
+                    rFlash.intensity = remote.shotTime / 0.12 * 3;
                     rFlash.position.set(remoteView.pos?.[0] ?? 0, (remoteView.pos?.[1] ?? 1.7) - 0.3, remoteView.pos?.[2] ?? 0);
-                    renderer.dynamicGroup.add(rFlash);
+                    rFlash.visible = true;
                 }
             }
 
-            // Remote footsteps
             soundFootstep(soundEngine, dt, remote.alive, remoteView.pos || [0, 0, 0], false, player.pos);
         }
 
+        // Projectiles + effects still go through vertex pool
+        worldDynamicVerts.length = 0;
         appendVerts(worldDynamicVerts, buildProjectileVerts(net.projectiles));
         mergedEffects.length = 0;
         appendItems(mergedEffects, net.effects);
         appendItems(mergedEffects, localImpactEffects);
         appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects));
 
-        if (worldDynamicVerts.length > 0) {
-            const dynamicMeshes = vertsToGroup(worldDynamicVerts);
-            renderer.dynamicGroup.add(dynamicMeshes);
-        }
+        updateVertPool(renderer.dynamicVertPool, worldDynamicVerts);
 
-        // Render tracers as glowing mesh cylinders (bloom picks these up)
+        // Update pre-allocated tracer pool (no per-frame geometry/material allocation)
+        let _tracerIdx = 0;
         for (const tracer of activeTracers) {
+            if (_tracerIdx >= MAX_TRACERS) break;
             const t = tracer.age / tracer.maxAge;
             const headT = Math.min(1, t * 2.5);
             const tailT = Math.max(0, headT - 0.35);
@@ -1199,26 +1258,33 @@ function frame(time) {
             const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
             if (length < 0.01) continue;
 
-            const geo = new THREE.CylinderGeometry(0.018, 0.018, length, 4, 1);
-            const mat = new THREE.MeshStandardMaterial({
-                color: 0x000000,
-                emissive: 0xffe080,
-                emissiveIntensity: 4.0,
-                transparent: true,
-                opacity: opacity * 0.9,
-            });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set((tx + hx) / 2, (ty + hy) / 2, (tz + hz) / 2);
-            const dir = new THREE.Vector3(dx, dy, dz).normalize();
-            const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-            mesh.quaternion.copy(quat);
-            renderer.dynamicGroup.add(mesh);
+            const pooled = tracerMeshPool[_tracerIdx];
+            pooled.mesh.position.set((tx + hx) / 2, (ty + hy) / 2, (tz + hz) / 2);
+            pooled.mesh.scale.set(1, length, 1);
+            _tracerDir.set(dx, dy, dz).normalize();
+            _tracerQuat.setFromUnitVectors(_tracerUp, _tracerDir);
+            pooled.mesh.quaternion.copy(_tracerQuat);
+            pooled.material.opacity = opacity * 0.9;
+            pooled.mesh.visible = true;
+            _tracerIdx++;
+        }
+        for (let i = _tracerIdx; i < MAX_TRACERS; i++) {
+            tracerMeshPool[i].mesh.visible = false;
         }
 
-        if (player.alive) {
-            const weaponMeshes = vertsToGroup(weaponVerts(weapon));
-            renderer.weaponGroup.add(weaponMeshes);
+        updateVertPool(renderer.weaponVertPool, player.alive ? weaponVerts(weapon) : []);
+    } else {
+        hideAvatarPool(avatarPool);
+        updateVertPool(renderer.dynamicVertPool, []);
+        updateVertPool(renderer.weaponVertPool, []);
+        for (let i = 0; i < MAX_TRACERS; i++) {
+            tracerMeshPool[i].mesh.visible = false;
         }
+    }
+
+    // Update film grain time uniform
+    if (renderer.vignettePass) {
+        renderer.vignettePass.uniforms.time.value = performance.now() * 0.001;
     }
 
     render(renderer);

@@ -149,10 +149,38 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     updateLeaderboard(hud, leaderboard);
 }
 
-export function addKill(hud, killer, victim) {
+const WEAPON_ICONS = {
+    knife: `<svg viewBox="0 0 32 16" class="kill-weapon-icon kill-weapon-knife">
+        <polygon points="2,10 14,4 16,3 18,4 16,6 4,12" fill="currentColor"/>
+        <rect x="16" y="5" width="8" height="5" rx="1" fill="currentColor" opacity="0.7"/>
+        <rect x="24" y="4" width="6" height="7" rx="2" fill="currentColor" opacity="0.5"/>
+    </svg>`,
+    pistol: `<svg viewBox="0 0 32 20" class="kill-weapon-icon kill-weapon-pistol">
+        <rect x="2" y="5" width="20" height="5" rx="1" fill="currentColor"/>
+        <rect x="0" y="4" width="6" height="7" rx="1" fill="currentColor" opacity="0.8"/>
+        <rect x="18" y="3" width="4" height="3" rx="1" fill="currentColor" opacity="0.6"/>
+        <rect x="14" y="10" width="6" height="8" rx="1" fill="currentColor" transform="rotate(10,17,10)"/>
+    </svg>`,
+    machinegun: `<svg viewBox="0 0 48 20" class="kill-weapon-icon kill-weapon-mg">
+        <rect x="0" y="6" width="36" height="5" rx="1" fill="currentColor"/>
+        <rect x="36" y="5" width="8" height="7" rx="1" fill="currentColor" opacity="0.7"/>
+        <rect x="6" y="3" width="12" height="3" rx="1" fill="currentColor" opacity="0.6"/>
+        <rect x="22" y="11" width="6" height="8" rx="1" fill="currentColor" transform="rotate(8,25,11)"/>
+        <rect x="10" y="11" width="2" height="4" fill="currentColor" opacity="0.5"/>
+        <rect x="30" y="11" width="2" height="4" fill="currentColor" opacity="0.5"/>
+    </svg>`,
+    bomb: `<svg viewBox="0 0 24 24" class="kill-weapon-icon kill-weapon-bomb">
+        <circle cx="12" cy="15" r="7" fill="currentColor"/>
+        <rect x="11" y="3" width="2" height="6" rx="1" fill="currentColor" opacity="0.7"/>
+        <circle cx="12" cy="3" r="2" fill="#ff4" opacity="0.9"/>
+    </svg>`,
+};
+
+export function addKill(hud, killer, victim, weapon) {
     const el = document.createElement('div');
     el.className = 'kill-entry';
-    el.textContent = `${killer} \u2192 ${victim}`;
+    const icon = WEAPON_ICONS[weapon] || WEAPON_ICONS.knife;
+    el.innerHTML = `<span class="kill-name">${escapeHtml(killer)}</span>${icon}<span class="kill-name">${escapeHtml(victim)}</span>`;
     if (hud.killFeed) {
         hud.killFeed.prepend(el);
         while (hud.killFeed.children.length > 5) {
@@ -160,6 +188,10 @@ export function addKill(hud, killer, victim) {
         }
         setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 5000);
     }
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export function showHitMarker(hud, zone = 'body', damage = 0) {

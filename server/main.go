@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"sort"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -220,10 +221,55 @@ const (
 
 type Vec3 [3]float64
 
+type inputMessage struct {
+	Pos       Vec3    `json:"pos"`
+	Yaw       float64 `json:"yaw"`
+	Pitch     float64 `json:"pitch"`
+	Crouching bool    `json:"crouching"`
+}
+
+type shootMessage struct {
+	Dir       Vec3     `json:"dir"`
+	ShotTime  int64    `json:"shotTime"`
+	Weapon    WeaponID `json:"weapon"`
+	Aiming    bool     `json:"aiming"`
+	Alternate bool     `json:"alternate"`
+}
+
 type positionSample struct {
 	At        int64
 	Pos       Vec3
 	Crouching bool
+}
+
+const posRingCap = 64
+
+type positionRingBuffer struct {
+	buf   [posRingCap]positionSample
+	head  int
+	count int
+}
+
+func (r *positionRingBuffer) add(s positionSample) {
+	r.buf[(r.head+r.count)%posRingCap] = s
+	if r.count < posRingCap {
+		r.count++
+	} else {
+		r.head = (r.head + 1) % posRingCap
+	}
+}
+
+// at returns the i-th element in chronological order (0 = oldest).
+func (r *positionRingBuffer) at(i int) positionSample {
+	return r.buf[(r.head+i)%posRingCap]
+}
+
+// trimBefore removes all samples with At < cutoff.
+func (r *positionRingBuffer) trimBefore(cutoff int64) {
+	for r.count > 0 && r.buf[r.head].At < cutoff {
+		r.head = (r.head + 1) % posRingCap
+		r.count--
+	}
 }
 
 type projectileState struct {
@@ -297,7 +343,7 @@ type playerStore struct {
 	botShotCount        []int64
 	conns               []*websocket.Conn
 	sendChs             []chan []byte
-	history             [][]positionSample
+	history             []positionRingBuffer
 	idToIndex           map[int]int
 }
 
@@ -459,7 +505,9 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.botShotCount = append(ps.botShotCount, 0)
 	ps.conns = append(ps.conns, conn)
 	ps.sendChs = append(ps.sendChs, sendCh)
-	ps.history = append(ps.history, []positionSample{{At: nowMS, Pos: spawn, Crouching: false}})
+	var rb positionRingBuffer
+	rb.add(positionSample{At: nowMS, Pos: spawn, Crouching: false})
+	ps.history = append(ps.history, rb)
 	ps.idToIndex[id] = idx
 
 	return sendCh
@@ -1917,13 +1965,13 @@ func applySpreadVector(dir Vec3, spread float64, seed int64) Vec3 {
 	return normalizeVec(spreadDir)
 }
 
-func isMovingAtTime(samples []positionSample, at int64) bool {
-	if len(samples) == 0 {
+func isMovingAtTime(r *positionRingBuffer, at int64) bool {
+	if r.count == 0 {
 		return false
 	}
 
-	current := sampleAtTime(samples, at).Pos
-	previous := sampleAtTime(samples, at-120).Pos
+	current := sampleAtTime(r, at).Pos
+	previous := sampleAtTime(r, at-120).Pos
 	dx := current[0] - previous[0]
 	dz := current[2] - previous[2]
 	return dx*dx+dz*dz > 0.18*0.18
@@ -2330,6 +2378,7 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 			"t":      "kill",
 			"killer": projectile.OwnerID,
 			"victim": playerID,
+			"weapon": WeaponBomb,
 		})
 	}
 }
@@ -2479,14 +2528,14 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		shotTime := nowMS
 		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
 		dir = applyBotAimProfile(dir, g.players.botShotCount[idx])
-		moving := isMovingAtTime(g.players.history[idx], shotTime)
+		moving := isMovingAtTime(&g.players.history[idx], shotTime)
 		// Track recoil state for bots (used for bloom/reset sync)
 		g.registerShotRecoilLocked(idx, WeaponPistol, nowMS, false, moving)
 		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], moving, bloom, shotTime+int64(botID)*97+nowMS)
 		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
 		g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
 		g.players.botShotCount[idx]++
-		shooterPos := positionAtTime(g.players.history[idx], shotTime)
+		shooterPos := positionAtTime(&g.players.history[idx], shotTime)
 
 		shotMsg, _ := json.Marshal(map[string]interface{}{
 			"t":         "shot",
@@ -2544,6 +2593,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			"t":      "kill",
 			"killer": botID,
 			"victim": victimID,
+			"weapon": WeaponPistol,
 		})
 		tm.broadcasts = append(tm.broadcasts, killMsg)
 	}
@@ -3302,19 +3352,13 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 
 			nowMS := time.Now().UnixMilli()
-			var pos Vec3
-			var yaw float64
-			var pitch float64
-			var crouching bool
-			json.Unmarshal(msg["pos"], &pos)
-			json.Unmarshal(msg["yaw"], &yaw)
-			json.Unmarshal(msg["pitch"], &pitch)
-			json.Unmarshal(msg["crouching"], &crouching)
+			var inp inputMessage
+			json.Unmarshal(msgBytes, &inp)
 
 			game.mu.Lock()
 			idx, ok := game.players.indexOf(playerID)
 			if ok && game.players.inMatch[idx] {
-				game.applyInputLocked(idx, pos, yaw, pitch, crouching, nowMS)
+				game.applyInputLocked(idx, inp.Pos, inp.Yaw, inp.Pitch, inp.Crouching, nowMS)
 			}
 			game.mu.Unlock()
 
@@ -3323,17 +3367,13 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			var dir Vec3
-			var requestedShotTime int64
-			var requestedWeapon WeaponID
-			var aiming bool
-			var alternate bool
-			json.Unmarshal(msg["dir"], &dir)
-			json.Unmarshal(msg["shotTime"], &requestedShotTime)
-			json.Unmarshal(msg["weapon"], &requestedWeapon)
-			json.Unmarshal(msg["aiming"], &aiming)
-			json.Unmarshal(msg["alternate"], &alternate)
-			dir = normalizeVec(dir)
+			var sh shootMessage
+			json.Unmarshal(msgBytes, &sh)
+			dir := normalizeVec(sh.Dir)
+			requestedShotTime := sh.ShotTime
+			requestedWeapon := sh.Weapon
+			aiming := sh.Aiming
+			alternate := sh.Alternate
 
 			nowMS := time.Now().UnixMilli()
 			shotTime := clampShotTime(requestedShotTime, nowMS)
@@ -3366,12 +3406,12 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			bloom := game.registerShotBloomLocked(idx, weapon, nowMS)
-			moving := isMovingAtTime(game.players.history[idx], shotTime)
+			moving := isMovingAtTime(&game.players.history[idx], shotTime)
 			// Track recoil state (client applies recoil to camera; server tracks for bloom/reset sync)
 			game.registerShotRecoilLocked(idx, weapon, nowMS, aiming, moving)
 			dir = applyShotSpread(dir, config, aiming, game.players.crouching[idx], moving, bloom, shotTime+int64(playerID)*97+nowMS)
 			game.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
-			shooterPos := positionAtTime(game.players.history[idx], shotTime)
+			shooterPos := positionAtTime(&game.players.history[idx], shotTime)
 			game.mu.Unlock()
 
 			shotMsg, _ := json.Marshal(map[string]interface{}{
@@ -3461,6 +3501,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				"t":      "kill",
 				"killer": playerID,
 				"victim": victimID,
+				"weapon": weapon,
 			})
 			game.broadcast(killMsg, 0)
 
@@ -3737,7 +3778,7 @@ func (g *Game) findHitTargetLocked(shooterID int, origin, dir Vec3, shotTime int
 			continue
 		}
 
-		target := sampleAtTime(g.players.history[i], shotTime)
+		target := sampleAtTime(&g.players.history[i], shotTime)
 		zone, dist, ok := tracePlayerHit(origin, dir, target.Pos, target.Crouching, maxRange)
 		if !ok || dist > bestDist {
 			continue
@@ -3765,61 +3806,60 @@ func findHitTarget(shooterID int, origin, dir Vec3, shotTime int64, maxRange flo
 	return game.findHitTargetLocked(shooterID, origin, dir, shotTime, maxRange)
 }
 
-func recordPositionSample(history *[]positionSample, at int64, pos Vec3, crouching bool) {
-	samples := append(*history, positionSample{At: at, Pos: pos, Crouching: crouching})
-	cutoff := at - positionHistoryWindowMS
-	trimmed := samples[:0]
-	for _, sample := range samples {
-		if sample.At >= cutoff {
-			trimmed = append(trimmed, sample)
-		}
-	}
-	*history = trimmed
+func recordPositionSample(history *positionRingBuffer, at int64, pos Vec3, crouching bool) {
+	history.add(positionSample{At: at, Pos: pos, Crouching: crouching})
+	history.trimBefore(at - positionHistoryWindowMS)
 }
 
-func positionAtTime(samples []positionSample, at int64) Vec3 {
-	return sampleAtTime(samples, at).Pos
+func positionAtTime(r *positionRingBuffer, at int64) Vec3 {
+	return sampleAtTime(r, at).Pos
 }
 
-func sampleAtTime(samples []positionSample, at int64) positionSample {
-	if len(samples) == 0 {
+func sampleAtTime(r *positionRingBuffer, at int64) positionSample {
+	n := r.count
+	if n == 0 {
 		return positionSample{}
 	}
-	if at <= 0 || at >= samples[len(samples)-1].At {
-		return samples[len(samples)-1]
+	last := r.at(n - 1)
+	if at <= 0 || at >= last.At {
+		return last
 	}
-	if at <= samples[0].At {
-		return samples[0]
-	}
-
-	for i := 1; i < len(samples); i++ {
-		prev := samples[i-1]
-		next := samples[i]
-		if at > next.At {
-			continue
-		}
-
-		span := next.At - prev.At
-		if span <= 0 {
-			return next
-		}
-		alpha := float64(at-prev.At) / float64(span)
-		crouching := prev.Crouching
-		if alpha >= 0.5 {
-			crouching = next.Crouching
-		}
-		return positionSample{
-			At:        at,
-			Crouching: crouching,
-			Pos: Vec3{
-				prev.Pos[0] + (next.Pos[0]-prev.Pos[0])*alpha,
-				prev.Pos[1] + (next.Pos[1]-prev.Pos[1])*alpha,
-				prev.Pos[2] + (next.Pos[2]-prev.Pos[2])*alpha,
-			},
-		}
+	first := r.at(0)
+	if at <= first.At {
+		return first
 	}
 
-	return samples[len(samples)-1]
+	// Binary search: find the first index where r.at(i).At >= at
+	i := sort.Search(n, func(j int) bool {
+		return r.at(j).At >= at
+	})
+	if i == 0 {
+		return r.at(0)
+	}
+	if i >= n {
+		return r.at(n - 1)
+	}
+
+	prev := r.at(i - 1)
+	next := r.at(i)
+	span := next.At - prev.At
+	if span <= 0 {
+		return next
+	}
+	alpha := float64(at-prev.At) / float64(span)
+	crouching := prev.Crouching
+	if alpha >= 0.5 {
+		crouching = next.Crouching
+	}
+	return positionSample{
+		At:        at,
+		Crouching: crouching,
+		Pos: Vec3{
+			prev.Pos[0] + (next.Pos[0]-prev.Pos[0])*alpha,
+			prev.Pos[1] + (next.Pos[1]-prev.Pos[1])*alpha,
+			prev.Pos[2] + (next.Pos[2]-prev.Pos[2])*alpha,
+		},
+	}
 }
 
 func clampShotTime(requested, now int64) int64 {
@@ -3855,7 +3895,7 @@ func tracePlayerHit(origin, dir, targetPos Vec3, crouching bool, maxRange float6
 	return bestZone, bestDist, found
 }
 
-func playerHitBoxes(pos Vec3, crouching bool) []hitBox {
+func playerHitBoxes(pos Vec3, crouching bool) [3]hitBox {
 	eyeHeight := standEyeHeight
 	if crouching {
 		eyeHeight = crouchEyeHeight
@@ -3863,7 +3903,7 @@ func playerHitBoxes(pos Vec3, crouching bool) []hitBox {
 	footY := pos[1] - eyeHeight
 
 	if crouching {
-		return []hitBox{
+		return [3]hitBox{
 			{
 				zone: HitZoneHead,
 				min:  Vec3{pos[0] - 0.24, footY + 0.92, pos[2] - 0.24},
@@ -3882,7 +3922,7 @@ func playerHitBoxes(pos Vec3, crouching bool) []hitBox {
 		}
 	}
 
-	return []hitBox{
+	return [3]hitBox{
 		{
 			zone: HitZoneHead,
 			min:  Vec3{pos[0] - 0.24, footY + 1.42, pos[2] - 0.24},

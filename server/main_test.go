@@ -762,12 +762,11 @@ func TestServerPortUsesEnvironmentOverride(t *testing.T) {
 }
 
 func TestPositionAtTimeInterpolatesAcrossHistorySamples(t *testing.T) {
-	samples := []positionSample{
-		{At: 1000, Pos: Vec3{0, 1.7, 0}},
-		{At: 1100, Pos: Vec3{10, 1.7, 0}},
-	}
+	var rb positionRingBuffer
+	rb.add(positionSample{At: 1000, Pos: Vec3{0, 1.7, 0}})
+	rb.add(positionSample{At: 1100, Pos: Vec3{10, 1.7, 0}})
 
-	got := positionAtTime(samples, 1050)
+	got := positionAtTime(&rb, 1050)
 	if math.Abs(got[0]-5) > 1e-6 {
 		t.Fatalf("expected interpolated x to be 5, got %f", got[0])
 	}
@@ -1181,7 +1180,7 @@ func TestApplyInputLockedBlocksMovementDuringBuyPhase(t *testing.T) {
 	if got := g.players.pitch[idx]; got != -0.5 {
 		t.Fatalf("expected pitch to keep updating during buy phase, got %f", got)
 	}
-	if got := len(g.players.history[idx]); got != 1 {
+	if got := g.players.history[idx].count; got != 1 {
 		t.Fatalf("expected no new history sample during buy phase, got %d", got)
 	}
 
@@ -1192,7 +1191,7 @@ func TestApplyInputLockedBlocksMovementDuringBuyPhase(t *testing.T) {
 	if !g.players.crouching[idx] {
 		t.Fatalf("expected crouch state to update during buy phase")
 	}
-	if got := len(g.players.history[idx]); got != 2 {
+	if got := g.players.history[idx].count; got != 2 {
 		t.Fatalf("expected crouch update to add history sample, got %d", got)
 	}
 
@@ -1202,7 +1201,7 @@ func TestApplyInputLockedBlocksMovementDuringBuyPhase(t *testing.T) {
 	if got := g.players.pos[idx]; got != nextPos {
 		t.Fatalf("expected live phase to update position %#v, got %#v", nextPos, got)
 	}
-	if got := len(g.players.history[idx]); got != 3 {
+	if got := g.players.history[idx].count; got != 3 {
 		t.Fatalf("expected movement history to resume after buy phase, got %d", got)
 	}
 }
