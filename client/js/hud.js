@@ -59,6 +59,8 @@ export function createHUD() {
         leaderboard: document.getElementById('leaderboard'),
         leaderboardBody: document.getElementById('leaderboard-body'),
         shopPanel: document.getElementById('shop-panel'),
+        hitMarker: document.getElementById('hit-marker'),
+        hitMarkerTimer: 0,
         shopItems: [],
         loadoutSlots: [],
         economyToastTimer: 0,
@@ -129,7 +131,7 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     updateRoundResultBanner(hud, match);
     updateShop(hud, player, match, !!ui.buyMenuOpen);
     updateFlashbangOverlay(hud, player.flashTimeLeftMs || 0);
-    updateCrosshair(hud, ui.crosshairGap, !!player.aiming);
+    updateCrosshair(hud, ui.crosshairGap, !!player.aiming, ui.crosshairOffsetY || 0);
 
     if (!player.alive) {
         if (hud.deathScreen) hud.deathScreen.style.display = 'flex';
@@ -160,10 +162,25 @@ export function addKill(hud, killer, victim) {
     }
 }
 
-export function showHitMarker(hud) {
+export function showHitMarker(hud, zone = 'body', damage = 0) {
     if (!hud.crosshair) return;
     hud.crosshair.classList.add('hit');
     setTimeout(() => hud.crosshair.classList.remove('hit'), 150);
+
+    // X-shaped hit marker overlay
+    const marker = hud.hitMarker;
+    if (!marker) return;
+    marker.classList.remove('active', 'headshot');
+    void marker.offsetWidth; // force reflow for re-animation
+    marker.classList.add('active');
+    if (zone === 'head') marker.classList.add('headshot');
+
+    const dmgEl = marker.querySelector('.hm-dmg');
+    if (dmgEl && damage > 0) dmgEl.textContent = damage;
+
+    const duration = zone === 'head' ? 600 : 600;
+    if (hud.hitMarkerTimer) clearTimeout(hud.hitMarkerTimer);
+    hud.hitMarkerTimer = setTimeout(() => marker.classList.remove('active', 'headshot'), duration);
 }
 
 export function showDamageFlash(hud, zone) {
@@ -193,9 +210,10 @@ export function showEconomyNotice(hud, text) {
     }
 }
 
-function updateCrosshair(hud, gapPx = 14, aiming = false) {
+function updateCrosshair(hud, gapPx = 14, aiming = false, offsetY = 0) {
     if (!hud.crosshair) return;
     hud.crosshair.style.setProperty('--crosshair-gap', `${Math.round(gapPx)}px`);
+    hud.crosshair.style.setProperty('--crosshair-offset-y', `${Math.round(offsetY)}px`);
     hud.crosshair.classList.toggle('aiming', aiming);
 }
 

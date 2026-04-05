@@ -4,6 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alyo Shooter</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./js/lib/three.module.js"
+        }
+    }
+    </script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -71,6 +78,13 @@
                 autocomplete="off"
             >
         </form>
+    </div>
+    <div id="hit-marker">
+        <span class="hm-arm hm-tl"></span>
+        <span class="hm-arm hm-tr"></span>
+        <span class="hm-arm hm-bl"></span>
+        <span class="hm-arm hm-br"></span>
+        <span class="hm-dmg"></span>
     </div>
     <div id="damage-flash"></div>
     <div id="flashbang-screen"></div>

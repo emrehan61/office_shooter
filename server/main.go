@@ -63,7 +63,7 @@ const (
 	headHitReward               = 35
 	bodyHitReward               = 20
 	killReward                  = 200
-	reloadDurationMS            = 800
+	reloadDurationMS            = 1800
 	utilityThrowIntervalMS      = 800
 	projectileSpeed             = 16.0
 	projectileGravity           = -18.0
@@ -89,6 +89,94 @@ const (
 	botBoundMargin              = 1.0
 	maxChatMessageRunes         = 120
 )
+
+// ─── Map wall segments for collision (mirrored from client world.js) ───
+
+const (
+	arenaSize = 30.0
+	wallThick = 0.3
+)
+
+type wallSegment struct {
+	x1, z1, x2, z2 float64
+}
+
+var mapWalls = []wallSegment{
+	// Outer shell
+	{-arenaSize, -arenaSize, arenaSize, -arenaSize},
+	{arenaSize, -arenaSize, arenaSize, arenaSize},
+	{arenaSize, arenaSize, -arenaSize, arenaSize},
+	{-arenaSize, arenaSize, -arenaSize, -arenaSize},
+	// Northwest meeting pod
+	{-26, -26, -14, -26}, {-26, -26, -26, -14},
+	{-14, -26, -14, -20}, {-14, -18, -14, -14},
+	{-26, -14, -21, -14}, {-18, -14, -14, -14},
+	// Northeast meeting pod
+	{14, -26, 26, -26}, {26, -26, 26, -14},
+	{14, -26, 14, -20}, {14, -18, 14, -14},
+	{14, -14, 19, -14}, {22, -14, 26, -14},
+	// Southwest meeting pod
+	{-26, 14, -14, 14}, {-26, 14, -26, 26},
+	{-14, 14, -14, 19}, {-14, 22, -14, 26},
+	{-26, 26, -14, 26},
+	// Southeast meeting pod
+	{14, 14, 26, 14}, {26, 14, 26, 26},
+	{14, 14, 14, 19}, {14, 22, 14, 26},
+	{14, 26, 26, 26},
+	// Open workspace dividers, west
+	{-18, -9, -9, -9}, {-18, 9, -9, 9},
+	{-18, -9, -18, -3}, {-18, 3, -18, 9},
+	{-9, -9, -9, -5}, {-9, 5, -9, 9},
+	// Open workspace dividers, east
+	{9, -9, 18, -9}, {9, 9, 18, 9},
+	{18, -9, 18, -3}, {18, 3, 18, 9},
+	{9, -9, 9, -5}, {9, 5, 9, 9},
+	// Central huddle screens
+	{-4, -2, 4, -2}, {-4, 2, 4, 2},
+	// South reception desk
+	{-6, 17, 6, 17}, {-6, 17, -6, 22}, {6, 17, 6, 22},
+	// North cafe counter
+	{-7, -17, 7, -17}, {-7, -22, -7, -17}, {7, -22, 7, -17},
+}
+
+const playerRadius = 0.4
+
+func closestPointOnSegment(px, pz, ax, az, bx, bz float64) (float64, float64) {
+	abx := bx - ax
+	abz := bz - az
+	len2 := abx*abx + abz*abz
+	if len2 < 1e-12 {
+		return ax, az
+	}
+	t := ((px-ax)*abx + (pz-az)*abz) / len2
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return ax + t*abx, az + t*abz
+}
+
+func collideWalls(pos *Vec3) {
+	px := pos[0]
+	pz := pos[2]
+	r := playerRadius + wallThick
+
+	for _, w := range mapWalls {
+		cx, cz := closestPointOnSegment(px, pz, w.x1, w.z1, w.x2, w.z2)
+		dx := px - cx
+		dz := pz - cz
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist < r && dist > 1e-8 {
+			push := (r - dist) / dist
+			px += dx * push
+			pz += dz * push
+		}
+	}
+
+	pos[0] = px
+	pos[2] = pz
+}
 
 type GameState int
 
@@ -198,6 +286,9 @@ type playerStore struct {
 	shotBloom           []float64
 	bloomWeapon         []WeaponID
 	lastShotAt          []int64
+	recoilPitch         []float64
+	recoilYaw           []float64
+	recoilShotIndex     []int
 	kills               []int
 	deaths              []int
 	alive               []bool
@@ -357,6 +448,9 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.shotBloom = append(ps.shotBloom, 0)
 	ps.bloomWeapon = append(ps.bloomWeapon, WeaponKnife)
 	ps.lastShotAt = append(ps.lastShotAt, 0)
+	ps.recoilPitch = append(ps.recoilPitch, 0)
+	ps.recoilYaw = append(ps.recoilYaw, 0)
+	ps.recoilShotIndex = append(ps.recoilShotIndex, 0)
 	ps.kills = append(ps.kills, 0)
 	ps.deaths = append(ps.deaths, 0)
 	ps.alive = append(ps.alive, true)
@@ -407,6 +501,9 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.shotBloom[idx] = ps.shotBloom[last]
 		ps.bloomWeapon[idx] = ps.bloomWeapon[last]
 		ps.lastShotAt[idx] = ps.lastShotAt[last]
+		ps.recoilPitch[idx] = ps.recoilPitch[last]
+		ps.recoilYaw[idx] = ps.recoilYaw[last]
+		ps.recoilShotIndex[idx] = ps.recoilShotIndex[last]
 		ps.kills[idx] = ps.kills[last]
 		ps.deaths[idx] = ps.deaths[last]
 		ps.alive[idx] = ps.alive[last]
@@ -449,6 +546,9 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.shotBloom = ps.shotBloom[:last]
 	ps.bloomWeapon = ps.bloomWeapon[:last]
 	ps.lastShotAt = ps.lastShotAt[:last]
+	ps.recoilPitch = ps.recoilPitch[:last]
+	ps.recoilYaw = ps.recoilYaw[:last]
+	ps.recoilShotIndex = ps.recoilShotIndex[:last]
 	ps.kills = ps.kills[:last]
 	ps.deaths = ps.deaths[:last]
 	ps.alive = ps.alive[:last]
@@ -664,18 +764,42 @@ type chatMessage struct {
 }
 
 type weaponConfig struct {
-	ID             WeaponID
-	Label          string
-	Range          float64
-	FireIntervalMS int64
-	BodyDamage     int
-	HeadDamage     int
-	UsesAmmo       bool
-	HipSpread      float64
-	AimSpread      float64
-	BloomPerShot   float64
-	MaxBloom       float64
-	BloomDecayMS   float64
+	ID                  WeaponID
+	Label               string
+	Range               float64
+	FireIntervalMS      int64
+	BodyDamage          int
+	HeadDamage          int
+	UsesAmmo            bool
+	HipSpread           float64
+	AimSpread           float64
+	BloomPerShot        float64
+	MaxBloom            float64
+	BloomDecayMS        float64
+	RecoilTable         [][2]float64
+	RecoveryThresholdMS int64
+	PunchDecayExp       float64
+	PunchDecayLin       float64
+}
+
+// Machine gun 30-shot recoil table: [pitch, yaw] per bullet (server-authoritative).
+// Matches the client-side MG_SPRAY_PATTERN.
+var mgRecoilTable = [][2]float64{
+	{0.176, 0.000}, {0.160, 0.000}, {0.152, 0.000}, {0.144, 0.000},
+	{0.136, 0.000}, {0.128, 0.004}, {0.120, 0.004},
+	{0.104, 0.024}, {0.096, 0.028}, {0.088, 0.030}, {0.080, 0.030},
+	{0.072, 0.028}, {0.064, 0.024}, {0.056, 0.019},
+	{0.048, -0.027}, {0.040, -0.030}, {0.040, -0.032}, {0.032, -0.032},
+	{0.032, -0.030}, {0.024, -0.027}, {0.024, -0.022}, {0.016, -0.016},
+	{0.016, 0.019}, {0.016, 0.016}, {0.012, 0.013}, {0.012, 0.010},
+	{0.008, 0.006}, {0.008, 0.004}, {0.008, 0.000}, {0.008, 0.000},
+}
+
+// Pistol 7-shot recoil table: [pitch, yaw] per bullet.
+// Matches the client-side PISTOL_SPRAY_PATTERN.
+var pistolRecoilTable = [][2]float64{
+	{0.18, 0.000}, {0.16, 0.008}, {0.14, 0.012}, {0.12, 0.008},
+	{0.10, 0.005}, {0.09, -0.005}, {0.08, -0.008},
 }
 
 func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
@@ -944,6 +1068,10 @@ func (g *Game) applyInputLocked(idx int, pos Vec3, yaw, pitch float64, crouching
 	g.players.pos[idx] = nextPos
 	if nextPos == prevPos && crouching == prevCrouching {
 		return
+	}
+	// Moving cancels spawn protection so the player becomes shootable
+	if g.hasSpawnProtectionLocked(idx, nowMS) {
+		g.clearDeathmatchSpawnStateLocked(idx)
 	}
 	recordPositionSample(&g.players.history[idx], nowMS, nextPos, crouching)
 }
@@ -1478,6 +1606,9 @@ func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
 	next[0] = clampBotAxis(next[0])
 	next[2] = clampBotAxis(next[2])
 	next[1] = standEyeHeight
+	collideWalls(&next)
+	next[0] = math.Max(-arenaSize+0.5, math.Min(arenaSize-0.5, next[0]))
+	next[2] = math.Max(-arenaSize+0.5, math.Min(arenaSize-0.5, next[2]))
 	if next == pos {
 		return
 	}
@@ -1512,48 +1643,60 @@ func weaponConfigByID(id WeaponID) weaponConfig {
 	switch id {
 	case WeaponPistol:
 		return weaponConfig{
-			ID:             WeaponPistol,
-			Label:          "Pistol",
-			Range:          hitscanRange,
-			FireIntervalMS: 340,
-			BodyDamage:     34,
-			HeadDamage:     68,
-			UsesAmmo:       true,
-			HipSpread:      0.018,
-			AimSpread:      0.0032,
-			BloomPerShot:   0.008,
-			MaxBloom:       0.02,
-			BloomDecayMS:   0.00001,
+			ID:                  WeaponPistol,
+			Label:               "Pistol",
+			Range:               hitscanRange,
+			FireIntervalMS:      340,
+			BodyDamage:          34,
+			HeadDamage:          68,
+			UsesAmmo:            true,
+			HipSpread:           0.004,
+			AimSpread:           0.001,
+			BloomPerShot:        0.002,
+			MaxBloom:            0.008,
+			BloomDecayMS:        0.000008,
+			RecoilTable:         pistolRecoilTable,
+			RecoveryThresholdMS: 280,
+			PunchDecayExp:       4.0,
+			PunchDecayLin:       0.6,
 		}
 	case WeaponMachineGun:
 		return weaponConfig{
-			ID:             WeaponMachineGun,
-			Label:          "Machine Gun",
-			Range:          hitscanRange,
-			FireIntervalMS: 100,
-			BodyDamage:     18,
-			HeadDamage:     32,
-			UsesAmmo:       true,
-			HipSpread:      0.032,
-			AimSpread:      0.0065,
-			BloomPerShot:   0.005,
-			MaxBloom:       0.028,
-			BloomDecayMS:   0.000012,
+			ID:                  WeaponMachineGun,
+			Label:               "Machine Gun",
+			Range:               hitscanRange,
+			FireIntervalMS:      100,
+			BodyDamage:          18,
+			HeadDamage:          32,
+			UsesAmmo:            true,
+			HipSpread:           0.006,
+			AimSpread:           0.002,
+			BloomPerShot:        0.001,
+			MaxBloom:            0.006,
+			BloomDecayMS:        0.000008,
+			RecoilTable:         mgRecoilTable,
+			RecoveryThresholdMS: 180,
+			PunchDecayExp:       3.5,
+			PunchDecayLin:       0.5,
 		}
 	default:
 		return weaponConfig{
-			ID:             WeaponKnife,
-			Label:          "Knife",
-			Range:          knifeRange,
-			FireIntervalMS: 450,
-			BodyDamage:     55,
-			HeadDamage:     90,
-			UsesAmmo:       false,
-			HipSpread:      0,
-			AimSpread:      0,
-			BloomPerShot:   0,
-			MaxBloom:       0,
-			BloomDecayMS:   0,
+			ID:                  WeaponKnife,
+			Label:               "Knife",
+			Range:               knifeRange,
+			FireIntervalMS:      450,
+			BodyDamage:          55,
+			HeadDamage:          90,
+			UsesAmmo:            false,
+			HipSpread:           0,
+			AimSpread:           0,
+			BloomPerShot:        0,
+			MaxBloom:            0,
+			BloomDecayMS:        0,
+			RecoilTable:         nil,
+			RecoveryThresholdMS: 0,
+			PunchDecayExp:       6.0,
+			PunchDecayLin:       1.0,
 		}
 	}
 }
@@ -1594,7 +1737,12 @@ func (g *Game) currentShotBloomLocked(idx int, weapon WeaponID, nowMS int64) flo
 		bloom = 0
 	}
 	if last := g.players.lastShotAt[idx]; last > 0 && nowMS > last {
-		bloom = math.Max(0, bloom-float64(nowMS-last)*config.BloomDecayMS)
+		elapsed := nowMS - last
+		// Only start decaying after recovery threshold
+		if elapsed > config.RecoveryThresholdMS {
+			decayTime := elapsed - config.RecoveryThresholdMS
+			bloom = math.Max(0, bloom-float64(decayTime)*config.BloomDecayMS)
+		}
 	}
 	return math.Min(config.MaxBloom, bloom)
 }
@@ -1612,7 +1760,125 @@ func (g *Game) registerShotBloomLocked(idx int, weapon WeaponID, nowMS int64) fl
 	return bloom
 }
 
+// decayRecoilLocked decays accumulated aim punch based on time since last shot,
+// using combined exponential + linear decay after a recovery threshold.
+func (g *Game) decayRecoilLocked(idx int, weapon WeaponID, nowMS int64) {
+	config := weaponConfigByID(weapon)
+	last := g.players.lastShotAt[idx]
+	if last <= 0 || nowMS <= last {
+		return
+	}
+	// Reset recoil if weapon changed
+	if g.players.bloomWeapon[idx] != weapon {
+		g.players.recoilPitch[idx] = 0
+		g.players.recoilYaw[idx] = 0
+		g.players.recoilShotIndex[idx] = 0
+		return
+	}
+	elapsedMS := nowMS - last
+	if elapsedMS <= config.RecoveryThresholdMS {
+		return
+	}
+	decaySec := float64(elapsedMS-config.RecoveryThresholdMS) / 1000.0
+	// Exponential decay
+	expFactor := math.Exp(-config.PunchDecayExp * decaySec)
+	g.players.recoilPitch[idx] *= expFactor
+	g.players.recoilYaw[idx] *= expFactor
+	// Linear decay
+	linDecay := config.PunchDecayLin * decaySec
+	if g.players.recoilPitch[idx] > 0 {
+		g.players.recoilPitch[idx] = math.Max(0, g.players.recoilPitch[idx]-linDecay)
+	} else if g.players.recoilPitch[idx] < 0 {
+		g.players.recoilPitch[idx] = math.Min(0, g.players.recoilPitch[idx]+linDecay)
+	}
+	if g.players.recoilYaw[idx] > 0 {
+		g.players.recoilYaw[idx] = math.Max(0, g.players.recoilYaw[idx]-linDecay)
+	} else if g.players.recoilYaw[idx] < 0 {
+		g.players.recoilYaw[idx] = math.Min(0, g.players.recoilYaw[idx]+linDecay)
+	}
+	// Reset shot index if fully recovered
+	if math.Abs(g.players.recoilPitch[idx]) < 0.001 && math.Abs(g.players.recoilYaw[idx]) < 0.001 {
+		g.players.recoilPitch[idx] = 0
+		g.players.recoilYaw[idx] = 0
+		g.players.recoilShotIndex[idx] = 0
+	}
+}
+
+// registerShotRecoilLocked decays existing recoil, applies the next recoil table
+// entry, and returns the accumulated (pitch, yaw) aim punch to offset the shot.
+func (g *Game) registerShotRecoilLocked(idx int, weapon WeaponID, nowMS int64, aiming, moving bool) (float64, float64) {
+	config := weaponConfigByID(weapon)
+	g.decayRecoilLocked(idx, weapon, nowMS)
+
+	table := config.RecoilTable
+	if len(table) == 0 {
+		return 0, 0
+	}
+
+	shotIdx := g.players.recoilShotIndex[idx]
+	if shotIdx >= len(table) {
+		shotIdx = len(table) - 1
+	}
+
+	pitchAdd := table[shotIdx][0]
+	yawAdd := table[shotIdx][1]
+
+	// First-shot accuracy: zero recoil on first shot when standing still
+	if shotIdx == 0 && !moving {
+		pitchAdd = 0
+		yawAdd = 0
+	}
+
+	// ADS reduces recoil
+	if aiming {
+		pitchAdd *= 0.58
+		yawAdd *= 0.58
+	}
+	// Moving increases recoil
+	if moving {
+		pitchAdd *= 1.35
+		yawAdd *= 1.35
+	}
+
+	g.players.recoilPitch[idx] += pitchAdd
+	g.players.recoilYaw[idx] += yawAdd
+	g.players.recoilShotIndex[idx] = shotIdx + 1
+
+	return g.players.recoilPitch[idx], g.players.recoilYaw[idx]
+}
+
+// applyRecoilToDirection offsets a shot direction by the server-side aim punch.
+func applyRecoilToDirection(dir Vec3, recoilPitch, recoilYaw float64) Vec3 {
+	if recoilPitch == 0 && recoilYaw == 0 {
+		return dir
+	}
+	forward := normalizeVec(dir)
+	upHint := Vec3{0, 1, 0}
+	if math.Abs(dotVec3(forward, upHint)) > 0.98 {
+		upHint = Vec3{1, 0, 0}
+	}
+	right := normalizeVec(crossVec3(upHint, forward))
+	up := normalizeVec(crossVec3(forward, right))
+	return normalizeVec(Vec3{
+		forward[0] + up[0]*recoilPitch + right[0]*recoilYaw,
+		forward[1] + up[1]*recoilPitch + right[1]*recoilYaw,
+		forward[2] + up[2]*recoilPitch + right[2]*recoilYaw,
+	})
+}
+
 func applyShotSpread(dir Vec3, config weaponConfig, aiming, crouching, moving bool, bloom float64, seed int64) Vec3 {
+	// First shot accuracy: when bloom is zero and standing still, near-perfect accuracy
+	if bloom <= 0 && !moving {
+		spread := config.HipSpread * 0.08
+		if aiming && config.AimSpread > 0 {
+			spread = config.AimSpread * 0.05
+		}
+		if spread <= 0 {
+			return normalizeVec(dir)
+		}
+		return applySpreadVector(dir, spread, seed)
+	}
+
 	spread := config.HipSpread
 	if aiming && config.AimSpread > 0 {
 		spread = config.AimSpread
@@ -1629,7 +1895,10 @@ func applyShotSpread(dir Vec3, config weaponConfig, aiming, crouching, moving bo
 	if spread <= 0 {
 		return normalizeVec(dir)
 	}
+	return applySpreadVector(dir, spread, seed)
+}
 
+func applySpreadVector(dir Vec3, spread float64, seed int64) Vec3 {
 	forward := normalizeVec(dir)
 	upHint := Vec3{0, 1, 0}
 	if math.Abs(dotVec3(forward, upHint)) > 0.98 {
@@ -1843,6 +2112,9 @@ func (g *Game) stripLoadoutOnDeathLocked(idx int) {
 	g.players.shotBloom[idx] = 0
 	g.players.bloomWeapon[idx] = WeaponPistol
 	g.players.lastShotAt[idx] = 0
+	g.players.recoilPitch[idx] = 0
+	g.players.recoilYaw[idx] = 0
+	g.players.recoilShotIndex[idx] = 0
 	g.clearReloadLocked(idx)
 	g.clearDeathmatchSpawnStateLocked(idx)
 }
@@ -2208,6 +2480,8 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
 		dir = applyBotAimProfile(dir, g.players.botShotCount[idx])
 		moving := isMovingAtTime(g.players.history[idx], shotTime)
+		// Track recoil state for bots (used for bloom/reset sync)
+		g.registerShotRecoilLocked(idx, WeaponPistol, nowMS, false, moving)
 		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], moving, bloom, shotTime+int64(botID)*97+nowMS)
 		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
 		g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
@@ -2486,6 +2760,9 @@ func (g *Game) resetPlayerForNewMatchLocked(idx int, nowMS int64) {
 	g.players.shotBloom[idx] = 0
 	g.players.bloomWeapon[idx] = WeaponKnife
 	g.players.lastShotAt[idx] = 0
+	g.players.recoilPitch[idx] = 0
+	g.players.recoilYaw[idx] = 0
+	g.players.recoilShotIndex[idx] = 0
 	g.clearDeathmatchSpawnStateLocked(idx)
 	g.clearReloadLocked(idx)
 	g.respawnPlayerLocked(idx, nowMS)
@@ -2601,6 +2878,9 @@ func (g *Game) respawnPlayerLocked(idx int, nowMS int64) {
 	g.players.shotBloom[idx] = 0
 	g.players.bloomWeapon[idx] = g.players.activeWeapon[idx]
 	g.players.lastShotAt[idx] = 0
+	g.players.recoilPitch[idx] = 0
+	g.players.recoilYaw[idx] = 0
+	g.players.recoilShotIndex[idx] = 0
 	g.clearReloadLocked(idx)
 	g.players.nextAttackAt[idx] = 0
 	recordPositionSample(&g.players.history[idx], nowMS, spawn, false)
@@ -2637,6 +2917,9 @@ func (g *Game) startMatchLocked(nowMS int64) {
 		g.players.shotBloom[i] = 0
 		g.players.bloomWeapon[i] = WeaponKnife
 		g.players.lastShotAt[i] = 0
+		g.players.recoilPitch[i] = 0
+		g.players.recoilYaw[i] = 0
+		g.players.recoilShotIndex[i] = 0
 		g.players.nextAttackAt[i] = 0
 		g.clearReloadLocked(i)
 	}
@@ -2681,6 +2964,9 @@ func (g *Game) endMatchLocked() {
 		g.players.shotBloom[i] = 0
 		g.players.bloomWeapon[i] = g.players.activeWeapon[i]
 		g.players.lastShotAt[i] = 0
+		g.players.recoilPitch[i] = 0
+		g.players.recoilYaw[i] = 0
+		g.players.recoilShotIndex[i] = 0
 		g.clearReloadLocked(i)
 	}
 }
@@ -2708,6 +2994,9 @@ func (g *Game) startDeathmatchVoteLocked(nowMS int64) {
 		g.players.shotBloom[i] = 0
 		g.players.bloomWeapon[i] = g.players.activeWeapon[i]
 		g.players.lastShotAt[i] = 0
+		g.players.recoilPitch[i] = 0
+		g.players.recoilYaw[i] = 0
+		g.players.recoilShotIndex[i] = 0
 		g.players.nextAttackAt[i] = 0
 		g.clearReloadLocked(i)
 	}
@@ -2789,6 +3078,9 @@ func (g *Game) beginRoundCooldownLocked(team TeamID, nowMS int64) {
 		g.players.shotBloom[i] = 0
 		g.players.bloomWeapon[i] = g.players.activeWeapon[i]
 		g.players.lastShotAt[i] = 0
+		g.players.recoilPitch[i] = 0
+		g.players.recoilYaw[i] = 0
+		g.players.recoilShotIndex[i] = 0
 		g.players.nextAttackAt[i] = 0
 		g.clearReloadLocked(i)
 	}
@@ -3075,6 +3367,8 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			bloom := game.registerShotBloomLocked(idx, weapon, nowMS)
 			moving := isMovingAtTime(game.players.history[idx], shotTime)
+			// Track recoil state (client applies recoil to camera; server tracks for bloom/reset sync)
+			game.registerShotRecoilLocked(idx, weapon, nowMS, aiming, moving)
 			dir = applyShotSpread(dir, config, aiming, game.players.crouching[idx], moving, bloom, shotTime+int64(playerID)*97+nowMS)
 			game.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
 			shooterPos := positionAtTime(game.players.history[idx], shotTime)

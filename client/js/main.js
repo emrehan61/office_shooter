@@ -1,4 +1,4 @@
-import { createRenderer, uploadWorldGeo, drawWorld, drawDynamic } from './renderer.js';
+import { createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, vertsToGroup } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
 import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
 import { buildWorldGeometry, traceShotImpact, loadMap } from './world.js';
@@ -21,12 +21,12 @@ import {
     spendWeaponAmmo,
     updatePlayer,
 } from './player.js';
-import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
+import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, getCrosshairOffsetY, getViewPunch, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
 import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { buildAvatarVerts } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
-import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js';
+import { clamp, lookDirFromYawPitch } from './math.js';
 import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
@@ -40,6 +40,8 @@ import {
     primeAnnouncer,
     snapshotMatchForAnnouncer,
 } from './audio.js';
+import { createSoundEngine, updateSoundListener, soundGunshot, soundFootstep, soundHitMarker, soundImpact, primeSoundEngine } from './sound.js';
+import * as THREE from 'three';
 
 const SEND_RATE = 1 / 60;
 const REMOTE_RENDER_DELAY_MS = 100;
@@ -69,13 +71,23 @@ const announcer = createAnnouncer();
 let lastAnnouncerMatch = null;
 let killAnnouncerState = createKillAnnouncerState();
 
+const soundEngine = createSoundEngine();
+const activeTracers = [];
+const MAX_TRACERS = 32;
+const TRACER_LIFE_MS = 100;
+
 window._cam = camera;
 init(canvas);
+
+// Muzzle flash dynamic point light (reusable, intensity toggled)
+const muzzleFlashLight = new THREE.PointLight(0xffe080, 0, 8, 2);
+muzzleFlashLight.castShadow = false;
+renderer.weaponGroup.add(muzzleFlashLight);
 
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    renderer.gl.viewport(0, 0, canvas.width, canvas.height);
+    resizeRenderer(renderer, canvas.width, canvas.height);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -97,6 +109,7 @@ await loadMapByName(currentMapName);
 
 function warmAudio() {
     void primeAnnouncer(announcer);
+    primeSoundEngine();
 }
 
 window.addEventListener('pointerdown', warmAudio, { once: true });
@@ -871,7 +884,10 @@ net.onHit = (msg) => {
         }
         showDamageFlash(hud, msg.zone);
     }
-    if (msg.from == net.myId) showHitMarker(hud);
+    if (msg.from == net.myId) {
+        showHitMarker(hud, msg.zone, msg.dmg);
+        soundHitMarker(msg.zone);
+    }
 };
 
 net.onKill = (msg) => {
@@ -912,19 +928,36 @@ net.onRound = () => {
 
 net.onShot = (msg) => {
     if (!player.inMatch) return;
-    if (msg.id !== net.myId || msg.weapon === WEAPON_KNIFE || !Array.isArray(msg.pos) || !Array.isArray(msg.dir)) {
+    if (msg.weapon === WEAPON_KNIFE || !Array.isArray(msg.pos) || !Array.isArray(msg.dir)) {
         return;
     }
 
-    const impactPos = traceShotImpact(msg.pos, msg.dir, net.players, net.myId);
-    localImpactEffects.push({
-        type: 'impact',
-        pos: impactPos,
-        timeLeftMs: 140,
-    });
-    if (localImpactEffects.length > 16) {
-        localImpactEffects.splice(0, localImpactEffects.length - 16);
+    const impactPos = traceShotImpact(msg.pos, msg.dir, net.players, msg.id);
+    const isLocal = msg.id === net.myId;
+
+    // Impact effect (local player only)
+    if (isLocal) {
+        localImpactEffects.push({ type: 'impact', pos: impactPos, timeLeftMs: 140 });
+        if (localImpactEffects.length > 16) {
+            localImpactEffects.splice(0, localImpactEffects.length - 16);
+        }
     }
+
+    // Bullet tracer
+    if (activeTracers.length < MAX_TRACERS) {
+        activeTracers.push({
+            start: [msg.pos[0], msg.pos[1], msg.pos[2]],
+            end: impactPos,
+            age: 0,
+            maxAge: TRACER_LIFE_MS,
+        });
+    }
+
+    // Gunshot sound
+    soundGunshot(msg.pos, msg.weapon, isLocal, player.pos);
+
+    // Impact sound
+    soundImpact(impactPos, player.pos);
 };
 
 net.onSelfState = (state) => {
@@ -996,8 +1029,7 @@ function frame(time) {
         right: gameplayInputEnabled && isKeyDown('KeyD'),
     };
     const crouchPressed = gameplayInputEnabled && (
-        isKeyDown('ControlLeft')
-        || isKeyDown('ControlRight')
+        isKeyDown('KeyC')
         || isKeyDown('MetaLeft')
         || isKeyDown('MetaRight')
     );
@@ -1022,7 +1054,9 @@ function frame(time) {
 
         syncLocalWeaponState();
         const moving = movementAllowed && (keys.forward || keys.backward || keys.left || keys.right);
-        updateWeapon(weapon, dt, moving);
+        const strafing = movementAllowed && (keys.left || keys.right);
+        updateWeapon(weapon, dt, moving, player.crouching);
+        // Apply full recoil to camera — shot direction follows camera angles.
         const recoilDelta = consumeRecoilDelta(weapon);
         camera.pitch = clamp(camera.pitch + recoilDelta.pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
         camera.yaw += recoilDelta.yaw;
@@ -1047,7 +1081,7 @@ function frame(time) {
                 fire(weapon);
                 sendThrow(net, dir, selectedWeapon);
             } else if (spendWeaponAmmo(player, selectedWeapon)) {
-                fire(weapon, player.aiming, heavyKnifeAttack);
+                fire(weapon, player.aiming, heavyKnifeAttack, strafing || moving);
                 sendShoot(net, dir, selectedWeapon, player.aiming, heavyKnifeAttack);
             }
         }
@@ -1070,7 +1104,46 @@ function frame(time) {
         }
     }
 
-    drawWorld(renderer, camera.viewMatrix, camera.projMatrix);
+    // View punch is cosmetic screen shake layered on top of the camera.
+    // Aim punch (recoil) is already applied to camera.yaw/pitch above.
+    const viewPunch = getViewPunch(weapon);
+    const renderPitch = clamp(
+        camera.pitch + viewPunch.pitch,
+        -Math.PI / 2 + 0.01,
+        Math.PI / 2 - 0.01
+    );
+    const renderYaw = camera.yaw + viewPunch.yaw;
+
+    // Update Three.js camera from game camera state
+    updateRendererCamera(renderer, camera.position, renderYaw, renderPitch, camera.fov);
+
+    // Update sound listener position
+    const fwd = lookDirFromYawPitch(renderYaw, renderPitch);
+    updateSoundListener(camera.position, fwd);
+
+    // Footsteps for local player
+    if (localInMatch && player.alive) {
+        const moving = canMove(player, net.match) && (isKeyDown('KeyW') || isKeyDown('KeyA') || isKeyDown('KeyS') || isKeyDown('KeyD'));
+        soundFootstep(soundEngine, dt, moving, player.pos, true, player.pos);
+    }
+
+    // Clear previous frame's dynamic objects
+    clearDynamic(renderer);
+    clearWeapon(renderer);
+
+    // Update tracers
+    for (let i = activeTracers.length - 1; i >= 0; i--) {
+        activeTracers[i].age += dt * 1000;
+        if (activeTracers[i].age >= activeTracers[i].maxAge) {
+            activeTracers.splice(i, 1);
+        }
+    }
+
+    // Muzzle flash light
+    const slot = weapon.slots[weapon.kind];
+    const flashIntensity = slot && slot.flashTime > 0 ? (slot.flashTime / 0.06) : 0;
+    muzzleFlashLight.intensity = flashIntensity * 5;
+    muzzleFlashLight.position.set(0, 0.02, -0.7);
 
     if (localInMatch) {
         const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
@@ -1082,6 +1155,20 @@ function frame(time) {
             if (!remote.inMatch || !remote.alive) continue;
             const remoteView = sampleRemotePlayer(remote, renderServerTimeMs);
             appendVerts(worldDynamicVerts, buildAvatarVerts(id, remote, remoteView));
+
+            // Remote player muzzle flash light
+            if (remote.shotTime > 0) {
+                const dx = (remoteView.pos?.[0] ?? 0) - camera.position[0];
+                const dz = (remoteView.pos?.[2] ?? 0) - camera.position[2];
+                if (dx * dx + dz * dz < 400) { // within 20 units
+                    const rFlash = new THREE.PointLight(0xffe080, remote.shotTime / 0.12 * 3, 6, 2);
+                    rFlash.position.set(remoteView.pos?.[0] ?? 0, (remoteView.pos?.[1] ?? 1.7) - 0.3, remoteView.pos?.[2] ?? 0);
+                    renderer.dynamicGroup.add(rFlash);
+                }
+            }
+
+            // Remote footsteps
+            soundFootstep(soundEngine, dt, remote.alive, remoteView.pos || [0, 0, 0], false, player.pos);
         }
 
         appendVerts(worldDynamicVerts, buildProjectileVerts(net.projectiles));
@@ -1091,15 +1178,50 @@ function frame(time) {
         appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects));
 
         if (worldDynamicVerts.length > 0) {
-            const mvp = mat4Create();
-            mat4Multiply(mvp, camera.projMatrix, camera.viewMatrix);
-            drawDynamic(renderer, worldDynamicVerts, mvp);
+            const dynamicMeshes = vertsToGroup(worldDynamicVerts);
+            renderer.dynamicGroup.add(dynamicMeshes);
+        }
+
+        // Render tracers as glowing mesh cylinders (bloom picks these up)
+        for (const tracer of activeTracers) {
+            const t = tracer.age / tracer.maxAge;
+            const headT = Math.min(1, t * 2.5);
+            const tailT = Math.max(0, headT - 0.35);
+            const opacity = 1 - t;
+            const hx = tracer.start[0] + (tracer.end[0] - tracer.start[0]) * headT;
+            const hy = tracer.start[1] + (tracer.end[1] - tracer.start[1]) * headT;
+            const hz = tracer.start[2] + (tracer.end[2] - tracer.start[2]) * headT;
+            const tx = tracer.start[0] + (tracer.end[0] - tracer.start[0]) * tailT;
+            const ty = tracer.start[1] + (tracer.end[1] - tracer.start[1]) * tailT;
+            const tz = tracer.start[2] + (tracer.end[2] - tracer.start[2]) * tailT;
+
+            const dx = hx - tx, dy = hy - ty, dz = hz - tz;
+            const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (length < 0.01) continue;
+
+            const geo = new THREE.CylinderGeometry(0.018, 0.018, length, 4, 1);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0x000000,
+                emissive: 0xffe080,
+                emissiveIntensity: 4.0,
+                transparent: true,
+                opacity: opacity * 0.9,
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set((tx + hx) / 2, (ty + hy) / 2, (tz + hz) / 2);
+            const dir = new THREE.Vector3(dx, dy, dz).normalize();
+            const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+            mesh.quaternion.copy(quat);
+            renderer.dynamicGroup.add(mesh);
         }
 
         if (player.alive) {
-            drawDynamic(renderer, weaponVerts(weapon), camera.projMatrix);
+            const weaponMeshes = vertsToGroup(weaponVerts(weapon));
+            renderer.weaponGroup.add(weaponMeshes);
         }
     }
+
+    render(renderer);
 
     updateHUD(hud, player, {
         visible: gameplayInputEnabled && isKeyDown('Tab') && localInMatch,
@@ -1121,6 +1243,7 @@ function frame(time) {
                 || isKeyDown('KeyD')
             )
         ),
+        crosshairOffsetY: getCrosshairOffsetY(weapon),
     });
 }
 

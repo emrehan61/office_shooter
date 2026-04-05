@@ -1,5 +1,7 @@
-// World geometry and collision.
-// Vertex format: pos(3) + uv(2) + matID(1) per vertex.
+import * as THREE from 'three';
+import { getMaterial, createBoxMesh, createFloorMaterial } from './renderer.js';
+
+// Office-themed world definition: open software studio with meeting pods and workstations.
 // Material IDs: 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 13=glass, 14=wood, 15=screen, 16=plant
 
 let mapArena = 30;
@@ -38,46 +40,179 @@ function rebuildShotBlockers() {
     ];
 }
 
-export function buildWorldGeometry() {
-    const verts = [];
+// ─── Baked floor AO lightmap ───
 
-    pushFloorRect(verts, -mapArena, -mapArena, mapArena, mapArena, 1, 0);
-    pushCeilingRect(verts, -mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight);
+function generateFloorAO() {
+    const size = 512;
+    const ao = new Float32Array(size * size).fill(1.0);
+    const SHADOW_RANGE_WALL = 3.5;
+    const SHADOW_RANGE_BOX = 2.0;
+    const WALL_INTENSITY = 0.45;
+    const BOX_INTENSITY = 0.35;
+
+    function worldToPixel(wx, wz) {
+        return [
+            ((wx + mapArena) / (mapArena * 2)) * size,
+            ((wz + mapArena) / (mapArena * 2)) * size,
+        ];
+    }
+
+    function pointToSegmentDist(px, pz, ax, az, bx, bz) {
+        const abx = bx - ax, abz = bz - az;
+        const len2 = abx * abx + abz * abz;
+        if (len2 < 1e-8) return Math.sqrt((px - ax) ** 2 + (pz - az) ** 2);
+        let t = ((px - ax) * abx + (pz - az) * abz) / len2;
+        t = Math.max(0, Math.min(1, t));
+        const cx = ax + t * abx, cz = az + t * abz;
+        return Math.sqrt((px - cx) ** 2 + (pz - cz) ** 2);
+    }
+
+    // Paint wall shadows
+    for (let py = 0; py < size; py++) {
+        for (let px = 0; px < size; px++) {
+            const wx = (px / size) * mapArena * 2 - mapArena;
+            const wz = (py / size) * mapArena * 2 - mapArena;
+            const idx = py * size + px;
+
+            for (const wall of mapWalls) {
+                const dist = pointToSegmentDist(wx, wz, wall.x1, wall.z1, wall.x2, wall.z2);
+                if (dist < SHADOW_RANGE_WALL) {
+                    const t = dist / SHADOW_RANGE_WALL;
+                    const shadow = 1.0 - (1.0 - t * t) * WALL_INTENSITY;
+                    ao[idx] = Math.min(ao[idx], shadow);
+                }
+            }
+
+            for (const box of mapBoxes) {
+                if (box.cy > 2.0) continue; // skip ceiling-mounted stuff
+                const dx = Math.max(0, Math.abs(wx - box.cx) - box.hx);
+                const dz = Math.max(0, Math.abs(wz - box.cz) - box.hz);
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < SHADOW_RANGE_BOX) {
+                    const t = dist / SHADOW_RANGE_BOX;
+                    const shadow = 1.0 - (1.0 - t * t) * BOX_INTENSITY;
+                    ao[idx] = Math.min(ao[idx], shadow);
+                }
+            }
+        }
+    }
+
+    // Box blur (3 passes for smooth falloff)
+    const tmp = new Float32Array(size * size);
+    for (let pass = 0; pass < 3; pass++) {
+        const radius = 4;
+        // Horizontal
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                let sum = 0, count = 0;
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const sx = x + dx;
+                    if (sx >= 0 && sx < size) { sum += ao[y * size + sx]; count++; }
+                }
+                tmp[y * size + x] = sum / count;
+            }
+        }
+        // Vertical
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                let sum = 0, count = 0;
+                for (let dy = -radius; dy <= radius; dy++) {
+                    const sy = y + dy;
+                    if (sy >= 0 && sy < size) { sum += tmp[sy * size + x]; count++; }
+                }
+                ao[y * size + x] = sum / count;
+            }
+        }
+    }
+
+    // Paint to canvas
+    const cvs = document.createElement('canvas');
+    cvs.width = size;
+    cvs.height = size;
+    const ctx = cvs.getContext('2d');
+    const imageData = ctx.createImageData(size, size);
+    for (let i = 0; i < size * size; i++) {
+        const v = Math.round(ao[i] * 255);
+        imageData.data[i * 4 + 0] = v;
+        imageData.data[i * 4 + 1] = v;
+        imageData.data[i * 4 + 2] = v;
+        imageData.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.flipY = false;
+    return tex;
+}
+
+export function buildWorldGeometry() {
+    const meshes = [];
+    const floorAO = generateFloorAO();
+
+    // Floor with baked AO
+    meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 1, 0, floorAO));
+    // Ceiling (no AO)
+    meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
 
     for (const floor of mapFloorInsets) {
-        pushFloorRect(verts, floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01);
+        meshes.push(createFloorMesh(floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01, floorAO));
     }
 
+    // Walls
+    const wallVerts = new Map();
     for (const wall of mapWalls) {
-        pushThickWall(verts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? mapWallHeight);
+        pushThickWall(wallVerts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? mapWallHeight);
+    }
+    for (const [matID, positions] of wallVerts) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.computeVertexNormals();
+        const mat = getMaterial(matID);
+        const mesh = new THREE.Mesh(geo, mat);
+        const isTransparent = mat.transparent === true;
+        mesh.castShadow = !isTransparent;
+        mesh.receiveShadow = !isTransparent;
+        meshes.push(mesh);
     }
 
+    // Office props
     for (const box of mapBoxes) {
-        pushBox(verts, box.cx, box.cy, box.cz, box.hx, box.hy, box.hz, box.matID);
+        meshes.push(createBoxMesh(box.cx, box.cy, box.cz, box.hx, box.hy, box.hz, box.matID));
     }
 
-    return new Float32Array(verts);
+    return meshes;
 }
 
-function pushFloorRect(verts, x1, z1, x2, z2, matID, y = 0) {
-    pushQuad(verts,
-        x1, y, z2, 0, 0, matID,
-        x2, y, z2, x2 - x1, 0, matID,
-        x2, y, z1, x2 - x1, z2 - z1, matID,
-        x1, y, z1, 0, z2 - z1, matID
-    );
+function createFloorMesh(x1, z1, x2, z2, matID, y, aoTexture) {
+    const w = Math.abs(x2 - x1);
+    const d = Math.abs(z2 - z1);
+    const cx = (x1 + x2) / 2;
+    const cz = (z1 + z2) / 2;
+    const geo = new THREE.PlaneGeometry(w, d);
+    geo.rotateX(-Math.PI / 2);
+
+    if (aoTexture) {
+        // UV2 maps world position to lightmap: (worldX + mapArena) / (2*mapArena)
+        const posAttr = geo.getAttribute('position');
+        const uv2 = new Float32Array(posAttr.count * 2);
+        for (let i = 0; i < posAttr.count; i++) {
+            // After rotateX(-PI/2), local X → world X offset, local Z → world Z offset
+            const lx = posAttr.getX(i);
+            const lz = posAttr.getZ(i);
+            uv2[i * 2]     = (lx + cx + mapArena) / (mapArena * 2);
+            uv2[i * 2 + 1] = (lz + cz + mapArena) / (mapArena * 2);
+        }
+        geo.setAttribute('uv2', new THREE.Float32BufferAttribute(uv2, 2));
+    }
+
+    const mat = aoTexture ? createFloorMaterial(matID, aoTexture) : getMaterial(matID);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(cx, y, cz);
+    mesh.receiveShadow = true;
+    return mesh;
 }
 
-function pushCeilingRect(verts, x1, z1, x2, z2, matID, y) {
-    pushQuad(verts,
-        x1, y, z1, 0, 0, matID,
-        x2, y, z1, x2 - x1, 0, matID,
-        x2, y, z2, x2 - x1, z2 - z1, matID,
-        x1, y, z2, 0, z2 - z1, matID
-    );
-}
-
-function pushThickWall(verts, x1, z1, x2, z2, matID, height = mapWallHeight) {
+function pushThickWall(buckets, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const dx = x2 - x1;
     const dz = z2 - z1;
     const len = Math.sqrt(dx * dx + dz * dz);
@@ -91,74 +226,27 @@ function pushThickWall(verts, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const bx1 = x1 - nx, bz1 = z1 - nz;
     const bx2 = x2 - nx, bz2 = z2 - nz;
 
-    pushQuad(verts,
-        ax1, 0, az1, 0, 0, matID,
-        ax2, 0, az2, len, 0, matID,
-        ax2, height, az2, len, height, matID,
-        ax1, height, az1, 0, height, matID
-    );
+    let positions = buckets.get(matID);
+    if (!positions) {
+        positions = [];
+        buckets.set(matID, positions);
+    }
 
-    pushQuad(verts,
-        bx2, 0, bz2, 0, 0, matID,
-        bx1, 0, bz1, len, 0, matID,
-        bx1, height, bz1, len, height, matID,
-        bx2, height, bz2, 0, height, matID
-    );
-
-    pushQuad(verts,
-        ax1, height, az1, 0, 0, matID,
-        ax2, height, az2, len, 0, matID,
-        bx2, height, bz2, len, mapWallThick * 2, matID,
-        bx1, height, bz1, 0, mapWallThick * 2, matID
-    );
-
-    pushQuad(verts,
-        bx1, 0, bz1, 0, 0, matID,
-        ax1, 0, az1, mapWallThick * 2, 0, matID,
-        ax1, height, az1, mapWallThick * 2, height, matID,
-        bx1, height, bz1, 0, height, matID
-    );
-
-    pushQuad(verts,
-        ax2, 0, az2, 0, 0, matID,
-        bx2, 0, bz2, mapWallThick * 2, 0, matID,
-        bx2, height, bz2, mapWallThick * 2, height, matID,
-        ax2, height, az2, 0, height, matID
-    );
+    // Front face
+    pushQuadPositions(positions, ax1,0,az1, ax2,0,az2, ax2,height,az2, ax1,height,az1);
+    // Back face
+    pushQuadPositions(positions, bx2,0,bz2, bx1,0,bz1, bx1,height,bz1, bx2,height,bz2);
+    // Top
+    pushQuadPositions(positions, ax1,height,az1, ax2,height,az2, bx2,height,bz2, bx1,height,bz1);
+    // Left cap
+    pushQuadPositions(positions, bx1,0,bz1, ax1,0,az1, ax1,height,az1, bx1,height,bz1);
+    // Right cap
+    pushQuadPositions(positions, ax2,0,az2, bx2,0,bz2, bx2,height,bz2, ax2,height,az2);
 }
 
-function pushBox(verts, cx, cy, cz, hx, hy, hz, matID) {
-    const x0 = cx - hx, x1 = cx + hx;
-    const y0 = cy - hy, y1 = cy + hy;
-    const z0 = cz - hz, z1 = cz + hz;
-    const w = hx * 2, h = hy * 2, d = hz * 2;
-
-    pushQuad(verts, x0, y0, z1, 0, 0, matID, x1, y0, z1, w, 0, matID, x1, y1, z1, w, h, matID, x0, y1, z1, 0, h, matID);
-    pushQuad(verts, x1, y0, z0, 0, 0, matID, x0, y0, z0, w, 0, matID, x0, y1, z0, w, h, matID, x1, y1, z0, 0, h, matID);
-    pushQuad(verts, x0, y1, z1, 0, 0, matID, x1, y1, z1, w, 0, matID, x1, y1, z0, w, d, matID, x0, y1, z0, 0, d, matID);
-    pushQuad(verts, x0, y0, z0, 0, 0, matID, x1, y0, z0, w, 0, matID, x1, y0, z1, w, d, matID, x0, y0, z1, 0, d, matID);
-    pushQuad(verts, x1, y0, z1, 0, 0, matID, x1, y0, z0, d, 0, matID, x1, y1, z0, d, h, matID, x1, y1, z1, 0, h, matID);
-    pushQuad(verts, x0, y0, z0, 0, 0, matID, x0, y0, z1, d, 0, matID, x0, y1, z1, d, h, matID, x0, y1, z0, 0, h, matID);
-}
-
-function pushQuad(verts,
-    x0, y0, z0, u0, v0, m0,
-    x1, y1, z1, u1, v1, m1,
-    x2, y2, z2, u2, v2, m2,
-    x3, y3, z3, u3, v3, m3
-) {
-    pushTri(verts, x0, y0, z0, u0, v0, m0, x1, y1, z1, u1, v1, m1, x2, y2, z2, u2, v2, m2);
-    pushTri(verts, x0, y0, z0, u0, v0, m0, x2, y2, z2, u2, v2, m2, x3, y3, z3, u3, v3, m3);
-}
-
-function pushTri(verts,
-    x0, y0, z0, u0, v0, m0,
-    x1, y1, z1, u1, v1, m1,
-    x2, y2, z2, u2, v2, m2
-) {
-    verts.push(x0, y0, z0, u0, v0, m0);
-    verts.push(x1, y1, z1, u1, v1, m1);
-    verts.push(x2, y2, z2, u2, v2, m2);
+function pushQuadPositions(positions, x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3) {
+    positions.push(x0,y0,z0, x1,y1,z1, x2,y2,z2);
+    positions.push(x0,y0,z0, x2,y2,z2, x3,y3,z3);
 }
 
 export function collideWalls(pos, radius) {
@@ -302,19 +390,27 @@ function playerHitBoxes(pos, crouching) {
             },
             {
                 min: [pos[0] - 0.42, footY + 0.44, pos[2] - 0.32],
-                max: [pos[0] + 0.42, footY + 0.96, pos[2] + 0.32],
+                max: [pos[0] + 0.42, footY + 0.92, pos[2] + 0.32],
+            },
+            {
+                min: [pos[0] - 0.32, footY, pos[2] - 0.28],
+                max: [pos[0] + 0.32, footY + 0.44, pos[2] + 0.28],
             },
         ];
     }
 
     return [
         {
-            min: [pos[0] - 0.24, footY + 1.36, pos[2] - 0.24],
-            max: [pos[0] + 0.24, footY + 1.78, pos[2] + 0.24],
+            min: [pos[0] - 0.24, footY + 1.42, pos[2] - 0.24],
+            max: [pos[0] + 0.24, footY + 1.94, pos[2] + 0.24],
         },
         {
-            min: [pos[0] - 0.42, footY + 0.58, pos[2] - 0.32],
+            min: [pos[0] - 0.42, footY + 0.72, pos[2] - 0.32],
             max: [pos[0] + 0.42, footY + 1.38, pos[2] + 0.32],
+        },
+        {
+            min: [pos[0] - 0.32, footY, pos[2] - 0.28],
+            max: [pos[0] + 0.32, footY + 0.7, pos[2] + 0.28],
         },
     ];
 }

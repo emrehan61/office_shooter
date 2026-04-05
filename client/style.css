@@ -7,13 +7,15 @@ canvas { display: block; width: 100vw; height: 100vh; }
     --crosshair-gap: 14px;
     --crosshair-length: 10px;
     --crosshair-thickness: 2px;
+    --crosshair-offset-y: 0px;
     position: fixed;
     top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, calc(-50% + var(--crosshair-offset-y)));
     width: calc(var(--crosshair-gap) * 2 + var(--crosshair-length) * 2 + var(--crosshair-thickness));
     height: calc(var(--crosshair-gap) * 2 + var(--crosshair-length) * 2 + var(--crosshair-thickness));
     pointer-events: none;
     z-index: 10;
+    transition: transform 0.04s ease-out;
 }
 .crosshair-arm {
     position: absolute;
@@ -52,6 +54,73 @@ canvas { display: block; width: 100vw; height: 100vh; }
 }
 #crosshair.aiming .crosshair-arm {
     opacity: 0.96;
+}
+
+/* Hit Marker (X-shape) */
+#hit-marker {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 28px; height: 28px;
+    pointer-events: none;
+    z-index: 11;
+    opacity: 0;
+}
+#hit-marker .hm-arm {
+    position: absolute;
+    width: 12px; height: 2px;
+    background: rgba(255,255,255,0.95);
+    border-radius: 1px;
+}
+#hit-marker .hm-tl { top: 3px; left: 3px; transform: rotate(45deg); }
+#hit-marker .hm-tr { top: 3px; right: 3px; transform: rotate(-45deg); }
+#hit-marker .hm-bl { bottom: 3px; left: 3px; transform: rotate(-45deg); }
+#hit-marker .hm-br { bottom: 3px; right: 3px; transform: rotate(45deg); }
+#hit-marker.active {
+    opacity: 1;
+    animation: hm-pop 0.2s ease-out forwards;
+}
+#hit-marker.headshot .hm-arm {
+    background: #ff3333;
+    height: 3px;
+    width: 14px;
+}
+#hit-marker.headshot.active {
+    animation: hm-headshot 0.3s ease-out forwards;
+}
+@keyframes hm-pop {
+    0% { transform: translate(-50%,-50%) scale(1.4); opacity: 1; }
+    100% { transform: translate(-50%,-50%) scale(1); opacity: 0; }
+}
+@keyframes hm-headshot {
+    0% { transform: translate(-50%,-50%) scale(1.6); opacity: 1; }
+    40% { transform: translate(-50%,-50%) scale(1.1) rotate(8deg); opacity: 1; }
+    100% { transform: translate(-50%,-50%) scale(1) rotate(0); opacity: 0; }
+}
+#hit-marker .hm-dmg {
+    position: absolute;
+    top: -18px; left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    font-weight: bold;
+    color: rgba(255,255,255,0.95);
+    text-shadow: 0 0 4px rgba(0,0,0,0.8);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+}
+#hit-marker.active .hm-dmg {
+    opacity: 1;
+    animation: hm-dmg-float 0.6s ease-out forwards;
+}
+#hit-marker.headshot .hm-dmg {
+    color: #ff3333;
+    font-size: 16px;
+}
+@keyframes hm-dmg-float {
+    0% { opacity: 1; transform: translateX(-50%) translateY(0); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-16px); }
 }
 
 /* Health */
