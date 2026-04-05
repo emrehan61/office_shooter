@@ -60,6 +60,74 @@ func readQueuedMessage(t *testing.T, sendCh chan []byte) map[string]any {
 	}
 }
 
+func TestLobbyManagerCreatesPublicAndPrivateLobbies(t *testing.T) {
+	manager := newLobbyManager()
+
+	publicLobby := manager.createLobby("Office", false)
+	privateLobby := manager.createLobby("Scrim", true)
+
+	if publicLobby == nil {
+		t.Fatal("expected public lobby")
+	}
+	if privateLobby == nil {
+		t.Fatal("expected private lobby")
+	}
+	if publicLobby.Private {
+		t.Fatal("expected first lobby to be public")
+	}
+	if !privateLobby.Private {
+		t.Fatal("expected second lobby to be private")
+	}
+	if privateLobby.JoinKey == "" {
+		t.Fatal("expected private lobby to have a join key")
+	}
+
+	public := manager.listPublicLobbies()
+	if len(public) != 1 {
+		t.Fatalf("expected 1 public lobby, got %d", len(public))
+	}
+	if public[0].ID != publicLobby.ID {
+		t.Fatalf("expected public lobby id %q, got %q", publicLobby.ID, public[0].ID)
+	}
+
+	resolved, ok := manager.findLobbyByKey(privateLobby.JoinKey)
+	if !ok {
+		t.Fatal("expected join key lookup to succeed")
+	}
+	if resolved.ID != privateLobby.ID {
+		t.Fatalf("expected resolved lobby %q, got %q", privateLobby.ID, resolved.ID)
+	}
+}
+
+func TestLeaveMatchLeavesTeamPlayersInLobby(t *testing.T) {
+	g := newTestGame()
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+
+	assignPlayerTeam(g, blue.id, TeamBlue)
+	assignPlayerTeam(g, green.id, TeamGreen)
+	g.setAllNamedPlayersInMatchLocked(true)
+	g.startMatchLocked(1000)
+
+	blueIdx, ok := g.players.indexOf(blue.id)
+	if !ok {
+		t.Fatal("expected blue player")
+	}
+
+	if !g.leaveMatchLocked(blue.id) {
+		t.Fatal("expected leave match to succeed")
+	}
+	if g.players.inMatch[blueIdx] {
+		t.Fatal("expected player to leave the current match")
+	}
+	if g.players.alive[blueIdx] {
+		t.Fatal("expected player to stop being alive after leaving")
+	}
+	if g.state != StatePlaying {
+		t.Fatal("expected match to stay active for other players")
+	}
+}
+
 func TestBroadcastLobbyIncludesPlayersAndCurrentState(t *testing.T) {
 	g := newTestGame()
 	g.state = StatePlaying

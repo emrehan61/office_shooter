@@ -10,6 +10,7 @@ import {
     sendBuy,
     sendChat,
     sendInput,
+    sendLeaveMatch,
     sendMode,
     sendReload,
     sendRejoin,
@@ -142,6 +143,113 @@ test('state snapshots refresh slot weapons, ammo, and scoreboard fields', async 
         assert.equal(net.players['2'].heavyReserve, 50);
         assert.equal(net.players['2'].activeWeapon, 'ak-47');
         assert.equal(net.match.buyPhase, true);
+    } finally {
+        restore();
+    }
+});
+
+test('connection closes before welcome and clears session state', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const result = Promise.race([
+            connect(net, 'ws://example.test/ws', 'Host').then(
+                () => 'resolved',
+                () => 'rejected'
+            ),
+            new Promise((resolve) => setTimeout(() => resolve('timeout'), 50)),
+        ]);
+
+        const ws = FakeWebSocket.instances[0];
+        ws.open();
+        ws.close({ code: 1006 });
+
+        assert.equal(await result, 'rejected');
+        assert.equal(net.connected, false);
+        assert.equal(net.ws, null);
+        assert.deepEqual(net.players, {});
+    } finally {
+        restore();
+    }
+});
+
+test('welcome marks the client as playing when the match is already active', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Guest');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 2,
+            pos: [5, 1.7, 5],
+            state: 'playing',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true },
+        });
+        await connected;
+
+        assert.equal(net.gameStarted, true);
+        assert.equal(net.match.currentRound, 1);
+    } finally {
+        restore();
+    }
+});
+
+test('welcome and lobby messages retain the selected game mode', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            match: { mode: 'deathmatch', currentRound: 0, totalRounds: 0, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false },
+        });
+        await connected;
+
+        assert.equal(net.match.mode, 'deathmatch');
+
+        ws.emit({
+            t: 'lobby',
+            players: [{ id: 1, name: 'Host' }],
+            state: 'waiting',
+            match: { mode: 'team', currentRound: 0, totalRounds: 0, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false },
+        });
+
+        assert.equal(net.match.mode, 'team');
+    } finally {
+        restore();
+    }
+});
+
+test('connect stores selected lobby metadata for the active session', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(
+            net,
+            'ws://example.test/ws?lobby=lobby-2',
+            'Host',
+            { id: 'lobby-2', name: 'Office', private: false }
+        );
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            match: { currentRound: 0, totalRounds: 0, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false },
+        });
+        await connected;
+
+        assert.deepEqual(net.lobby, { id: 'lobby-2', name: 'Office', private: false });
     } finally {
         restore();
     }
@@ -285,6 +393,25 @@ test('state snapshots include projectiles and reload timer state', async () => {
         assert.deepEqual(net.effects, [{ type: 'smoke', pos: [4, 1, 5], radius: 9, timeLeftMs: 6000 }]);
         assert.equal(net.players['1'].reloading, true);
         assert.equal(net.players['1'].reloadTimeLeftMs, 2400);
+    } finally {
+        restore();
+    }
+});
+
+test('leave-match requests send the expected websocket payload', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws?lobby=lobby-2', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false } });
+        await connected;
+
+        sendLeaveMatch(net);
+
+        assert.deepEqual(ws.sent[ws.sent.length - 1], { t: 'leaveMatch' });
     } finally {
         restore();
     }

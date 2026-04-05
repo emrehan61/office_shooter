@@ -67,13 +67,34 @@ test('scoped weapons shrink the crosshair while pistols expand under sustained f
     const pistol = createWeapon();
     setWeaponType(pistol, 'glock-18');
     const pistolHipGap = getCrosshairGap(pistol, false);
+    const pistolCrouchGap = getCrosshairGap(pistol, false, true);
     fire(pistol, false);
     const pistolFiredGap = getCrosshairGap(pistol, false);
     const pistolMovingGap = getCrosshairGap(pistol, false, false, true);
 
     assert.ok(aimGap < hipGap);
+    assert.ok(pistolCrouchGap < pistolHipGap);
     assert.ok(pistolFiredGap > pistolHipGap);
     assert.ok(pistolMovingGap > pistolHipGap);
+});
+
+test('aiming reduces rifle recoil while sustained fire still stacks it', () => {
+    const hipfireWeapon = createWeapon();
+    setWeaponType(hipfireWeapon, 'm4a1-s');
+    fire(hipfireWeapon, false, false, true);
+    fire(hipfireWeapon, false, false, true);
+    const hipPitch = hipfireWeapon.slots['m4a1-s'].recoilTargetPitch;
+
+    const aimedWeapon = createWeapon();
+    setWeaponType(aimedWeapon, 'aug');
+    fire(aimedWeapon, true, false, true);
+    fire(aimedWeapon, true, false, true);
+    const aimedPitch = aimedWeapon.slots.aug.recoilTargetPitch;
+    fire(aimedWeapon, true, false, true);
+    const sustainedPitch = aimedWeapon.slots.aug.recoilTargetPitch;
+
+    assert.ok(aimedPitch < hipPitch);
+    assert.ok(sustainedPitch > aimedPitch);
 });
 
 test('weapon view model includes hands holding the gun', () => {

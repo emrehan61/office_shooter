@@ -993,11 +993,12 @@ canvas { display: block; width: 100vw; height: 100vh; }
 
 /* Lobby form */
 .lobby-form {
-    margin: 20px 0;
+    margin: 20px auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    align-items: center;
+    gap: 16px;
+    align-items: stretch;
+    max-width: 980px;
 }
 .lobby-form input {
     padding: 10px 16px;
@@ -1010,6 +1011,85 @@ canvas { display: block; width: 100vw; height: 100vh; }
     width: 260px;
     text-align: center;
     outline: none;
+}
+.home-identity-row {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.home-card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    align-items: start;
+}
+.home-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 16px;
+    border-radius: 16px;
+    background: rgba(14, 17, 29, 0.8);
+    border: 1px solid rgba(255,255,255,0.08);
+    min-height: 250px;
+}
+.home-card button,
+.home-card input {
+    width: 100%;
+    max-width: 280px;
+}
+.home-status {
+    min-height: 32px;
+    color: #99a6bc;
+    font-size: 12px;
+    letter-spacing: 0.4px;
+    line-height: 1.4;
+}
+.home-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #d5e9ff;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+.home-checkbox input {
+    width: auto;
+    margin: 0;
+}
+.public-lobby-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+.public-lobby-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    text-align: left;
+}
+.public-lobby-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.public-lobby-name {
+    color: #f4f7fb;
+    font-size: 14px;
+    letter-spacing: 0.4px;
+}
+.public-lobby-meta {
+    color: #93a2b8;
+    font-size: 11px;
+    letter-spacing: 0.6px;
 }
 .lobby-form input::placeholder {
     color: rgba(255,255,255,0.3);
@@ -1038,6 +1118,20 @@ button:disabled {
 #lobby-panel {
     margin: 20px 0;
     text-align: center;
+}
+#current-lobby-meta {
+    margin-bottom: 12px;
+}
+#current-lobby-name {
+    color: #f6f8fb;
+    font-size: 20px;
+    letter-spacing: 1px;
+}
+#current-lobby-access {
+    color: #9ba9bd;
+    font-size: 12px;
+    letter-spacing: 0.8px;
+    margin-top: 4px;
 }
 #team-select {
     margin: 18px auto 14px;
@@ -1172,8 +1266,40 @@ button:disabled {
     font-size: 13px;
     margin-bottom: 12px;
 }
+#pause-menu {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    background: rgba(5, 8, 14, 0.76);
+    z-index: 30;
+    text-align: center;
+}
+.pause-title {
+    color: #f6f8fb;
+    font-size: 24px;
+    letter-spacing: 4px;
+}
+#pause-copy {
+    color: #aab7ca;
+    max-width: 420px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+.pause-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
 
 @media (max-width: 720px) {
+    .home-card-grid {
+        grid-template-columns: 1fr;
+    }
     #match-bar {
         top: 14px;
         gap: 8px;
