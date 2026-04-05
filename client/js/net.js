@@ -1,5 +1,7 @@
 import { MODE_TEAM, normalizeMode } from './modes.js';
 
+const MAX_REMOTE_EXTRAPOLATION_MS = 50;
+
 export function createNet() {
     return {
         ws: null,
@@ -684,7 +686,8 @@ export function sampleRemotePlayer(player, renderServerTimeMs) {
         return sample;
     }
 
-    const t = clamp01((renderServerTimeMs - fromTime) / span);
+    const leadMs = Math.max(0, renderServerTimeMs - toTime);
+    const t = clampRemoteSampleFactor((renderServerTimeMs - fromTime) / span, leadMs, span);
     lerpVec3Into(sample.pos, player.prevPos, player.targetPos, t);
     sample.yaw = lerpAngle(player.prevYaw ?? player.yaw, player.targetYaw ?? player.yaw, t);
     sample.pitch = lerp(player.prevPitch ?? player.pitch, player.targetPitch ?? player.pitch, t);
@@ -769,6 +772,13 @@ function clamp01(value) {
     if (value <= 0) return 0;
     if (value >= 1) return 1;
     return value;
+}
+
+function clampRemoteSampleFactor(value, leadMs, spanMs) {
+    if (value <= 0) return 0;
+    if (value <= 1) return value;
+    const safeLeadMs = Math.min(MAX_REMOTE_EXTRAPOLATION_MS, leadMs);
+    return 1 + safeLeadMs / spanMs;
 }
 
 function syncSnapshotClock(net, serverTimeMs, receivedAt = Date.now()) {

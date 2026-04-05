@@ -287,6 +287,50 @@ test('remote players can be sampled smoothly between server-timed snapshots', as
     }
 });
 
+test('remote player sampling carries motion briefly past the newest snapshot', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({
+            t: 'welcome',
+            id: 1,
+            pos: [0, 1.7, 0],
+            state: 'playing',
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 10000, buyPhase: true },
+        });
+        await connected;
+
+        ws.emit({
+            t: 'state',
+            serverTime: 1000,
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 299000, buyTimeLeftMs: 9000, buyPhase: true },
+            players: {
+                2: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100, armor: 0, activeWeapon: 'knife' },
+            },
+        });
+        ws.emit({
+            t: 'state',
+            serverTime: 1100,
+            match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 298900, buyTimeLeftMs: 8900, buyPhase: true },
+            players: {
+                2: { pos: [10, 1.7, 0], yaw: 0, pitch: 0, hp: 100, armor: 0, activeWeapon: 'knife' },
+            },
+        });
+
+        const sampled = sampleRemotePlayer(net.players['2'], 1150);
+
+        assert.ok(sampled);
+        assert.ok(sampled.pos[0] > 10);
+        assert.ok(sampled.pos[0] < 16);
+    } finally {
+        restore();
+    }
+});
+
 test('state snapshots do not overwrite the local player position', async () => {
     const restore = installFakeWebSocket();
     try {

@@ -160,20 +160,20 @@ export function weaponVerts(weapon) {
 export function getCrosshairGap(weapon, aiming = false, crouching = false, moving = false) {
     const kind = weapon.kind;
     const slot = weapon.slots[kind];
-    if (!slot) return 12;
+    if (!slot) return 9;
     const crouchMultiplier = crouching ? 0.72 : 1;
     const moveBonus = moving ? 3 : 0;
 
     if (kind === WEAPON_MACHINE_GUN) {
-        return (aiming ? 5 : 12) * crouchMultiplier + moveBonus + slot.heat * 4;
+        return (aiming ? 4 : 10) * crouchMultiplier + moveBonus + slot.heat * 4;
     }
     if (kind === WEAPON_PISTOL) {
-        return (aiming ? 4 : 10) * crouchMultiplier + moveBonus + slot.heat * 3;
+        return (aiming ? 3 : 8) * crouchMultiplier + moveBonus + slot.heat * 3;
     }
     if (kind === WEAPON_KNIFE) {
-        return 10 + slot.heat * 3;
+        return 8 + slot.heat * 3;
     }
-    return 12 + slot.heat * 3;
+    return 9 + slot.heat * 3;
 }
 
 export function getCrosshairOffsetY(weapon) {

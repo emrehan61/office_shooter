@@ -1416,9 +1416,13 @@ function frame(time) {
         }
 
         sendTimer -= dt;
-        if (sendTimer <= 0 && net.connected) {
-            sendInput(net, player.pos, camera.yaw, camera.pitch, player.crouching);
-            sendTimer = SEND_RATE;
+        if (net.connected) {
+            while (sendTimer <= 0) {
+                sendInput(net, player.pos, camera.yaw, camera.pitch, player.crouching);
+                sendTimer += SEND_RATE;
+            }
+        } else if (sendTimer < 0) {
+            sendTimer = 0;
         }
     } else {
         setAiming(player, false);

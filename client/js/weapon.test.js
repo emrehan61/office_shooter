@@ -132,6 +132,17 @@ test('crosshair gap shrinks on aim and expands with sustained fire', () => {
     assert.ok(firedGap > hipGap);
 });
 
+test('default crosshair gap stays compact at rest', () => {
+    const pistol = createWeapon();
+    setWeaponType(pistol, WEAPON_PISTOL);
+
+    const knife = createWeapon();
+    setWeaponType(knife, WEAPON_KNIFE);
+
+    assert.ok(getCrosshairGap(pistol, false) < 9);
+    assert.ok(getCrosshairGap(knife, false) < 9);
+});
+
 test('weapon view model includes hands holding the gun', () => {
     const weapon = createWeapon();
     const verts = weaponVerts(weapon);

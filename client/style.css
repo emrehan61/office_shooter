@@ -4,8 +4,8 @@ canvas { display: block; width: 100vw; height: 100vh; }
 
 /* Crosshair */
 #crosshair {
-    --crosshair-gap: 14px;
-    --crosshair-length: 10px;
+    --crosshair-gap: 8px;
+    --crosshair-length: 8px;
     --crosshair-thickness: 2px;
     --crosshair-offset-y: 0px;
     position: fixed;
