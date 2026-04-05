@@ -19,6 +19,8 @@ func newTestGame() *Game {
 		mode:            ModeTeam,
 		state:           StateWaiting,
 		deathmatchVotes: make(map[int]bool),
+		mapName:         defaultMapName,
+		mapSpawns:       defaultSpawns,
 	}
 }
 

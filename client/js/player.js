@@ -1,5 +1,5 @@
 import { forwardFromYaw, rightFromYaw, clamp } from './math.js';
-import { collideWalls, SPAWN_POINTS } from './world.js';
+import { collideWalls, getSpawnPoints } from './world.js';
 import {
     GRENADE_MAX,
     MACHINE_GUN_AMMO_MAX,
@@ -31,7 +31,7 @@ export { MAX_ARMOR, STARTING_CREDITS };
 
 export function createPlayer() {
     return {
-        pos: [...SPAWN_POINTS[0]],
+        pos: [...(getSpawnPoints()[0] || [0, 1.7, 0])],
         vel: [0, 0, 0],
         onGround: true,
         hp: MAX_HP,
@@ -367,7 +367,8 @@ export function setActiveWeapon(player, weaponId) {
 }
 
 export function respawn(player) {
-    const spawn = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
+    const spawns = getSpawnPoints();
+    const spawn = spawns[Math.floor(Math.random() * spawns.length)];
     player.pos = [...spawn];
     resetCombatState(player);
 }

@@ -27,6 +27,7 @@ export function createNet() {
         onRound: null,
         onTeam: null,
         onMode: null,
+        onMap: null,
         onRejoin: null,
         onStartDenied: null,
         onChat: null,
@@ -177,6 +178,10 @@ function handleMsg(net, msg) {
 
         case 'mode':
             if (net.onMode) net.onMode(msg);
+            break;
+
+        case 'map':
+            if (net.onMap) net.onMap(msg);
             break;
 
         case 'rejoin':
@@ -336,6 +341,11 @@ export function sendMode(net, mode) {
     net.ws.send(JSON.stringify({ t: 'mode', mode: normalizeMode(mode) }));
 }
 
+export function sendMap(net, mapName) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'map', map: mapName }));
+}
+
 export function sendRejoin(net, yes) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({ t: 'rejoin', yes: !!yes }));
@@ -487,6 +497,7 @@ function applyMatchState(net, match) {
     if (!match) return;
 
     net.match.mode = normalizeMode(match.mode ?? net.match.mode);
+    net.match.map = match.map ?? net.match.map;
     net.match.currentRound = match.currentRound ?? net.match.currentRound;
     net.match.totalRounds = match.totalRounds ?? net.match.totalRounds;
     net.match.roundTimeLeftMs = match.roundTimeLeftMs ?? net.match.roundTimeLeftMs;
@@ -515,6 +526,7 @@ function applyMatchState(net, match) {
 function createDefaultMatchState() {
     return {
         mode: MODE_TEAM,
+        map: 'office_studio',
         currentRound: 0,
         totalRounds: 0,
         roundTimeLeftMs: 0,

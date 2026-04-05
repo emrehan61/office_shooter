@@ -160,6 +160,15 @@ void main() {
             texColor = smokePuff(vWorldPos);
         } else if (m < 19.0) {
             texColor = impactMarker(vWorldPos);
+        } else if (m < 21.0) {
+            texColor = vec3(1.0, 0.15, 0.1);
+            emissive = true;
+        } else if (m < 22.0) {
+            texColor = vec3(0.1, 0.9, 0.2);
+            emissive = true;
+        } else if (m < 23.0) {
+            texColor = vec3(0.2, 0.45, 1.0);
+            emissive = true;
         } else {
             texColor = vec3(0.18, 0.2, 0.24) + noise2D(vWorldPos.xz * 16.0) * 0.06;
         }

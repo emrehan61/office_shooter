@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { loadMap } from './world.js';
+
+const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
+loadMap(mapData);
 
 import {
     applyAuthoritativeState,

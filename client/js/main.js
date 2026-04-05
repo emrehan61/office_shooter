@@ -1,7 +1,7 @@
 import { createRenderer, uploadWorldGeo, drawWorld, drawDynamic } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
 import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
-import { buildWorldGeometry, traceShotImpact } from './world.js';
+import { buildWorldGeometry, traceShotImpact, loadMap } from './world.js';
 import {
     applyAuthoritativeState,
     canMove,
@@ -23,7 +23,7 @@ import {
 } from './player.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { buildAvatarVerts } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch, mat4Create, mat4Multiply } from './math.js';
@@ -72,9 +72,6 @@ let killAnnouncerState = createKillAnnouncerState();
 window._cam = camera;
 init(canvas);
 
-const worldGeo = buildWorldGeometry();
-uploadWorldGeo(renderer, worldGeo);
-
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -82,6 +79,21 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+let currentMapName = 'office_studio';
+
+async function loadMapByName(name) {
+    const resp = await fetch(`maps/${name}.json`);
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    loadMap(data);
+    const geo = buildWorldGeometry();
+    uploadWorldGeo(renderer, geo);
+    currentMapName = name;
+    return true;
+}
+
+await loadMapByName(currentMapName);
 
 function warmAudio() {
     void primeAnnouncer(announcer);
@@ -112,7 +124,10 @@ const rejoinPrompt = document.getElementById('rejoin-prompt');
 const rejoinCopy = document.getElementById('rejoin-copy');
 const rejoinYesBtn = document.getElementById('rejoin-yes-btn');
 const rejoinNoBtn = document.getElementById('rejoin-no-btn');
+const mapDropdown = document.getElementById('map-dropdown');
+const mapSelect = document.getElementById('map-select');
 let rejoinVoteChoice = null;
+let availableMaps = [];
 
 function getSelfLobbyPlayer() {
     if (net.myId == null) return null;
@@ -154,6 +169,51 @@ function updateRejoinPrompt() {
     if (rejoinNoBtn) {
         rejoinNoBtn.disabled = rejoinVoteChoice === false;
         rejoinNoBtn.classList.toggle('is-active', rejoinVoteChoice === false);
+    }
+}
+
+async function fetchMapList() {
+    try {
+        const resp = await fetch('/api/maps');
+        if (resp.ok) availableMaps = await resp.json();
+    } catch { /* offline / no server */ }
+    populateMapDropdown();
+}
+
+function populateMapDropdown() {
+    if (!mapDropdown) return;
+    const current = net.match.map || currentMapName;
+    mapDropdown.innerHTML = '';
+    for (const name of availableMaps) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name.replace(/_/g, ' ');
+        if (name === current) opt.selected = true;
+        mapDropdown.appendChild(opt);
+    }
+}
+
+function updateMapControls() {
+    if (!mapDropdown) return;
+    const current = net.match.map || currentMapName;
+    mapDropdown.value = current;
+    mapDropdown.disabled = !net.connected || net.gameStarted;
+    if (mapSelect) mapSelect.style.display = net.gameStarted ? 'none' : '';
+}
+
+if (mapDropdown) {
+    mapDropdown.addEventListener('change', () => {
+        const name = mapDropdown.value;
+        if (name && name !== net.match.map) {
+            sendMap(net, name);
+        }
+    });
+}
+
+async function syncMapIfNeeded() {
+    const serverMap = net.match.map;
+    if (serverMap && serverMap !== currentMapName) {
+        await loadMapByName(serverMap);
     }
 }
 
@@ -214,6 +274,7 @@ function updateTeamControls() {
     }
 
     updateRejoinPrompt();
+    updateMapControls();
 }
 
 function setBuyMenuOpen(nextOpen) {
@@ -546,6 +607,8 @@ if (connectBtn) {
             syncLocalWeaponState();
             camera.position = player.pos;
             clearChat();
+            await fetchMapList();
+            await syncMapIfNeeded();
             showLobbyPanel();
             populatePlayerList();
             setLobbyStatus(net.gameStarted
@@ -562,6 +625,7 @@ if (connectBtn) {
 }
 
 net.onLobby = (msg) => {
+    syncMapIfNeeded();
     populatePlayerList();
     if (net.match.deathmatchVoteActive && player.inMatch) {
         setBuyMenuOpen(false);
@@ -606,6 +670,17 @@ net.onMode = (msg) => {
     }
     setLobbyStatus(`${getModeLabel(msg.mode)} mode selected`);
     populatePlayerList();
+};
+
+net.onMap = (msg) => {
+    if (msg.ok === false) {
+        setLobbyStatus(msg.reason || 'Map change failed');
+        updateMapControls();
+        return;
+    }
+    setLobbyStatus(`Map: ${(msg.map || '').replace(/_/g, ' ')}`);
+    syncMapIfNeeded();
+    updateMapControls();
 };
 
 net.onRejoin = (msg) => {

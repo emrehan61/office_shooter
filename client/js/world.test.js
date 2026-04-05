@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
-import { traceShotImpact } from './world.js';
+import { traceShotImpact, loadMap } from './world.js';
+
+const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
+loadMap(mapData);
 
 test('traceShotImpact hits blocking world geometry', () => {
     const impact = traceShotImpact([0, 1.7, 5], [0, 0, -1], {}, null, 50);

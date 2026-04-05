@@ -1,179 +1,58 @@
-// Office-themed world definition: open software studio with meeting pods and workstations.
+// World geometry and collision.
 // Vertex format: pos(3) + uv(2) + matID(1) per vertex.
 // Material IDs: 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 13=glass, 14=wood, 15=screen, 16=plant
 
-const ARENA = 30;
-const WALL_HEIGHT = 5;
-const WALL_THICK = 0.3;
+let mapArena = 30;
+let mapWallHeight = 5;
+let mapWallThick = 0.3;
+let mapWalls = [];
+let mapFloorInsets = [];
+let mapBoxes = [];
+let mapSpawnPoints = [];
+let shotBlockers = [];
 
-const MAP_WALLS = [
-    // Outer shell
-    { x1: -ARENA, z1: -ARENA, x2: ARENA, z2: -ARENA, matID: 0 },
-    { x1: ARENA, z1: -ARENA, x2: ARENA, z2: ARENA, matID: 0 },
-    { x1: ARENA, z1: ARENA, x2: -ARENA, z2: ARENA, matID: 0 },
-    { x1: -ARENA, z1: ARENA, x2: -ARENA, z2: -ARENA, matID: 0 },
+export function getSpawnPoints() {
+    return mapSpawnPoints;
+}
 
-    // Northwest meeting pod
-    { x1: -26, z1: -26, x2: -14, z2: -26, matID: 13, height: 3.2 },
-    { x1: -26, z1: -26, x2: -26, z2: -14, matID: 13, height: 3.2 },
-    { x1: -14, z1: -26, x2: -14, z2: -20, matID: 13, height: 3.2 },
-    { x1: -14, z1: -18, x2: -14, z2: -14, matID: 13, height: 3.2 },
-    { x1: -26, z1: -14, x2: -21, z2: -14, matID: 13, height: 3.2 },
-    { x1: -18, z1: -14, x2: -14, z2: -14, matID: 13, height: 3.2 },
+export function loadMap(data) {
+    mapArena = data.arena ?? 30;
+    mapWallHeight = data.wallHeight ?? 5;
+    mapWallThick = data.wallThick ?? 0.3;
+    mapWalls = data.walls || [];
+    mapFloorInsets = data.floorInsets || [];
+    mapBoxes = data.boxes || [];
+    mapSpawnPoints = data.spawnPoints || [];
+    rebuildShotBlockers();
+}
 
-    // Northeast meeting pod
-    { x1: 14, z1: -26, x2: 26, z2: -26, matID: 13, height: 3.2 },
-    { x1: 26, z1: -26, x2: 26, z2: -14, matID: 13, height: 3.2 },
-    { x1: 14, z1: -26, x2: 14, z2: -20, matID: 13, height: 3.2 },
-    { x1: 14, z1: -18, x2: 14, z2: -14, matID: 13, height: 3.2 },
-    { x1: 14, z1: -14, x2: 19, z2: -14, matID: 13, height: 3.2 },
-    { x1: 22, z1: -14, x2: 26, z2: -14, matID: 13, height: 3.2 },
-
-    // Southwest meeting pod
-    { x1: -26, z1: 14, x2: -14, z2: 14, matID: 13, height: 3.2 },
-    { x1: -26, z1: 14, x2: -26, z2: 26, matID: 13, height: 3.2 },
-    { x1: -14, z1: 14, x2: -14, z2: 19, matID: 13, height: 3.2 },
-    { x1: -14, z1: 22, x2: -14, z2: 26, matID: 13, height: 3.2 },
-    { x1: -26, z1: 26, x2: -14, z2: 26, matID: 13, height: 3.2 },
-
-    // Southeast meeting pod
-    { x1: 14, z1: 14, x2: 26, z2: 14, matID: 13, height: 3.2 },
-    { x1: 26, z1: 14, x2: 26, z2: 26, matID: 13, height: 3.2 },
-    { x1: 14, z1: 14, x2: 14, z2: 19, matID: 13, height: 3.2 },
-    { x1: 14, z1: 22, x2: 14, z2: 26, matID: 13, height: 3.2 },
-    { x1: 14, z1: 26, x2: 26, z2: 26, matID: 13, height: 3.2 },
-
-    // Open workspace dividers, west
-    { x1: -18, z1: -9, x2: -9, z2: -9, matID: 0, height: 1.5 },
-    { x1: -18, z1: 9, x2: -9, z2: 9, matID: 0, height: 1.5 },
-    { x1: -18, z1: -9, x2: -18, z2: -3, matID: 0, height: 1.5 },
-    { x1: -18, z1: 3, x2: -18, z2: 9, matID: 0, height: 1.5 },
-    { x1: -9, z1: -9, x2: -9, z2: -5, matID: 0, height: 1.5 },
-    { x1: -9, z1: 5, x2: -9, z2: 9, matID: 0, height: 1.5 },
-
-    // Open workspace dividers, east
-    { x1: 9, z1: -9, x2: 18, z2: -9, matID: 0, height: 1.5 },
-    { x1: 9, z1: 9, x2: 18, z2: 9, matID: 0, height: 1.5 },
-    { x1: 18, z1: -9, x2: 18, z2: -3, matID: 0, height: 1.5 },
-    { x1: 18, z1: 3, x2: 18, z2: 9, matID: 0, height: 1.5 },
-    { x1: 9, z1: -9, x2: 9, z2: -5, matID: 0, height: 1.5 },
-    { x1: 9, z1: 5, x2: 9, z2: 9, matID: 0, height: 1.5 },
-
-    // Central huddle screens
-    { x1: -4, z1: -2, x2: 4, z2: -2, matID: 13, height: 2.4 },
-    { x1: -4, z1: 2, x2: 4, z2: 2, matID: 13, height: 2.4 },
-
-    // South reception desk
-    { x1: -6, z1: 17, x2: 6, z2: 17, matID: 14, height: 1.2 },
-    { x1: -6, z1: 17, x2: -6, z2: 22, matID: 14, height: 1.2 },
-    { x1: 6, z1: 17, x2: 6, z2: 22, matID: 14, height: 1.2 },
-
-    // North cafe counter
-    { x1: -7, z1: -17, x2: 7, z2: -17, matID: 14, height: 1.2 },
-    { x1: -7, z1: -22, x2: -7, z2: -17, matID: 14, height: 1.2 },
-    { x1: 7, z1: -22, x2: 7, z2: -17, matID: 14, height: 1.2 },
-];
-
-const FLOOR_INSETS = [
-    { x1: -27, z1: -27, x2: -13, z2: -13, matID: 14 },
-    { x1: 13, z1: -27, x2: 27, z2: -13, matID: 14 },
-    { x1: -27, z1: 13, x2: -13, z2: 27, matID: 14 },
-    { x1: 13, z1: 13, x2: 27, z2: 27, matID: 14 },
-    { x1: -8, z1: -24, x2: 8, z2: -16, matID: 14 },
-    { x1: -8, z1: 16, x2: 8, z2: 24, matID: 14 },
-];
-
-const OFFICE_BOXES = [
-    // Reception desks and screens
-    { cx: 0, cy: 0.72, cz: 19.5, hx: 4.8, hy: 0.08, hz: 1.0, matID: 14 },
-    { cx: -2.2, cy: 1.05, cz: 18.9, hx: 0.55, hy: 0.28, hz: 0.08, matID: 15 },
-    { cx: 0, cy: 1.05, cz: 18.9, hx: 0.55, hy: 0.28, hz: 0.08, matID: 15 },
-    { cx: 2.2, cy: 1.05, cz: 18.9, hx: 0.55, hy: 0.28, hz: 0.08, matID: 15 },
-
-    // Cafe island
-    { cx: 0, cy: 0.78, cz: -19.4, hx: 5.1, hy: 0.08, hz: 1.1, matID: 14 },
-    { cx: 0, cy: 1.1, cz: -19.4, hx: 0.75, hy: 0.18, hz: 0.75, matID: 3 },
-
-    // West desk benches
-    { cx: -14, cy: 0.74, cz: -5, hx: 2.0, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: -14, cy: 1.02, cz: -5.45, hx: 0.5, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: -14, cy: 0.74, cz: 5, hx: 2.0, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: -14, cy: 1.02, cz: 4.55, hx: 0.5, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: -11, cy: 0.74, cz: -5, hx: 1.8, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: -11, cy: 1.02, cz: -5.45, hx: 0.45, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: -11, cy: 0.74, cz: 5, hx: 1.8, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: -11, cy: 1.02, cz: 4.55, hx: 0.45, hy: 0.24, hz: 0.08, matID: 15 },
-
-    // East desk benches
-    { cx: 14, cy: 0.74, cz: -5, hx: 2.0, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: 14, cy: 1.02, cz: -5.45, hx: 0.5, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: 14, cy: 0.74, cz: 5, hx: 2.0, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: 14, cy: 1.02, cz: 4.55, hx: 0.5, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: 11, cy: 0.74, cz: -5, hx: 1.8, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: 11, cy: 1.02, cz: -5.45, hx: 0.45, hy: 0.24, hz: 0.08, matID: 15 },
-    { cx: 11, cy: 0.74, cz: 5, hx: 1.8, hy: 0.08, hz: 0.75, matID: 14 },
-    { cx: 11, cy: 1.02, cz: 4.55, hx: 0.45, hy: 0.24, hz: 0.08, matID: 15 },
-
-    // Meeting tables
-    { cx: -20, cy: 0.76, cz: -20, hx: 2.4, hy: 0.08, hz: 1.2, matID: 14 },
-    { cx: 20, cy: 0.76, cz: -20, hx: 2.4, hy: 0.08, hz: 1.2, matID: 14 },
-    { cx: -20, cy: 0.76, cz: 20, hx: 2.4, hy: 0.08, hz: 1.2, matID: 14 },
-    { cx: 20, cy: 0.76, cz: 20, hx: 2.4, hy: 0.08, hz: 1.2, matID: 14 },
-
-    // Planters
-    { cx: -8, cy: 0.52, cz: -14, hx: 0.7, hy: 0.52, hz: 0.7, matID: 14 },
-    { cx: -8, cy: 1.28, cz: -14, hx: 0.45, hy: 0.45, hz: 0.45, matID: 16 },
-    { cx: 8, cy: 0.52, cz: -14, hx: 0.7, hy: 0.52, hz: 0.7, matID: 14 },
-    { cx: 8, cy: 1.28, cz: -14, hx: 0.45, hy: 0.45, hz: 0.45, matID: 16 },
-    { cx: -8, cy: 0.52, cz: 14, hx: 0.7, hy: 0.52, hz: 0.7, matID: 14 },
-    { cx: -8, cy: 1.28, cz: 14, hx: 0.45, hy: 0.45, hz: 0.45, matID: 16 },
-    { cx: 8, cy: 0.52, cz: 14, hx: 0.7, hy: 0.52, hz: 0.7, matID: 14 },
-    { cx: 8, cy: 1.28, cz: 14, hx: 0.45, hy: 0.45, hz: 0.45, matID: 16 },
-
-    // Ceiling light panels
-    { cx: -14, cy: 4.72, cz: -5, hx: 2.2, hy: 0.04, hz: 0.8, matID: 15 },
-    { cx: -14, cy: 4.72, cz: 5, hx: 2.2, hy: 0.04, hz: 0.8, matID: 15 },
-    { cx: 14, cy: 4.72, cz: -5, hx: 2.2, hy: 0.04, hz: 0.8, matID: 15 },
-    { cx: 14, cy: 4.72, cz: 5, hx: 2.2, hy: 0.04, hz: 0.8, matID: 15 },
-    { cx: 0, cy: 4.72, cz: 0, hx: 3.2, hy: 0.04, hz: 0.75, matID: 15 },
-    { cx: 0, cy: 4.72, cz: 19, hx: 3.4, hy: 0.04, hz: 0.75, matID: 15 },
-    { cx: 0, cy: 4.72, cz: -19, hx: 3.4, hy: 0.04, hz: 0.75, matID: 15 },
-];
-
-export const SPAWN_POINTS = [
-    [-25, 1.7, -25],
-    [25, 1.7, -25],
-    [-25, 1.7, 25],
-    [25, 1.7, 25],
-    [0, 1.7, -12],
-    [0, 1.7, 12],
-];
-
-const SHOT_BLOCKERS = [
-    ...MAP_WALLS.map(toWallBox),
-    ...OFFICE_BOXES.map((box) => ({
-        min: [box.cx - box.hx, box.cy - box.hy, box.cz - box.hz],
-        max: [box.cx + box.hx, box.cy + box.hy, box.cz + box.hz],
-    })),
-    { min: [-ARENA, -0.2, -ARENA], max: [ARENA, 0, ARENA] },
-    { min: [-ARENA, WALL_HEIGHT, -ARENA], max: [ARENA, WALL_HEIGHT + 0.2, ARENA] },
-];
+function rebuildShotBlockers() {
+    shotBlockers = [
+        ...mapWalls.map(toWallBox),
+        ...mapBoxes.map((box) => ({
+            min: [box.cx - box.hx, box.cy - box.hy, box.cz - box.hz],
+            max: [box.cx + box.hx, box.cy + box.hy, box.cz + box.hz],
+        })),
+        { min: [-mapArena, -0.2, -mapArena], max: [mapArena, 0, mapArena] },
+        { min: [-mapArena, mapWallHeight, -mapArena], max: [mapArena, mapWallHeight + 0.2, mapArena] },
+    ];
+}
 
 export function buildWorldGeometry() {
     const verts = [];
 
-    pushFloorRect(verts, -ARENA, -ARENA, ARENA, ARENA, 1, 0);
-    pushCeilingRect(verts, -ARENA, -ARENA, ARENA, ARENA, 2, WALL_HEIGHT);
+    pushFloorRect(verts, -mapArena, -mapArena, mapArena, mapArena, 1, 0);
+    pushCeilingRect(verts, -mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight);
 
-    for (const floor of FLOOR_INSETS) {
+    for (const floor of mapFloorInsets) {
         pushFloorRect(verts, floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01);
     }
 
-    for (const wall of MAP_WALLS) {
-        pushThickWall(verts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? WALL_HEIGHT);
+    for (const wall of mapWalls) {
+        pushThickWall(verts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? mapWallHeight);
     }
 
-    for (const box of OFFICE_BOXES) {
+    for (const box of mapBoxes) {
         pushBox(verts, box.cx, box.cy, box.cz, box.hx, box.hy, box.hz, box.matID);
     }
 
@@ -198,14 +77,14 @@ function pushCeilingRect(verts, x1, z1, x2, z2, matID, y) {
     );
 }
 
-function pushThickWall(verts, x1, z1, x2, z2, matID, height = WALL_HEIGHT) {
+function pushThickWall(verts, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const dx = x2 - x1;
     const dz = z2 - z1;
     const len = Math.sqrt(dx * dx + dz * dz);
     if (len < 1e-8) return;
 
-    const nx = (-dz / len) * WALL_THICK;
-    const nz = (dx / len) * WALL_THICK;
+    const nx = (-dz / len) * mapWallThick;
+    const nz = (dx / len) * mapWallThick;
 
     const ax1 = x1 + nx, az1 = z1 + nz;
     const ax2 = x2 + nx, az2 = z2 + nz;
@@ -229,21 +108,21 @@ function pushThickWall(verts, x1, z1, x2, z2, matID, height = WALL_HEIGHT) {
     pushQuad(verts,
         ax1, height, az1, 0, 0, matID,
         ax2, height, az2, len, 0, matID,
-        bx2, height, bz2, len, WALL_THICK * 2, matID,
-        bx1, height, bz1, 0, WALL_THICK * 2, matID
+        bx2, height, bz2, len, mapWallThick * 2, matID,
+        bx1, height, bz1, 0, mapWallThick * 2, matID
     );
 
     pushQuad(verts,
         bx1, 0, bz1, 0, 0, matID,
-        ax1, 0, az1, WALL_THICK * 2, 0, matID,
-        ax1, height, az1, WALL_THICK * 2, height, matID,
+        ax1, 0, az1, mapWallThick * 2, 0, matID,
+        ax1, height, az1, mapWallThick * 2, height, matID,
         bx1, height, bz1, 0, height, matID
     );
 
     pushQuad(verts,
         ax2, 0, az2, 0, 0, matID,
-        bx2, 0, bz2, WALL_THICK * 2, 0, matID,
-        bx2, height, bz2, WALL_THICK * 2, height, matID,
+        bx2, 0, bz2, mapWallThick * 2, 0, matID,
+        bx2, height, bz2, mapWallThick * 2, height, matID,
         ax2, height, az2, 0, height, matID
     );
 }
@@ -285,9 +164,9 @@ function pushTri(verts,
 export function collideWalls(pos, radius) {
     let px = pos[0];
     let pz = pos[2];
-    const r = radius + WALL_THICK;
+    const r = radius + mapWallThick;
 
-    for (const wall of MAP_WALLS) {
+    for (const wall of mapWalls) {
         const closest = closestPointOnSegment(px, pz, wall.x1, wall.z1, wall.x2, wall.z2);
         const dx = px - closest[0];
         const dz = pz - closest[1];
@@ -300,6 +179,41 @@ export function collideWalls(pos, radius) {
         }
     }
 
+    // Box collision: push player circle out of each AABB in XZ if Y overlaps
+    const playerFoot = pos[1] - 1.7; // approximate feet position
+    const playerTop = pos[1] + 0.1;
+    for (const box of mapBoxes) {
+        const bMinY = box.cy - box.hy;
+        const bMaxY = box.cy + box.hy;
+        if (playerTop < bMinY || playerFoot > bMaxY) continue;
+
+        const bx0 = box.cx - box.hx, bx1 = box.cx + box.hx;
+        const bz0 = box.cz - box.hz, bz1 = box.cz + box.hz;
+
+        const cx = Math.max(bx0, Math.min(px, bx1));
+        const cz = Math.max(bz0, Math.min(pz, bz1));
+        const dx = px - cx;
+        const dz = pz - cz;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < radius && dist > 1e-8) {
+            const push = (radius - dist) / dist;
+            px += dx * push;
+            pz += dz * push;
+        } else if (dist < 1e-8 && px >= bx0 && px <= bx1 && pz >= bz0 && pz <= bz1) {
+            // player center is inside the box — push out on the shortest axis
+            const pushXn = px - bx0 + radius;
+            const pushXp = bx1 - px + radius;
+            const pushZn = pz - bz0 + radius;
+            const pushZp = bz1 - pz + radius;
+            const minPush = Math.min(pushXn, pushXp, pushZn, pushZp);
+            if (minPush === pushXn) px = bx0 - radius;
+            else if (minPush === pushXp) px = bx1 + radius;
+            else if (minPush === pushZn) pz = bz0 - radius;
+            else pz = bz1 + radius;
+        }
+    }
+
     pos[0] = px;
     pos[2] = pz;
 }
@@ -307,7 +221,7 @@ export function collideWalls(pos, radius) {
 export function traceShotImpact(origin, dir, players = {}, shooterId = null, maxRange = 50) {
     let bestDist = maxRange;
 
-    for (const box of SHOT_BLOCKERS) {
+    for (const box of shotBlockers) {
         const dist = rayAABBIntersection(origin, dir, box.min, box.max, maxRange);
         if (dist != null && dist < bestDist) {
             bestDist = dist;
@@ -365,11 +279,11 @@ export function rayHitPlayer(origin, dir, targetPos, halfW, halfH) {
 }
 
 function toWallBox(wall) {
-    const height = wall.height ?? WALL_HEIGHT;
-    const minX = Math.min(wall.x1, wall.x2) - WALL_THICK;
-    const maxX = Math.max(wall.x1, wall.x2) + WALL_THICK;
-    const minZ = Math.min(wall.z1, wall.z2) - WALL_THICK;
-    const maxZ = Math.max(wall.z1, wall.z2) + WALL_THICK;
+    const height = wall.height ?? mapWallHeight;
+    const minX = Math.min(wall.x1, wall.x2) - mapWallThick;
+    const maxX = Math.max(wall.x1, wall.x2) + mapWallThick;
+    const minZ = Math.min(wall.z1, wall.z2) - mapWallThick;
+    const maxZ = Math.max(wall.z1, wall.z2) + mapWallThick;
     return {
         min: [minX, 0, minZ],
         max: [maxX, height, maxZ],
@@ -405,7 +319,7 @@ function playerHitBoxes(pos, crouching) {
     ];
 }
 
-function rayAABBIntersection(origin, dir, min, max, maxRange) {
+export function rayAABBIntersection(origin, dir, min, max, maxRange) {
     let tMin = 0;
     let tMax = maxRange;
 
