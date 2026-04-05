@@ -229,6 +229,8 @@ type Game struct {
 	nextProjID         int
 	deathmatchVoteEnds int64
 	deathmatchVotes    map[int]bool
+	mapName            string
+	mapSpawns          []Vec3
 }
 
 type hitCandidate struct {
@@ -249,21 +251,62 @@ type tickMessages struct {
 	directs    map[int][][]byte
 }
 
-var game = &Game{
-	players:         newPlayerStore(),
-	nextID:          1,
-	mode:            ModeTeam,
-	state:           StateWaiting,
-	deathmatchVotes: make(map[int]bool),
-}
-
-var spawnPoints = [6]Vec3{
+var defaultSpawns = []Vec3{
 	{-25, standEyeHeight, -25},
 	{25, standEyeHeight, -25},
 	{25, standEyeHeight, 25},
 	{-25, standEyeHeight, 25},
 	{0, standEyeHeight, -12},
 	{0, standEyeHeight, 12},
+}
+
+const defaultMapName = "office_studio"
+
+var game = &Game{
+	players:         newPlayerStore(),
+	nextID:          1,
+	mode:            ModeTeam,
+	state:           StateWaiting,
+	deathmatchVotes: make(map[int]bool),
+	mapName:         defaultMapName,
+	mapSpawns:       defaultSpawns,
+}
+
+type mapJSON struct {
+	SpawnPoints [][]float64 `json:"spawnPoints"`
+}
+
+func loadMapSpawns(clientDir, name string) ([]Vec3, error) {
+	path := filepath.Join(clientDir, "maps", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var m mapJSON
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	spawns := make([]Vec3, 0, len(m.SpawnPoints))
+	for _, sp := range m.SpawnPoints {
+		if len(sp) >= 3 {
+			spawns = append(spawns, Vec3{sp[0], sp[1], sp[2]})
+		}
+	}
+	if len(spawns) == 0 {
+		return nil, fmt.Errorf("no spawn points in map %s", name)
+	}
+	return spawns, nil
+}
+
+func listMaps(clientDir string) []string {
+	pattern := filepath.Join(clientDir, "maps", "*.json")
+	matches, _ := filepath.Glob(pattern)
+	names := make([]string, 0, len(matches))
+	for _, m := range matches {
+		base := filepath.Base(m)
+		names = append(names, strings.TrimSuffix(base, ".json"))
+	}
+	return names
 }
 
 func newPlayerStore() playerStore {
@@ -429,7 +472,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 	id := g.nextID
 	g.nextID++
 
-	spawn := spawnPoints[rand.Intn(len(spawnPoints))]
+	spawn := g.mapSpawns[rand.Intn(len(g.mapSpawns))]
 	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli(), false)
 	return id, sendCh, true
 }
@@ -524,6 +567,7 @@ func (g *Game) broadcastLobby() {
 
 type matchState struct {
 	Mode                 GameMode `json:"mode"`
+	Map                  string   `json:"map"`
 	CurrentRound         int      `json:"currentRound"`
 	TotalRounds          int      `json:"totalRounds"`
 	RoundTimeLeft        int64    `json:"roundTimeLeftMs"`
@@ -657,6 +701,7 @@ func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
 
 	return matchState{
 		Mode:                 normalizeMode(g.mode),
+		Map:                  g.mapName,
 		CurrentRound:         g.currentRound,
 		TotalRounds:          g.totalRoundsLocked(),
 		RoundTimeLeft:        roundTimeLeft,
@@ -835,6 +880,22 @@ func (g *Game) setModeLocked(mode GameMode, nowMS int64) bool {
 	g.mode = normalizeMode(mode)
 	g.syncModeBotsLocked(nowMS)
 	return true
+}
+
+func (g *Game) setMapLocked(name string) (bool, string) {
+	if g.state != StateWaiting {
+		return false, "Map can only change in the waiting lobby"
+	}
+	if name == g.mapName {
+		return true, ""
+	}
+	spawns, err := loadMapSpawns(resolveClientDir(), name)
+	if err != nil {
+		return false, "Map not found: " + name
+	}
+	g.mapName = name
+	g.mapSpawns = spawns
+	return true, ""
 }
 
 func (g *Game) totalRoundsLocked() int {
@@ -1189,7 +1250,7 @@ func (g *Game) addFallbackBotLocked(team TeamID, nowMS int64) {
 
 	id := g.nextID
 	g.nextID++
-	spawns := spawnPointsForTeam(team)
+	spawns := g.spawnPointsForTeamLocked(team)
 	spawn := spawns[rand.Intn(len(spawns))]
 	g.players.add(id, nil, spawn, nowMS, true)
 	idx, ok := g.players.indexOf(id)
@@ -1205,7 +1266,7 @@ func (g *Game) addFallbackBotLocked(team TeamID, nowMS int64) {
 func (g *Game) addDeathmatchBotLocked(nowMS int64, inMatch bool) {
 	id := g.nextID
 	g.nextID++
-	spawn := spawnPoints[rand.Intn(len(spawnPoints))]
+	spawn := g.mapSpawns[rand.Intn(len(g.mapSpawns))]
 	g.players.add(id, nil, spawn, nowMS, true)
 	idx, ok := g.players.indexOf(id)
 	if !ok {
@@ -1425,19 +1486,26 @@ func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
 	recordPositionSample(&g.players.history[idx], nowMS, next, false)
 }
 
-func spawnPointsForTeam(team TeamID) []Vec3 {
-	if normalizeTeam(team) == TeamGreen {
-		return []Vec3{
-			{25, standEyeHeight, -25},
-			{25, standEyeHeight, 25},
-			{0, standEyeHeight, 12},
+// Split map spawns by X sign: negative X → blue side, non-negative → green side
+func (g *Game) spawnPointsForTeamLocked(team TeamID) []Vec3 {
+	var blue, green []Vec3
+	for _, sp := range g.mapSpawns {
+		if sp[0] < 0 {
+			blue = append(blue, sp)
+		} else {
+			green = append(green, sp)
 		}
 	}
-	return []Vec3{
-		{-25, standEyeHeight, -25},
-		{-25, standEyeHeight, 25},
-		{0, standEyeHeight, -12},
+	if len(blue) == 0 {
+		blue = g.mapSpawns
 	}
+	if len(green) == 0 {
+		green = g.mapSpawns
+	}
+	if normalizeTeam(team) == TeamGreen {
+		return green
+	}
+	return blue
 }
 
 func weaponConfigByID(id WeaponID) weaponConfig {
@@ -2509,9 +2577,9 @@ func (g *Game) scheduleRespawn(victimID int, roundNumber int) {
 }
 
 func (g *Game) respawnPlayerLocked(idx int, nowMS int64) {
-	teamSpawns := spawnPointsForTeam(g.players.team[idx])
+	teamSpawns := g.spawnPointsForTeamLocked(g.players.team[idx])
 	if normalizeMode(g.mode) == ModeDeathmatch {
-		teamSpawns = spawnPoints[:]
+		teamSpawns = g.mapSpawns
 		g.players.hasPistol[idx] = true
 		g.players.hasMG[idx] = true
 		g.giveWeaponFullAmmoLocked(idx, WeaponPistol)
@@ -3232,6 +3300,28 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			queueJSON(sendCh, response)
 			game.broadcastLobby()
 
+		case "map":
+			var requestedMap string
+			json.Unmarshal(msg["map"], &requestedMap)
+			response := map[string]interface{}{
+				"t":   "map",
+				"map": requestedMap,
+			}
+			game.mu.Lock()
+			ok, reason := game.setMapLocked(requestedMap)
+			if !ok {
+				response["ok"] = false
+				response["reason"] = reason
+			} else {
+				response["ok"] = true
+				response["map"] = game.mapName
+			}
+			game.mu.Unlock()
+			queueJSON(sendCh, response)
+			if ok {
+				game.broadcastLobby()
+			}
+
 		case "team":
 			var requestedTeam TeamID
 			json.Unmarshal(msg["team"], &requestedTeam)
@@ -3644,8 +3734,24 @@ func staticClientHandler(root http.FileSystem) http.Handler {
 
 func main() {
 	port := serverPort()
-	http.Handle("/", staticClientHandler(http.Dir(resolveClientDir())))
+	clientDir := resolveClientDir()
+
+	// Load default map spawns from JSON at startup
+	if spawns, err := loadMapSpawns(clientDir, defaultMapName); err == nil {
+		game.mapSpawns = spawns
+		log.Printf("Loaded %d spawn points from %s", len(spawns), defaultMapName)
+	} else {
+		log.Printf("Using hardcoded spawns: %v", err)
+	}
+
+	http.Handle("/", staticClientHandler(http.Dir(clientDir)))
 	http.HandleFunc("/ws", handleWS)
+	http.HandleFunc("/api/maps", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		names := listMaps(clientDir)
+		json.NewEncoder(w).Encode(names)
+	})
 
 	go func() {
 		ticker := time.NewTicker(time.Second / tickRate)

@@ -721,7 +721,7 @@ canvas { display: block; width: 100vw; height: 100vh; }
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(4,4,8,0.9);
+    background: #04040a;
     z-index: 20;
     cursor: pointer;
 }
@@ -746,6 +746,17 @@ canvas { display: block; width: 100vw; height: 100vh; }
     color: #666 !important;
     margin-top: 20px !important;
 }
+.editor-link {
+    display: inline-block;
+    margin-top: 16px;
+    color: #6cf;
+    font-size: 13px;
+    text-decoration: none;
+    letter-spacing: 1px;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+.editor-link:hover { opacity: 1; text-decoration: underline; }
 
 /* Lobby form */
 .lobby-form {
@@ -802,6 +813,29 @@ button:disabled {
 #mode-select {
     margin: 18px auto 10px;
     max-width: 520px;
+}
+#map-select {
+    margin: 10px auto 14px;
+    max-width: 520px;
+}
+.map-dropdown {
+    width: 100%;
+    max-width: 320px;
+    padding: 8px 12px;
+    background: rgba(10, 12, 20, 0.8);
+    color: #d5e9ff;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    outline: none;
+}
+.map-dropdown:hover { border-color: rgba(255,255,255,0.22); }
+.map-dropdown:focus { border-color: rgba(100,180,255,0.5); }
+.map-dropdown:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 .team-select-title {
     color: #d5e9ff;
