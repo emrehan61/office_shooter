@@ -27,7 +27,7 @@ import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, se
 import { createAvatarPool, updateAvatarPool, hideAvatarPool } from './avatar.js';
 import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch } from './math.js';
-import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
+import { WEAPON_DEFS, WEAPON_KNIFE, getWeaponSwitchByCode, isScopedWeapon, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
 import { MODE_DEATHMATCH, MODE_TEAM, getDeathmatchStartState, getModeLabel, normalizeMode } from './modes.js';
@@ -576,7 +576,7 @@ function showLobbyPanel() {
 }
 
 function syncLocalWeaponState() {
-    setWeaponType(weapon, getRenderableWeapon(player.activeWeapon));
+    setWeaponType(weapon, player.activeWeapon);
     setWeaponReloadTime(weapon, player.reloadTimeLeftMs);
 }
 
@@ -876,26 +876,27 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyR' && localInMatch && player.alive) {
         e.preventDefault();
         if (canReloadWeapon(player)) {
-            startReload(player, RELOAD_DURATION_MS);
+            startReload(player, WEAPON_DEFS[player.activeWeapon]?.reloadMs || 0);
             syncLocalWeaponState();
             sendReload(net);
         }
         return;
     }
 
-    const switchWeapon = getWeaponSwitchByCode(e.code);
+    const switchWeapon = getWeaponSwitchByCode(e.code, player);
     if (switchWeapon) {
         e.preventDefault();
         if (player.reloading) {
             showEconomyNotice(hud, 'ACTION RELOADING');
             return;
         }
-        if (hasWeapon(player, switchWeapon.id)) {
-            setActiveWeapon(player, switchWeapon.id);
+        if (hasWeapon(player, switchWeapon)) {
+            setActiveWeapon(player, switchWeapon);
             syncLocalWeaponState();
-            sendSwitchWeapon(net, switchWeapon.id);
-        } else if (switchWeapon.id !== WEAPON_KNIFE) {
-            showEconomyNotice(hud, `${switchWeapon.label.toUpperCase()} NOT OWNED`);
+            sendSwitchWeapon(net, switchWeapon);
+        } else if (switchWeapon !== WEAPON_KNIFE) {
+            const label = WEAPON_DEFS[switchWeapon]?.label || 'WEAPON';
+            showEconomyNotice(hud, `${label.toUpperCase()} NOT OWNED`);
         }
         return;
     }
@@ -1094,7 +1095,13 @@ function frame(time) {
     if (localInMatch) {
         const movementAllowed = gameplayInputEnabled && canMove(player, net.match);
         player.crouching = player.alive && crouchPressed;
-        setAiming(player, gameplayInputEnabled && player.alive && !net.match.intermission && isRightMouseDown() && !buyMenuOpen);
+        const wantsScope = gameplayInputEnabled
+            && player.alive
+            && !net.match.intermission
+            && isRightMouseDown()
+            && !buyMenuOpen
+            && isScopedWeapon(player.activeWeapon);
+        setAiming(player, wantsScope);
         if ((!canOpenBuyMenu(player, net.match) || !player.alive) && buyMenuOpen) {
             setBuyMenuOpen(false);
         }

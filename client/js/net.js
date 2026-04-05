@@ -392,12 +392,12 @@ function ensurePlayer(net, id) {
             crouching: false,
             prevCrouching: false,
             targetCrouching: false,
-            hasPistol: false,
-            hasMachineGun: false,
+            pistolWeapon: '',
             pistolClip: 0,
             pistolReserve: 0,
-            machineGunClip: 0,
-            machineGunReserve: 0,
+            heavyWeapon: '',
+            heavyClip: 0,
+            heavyReserve: 0,
             bombs: 0,
             smokes: 0,
             flashbangs: 0,
@@ -442,12 +442,12 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
     target.armor = state.armor ?? target.armor;
     target.credits = state.credits ?? target.credits;
     target.crouching = state.crouching ?? target.crouching;
-    target.hasPistol = state.hasPistol ?? target.hasPistol;
-    target.hasMachineGun = state.hasMachineGun ?? target.hasMachineGun;
+    target.pistolWeapon = state.pistolWeapon ?? target.pistolWeapon;
+    target.heavyWeapon = state.heavyWeapon ?? target.heavyWeapon;
     target.pistolClip = state.pistolClip ?? target.pistolClip;
     target.pistolReserve = state.pistolReserve ?? target.pistolReserve;
-    target.machineGunClip = state.machineGunClip ?? target.machineGunClip;
-    target.machineGunReserve = state.machineGunReserve ?? target.machineGunReserve;
+    target.heavyClip = state.heavyClip ?? target.heavyClip;
+    target.heavyReserve = state.heavyReserve ?? target.heavyReserve;
     target.bombs = state.bombs ?? target.bombs;
     target.smokes = state.smokes ?? target.smokes;
     target.flashbangs = state.flashbangs ?? target.flashbangs;
