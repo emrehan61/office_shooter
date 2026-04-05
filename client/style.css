@@ -757,6 +757,22 @@ canvas { display: block; width: 100vw; height: 100vh; }
     margin-bottom: 4px;
     border-left: 3px solid #ff4444;
     animation: fadeIn 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.kill-name {
+    white-space: nowrap;
+}
+.kill-weapon-icon {
+    height: 14px;
+    color: #ff4444;
+    flex-shrink: 0;
+}
+.kill-weapon-knife { width: 24px; }
+.kill-weapon-pistol { width: 26px; }
+.kill-weapon-mg { width: 38px; }
+.kill-weapon-bomb { width: 20px;
 }
 @keyframes fadeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 
@@ -826,6 +842,34 @@ canvas { display: block; width: 100vw; height: 100vh; }
     transition: opacity 0.15s;
 }
 .editor-link:hover { opacity: 1; text-decoration: underline; }
+
+/* Loading screen */
+#loading-screen {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #04040a;
+    z-index: 30;
+}
+#loading-screen .loading-text {
+    font-family: 'Courier New', monospace;
+    font-size: 28px;
+    letter-spacing: 4px;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(100,150,255,0.4);
+}
+#loading-screen .loading-dots::after {
+    content: '';
+    animation: loading-dots 1.2s steps(4, end) infinite;
+}
+@keyframes loading-dots {
+    0%   { content: ''; }
+    25%  { content: '.'; }
+    50%  { content: '..'; }
+    75%  { content: '...'; }
+}
 
 /* Lobby form */
 .lobby-form {

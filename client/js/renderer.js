@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import { EffectComposer } from './lib/postprocessing/EffectComposer.js';
 import { RenderPass } from './lib/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from './lib/postprocessing/UnrealBloomPass.js';
+import { SSRPass } from './lib/postprocessing/SSRPass.js';
 import { ShaderPass } from './lib/postprocessing/ShaderPass.js';
 import { OutputPass } from './lib/postprocessing/OutputPass.js';
+import { FXAAShader } from './lib/shaders/FXAAShader.js';
 
 // Material IDs (kept for compatibility):
 // 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 4=flash,
@@ -26,7 +28,8 @@ const MATERIAL_DEFS = {
     12: { color: 0x1fa8ad, roughness: 0.5,  metalness: 0.15, emissive: 0x1fa8ad, emissiveIntensity: 0.15 },  // teal armor
     13: { color: 0x9ec4d8, roughness: 0.05, metalness: 0.15, transparent: true, opacity: 0.35 }, // glass
     14: { color: 0x7a5430, roughness: 0.7,  metalness: 0.0 },   // wood
-    15: { color: 0x30c0f8, roughness: 0.2,  metalness: 0.0, emissive: 0x30c0f8, emissiveIntensity: 0.95 }, // screen (monitors)
+    15: { color: 0x30c0f8, roughness: 0.2,  metalness: 0.0, emissive: 0x30c0f8, emissiveIntensity: 1.2 }, // screen (monitors)
+    19: { color: 0xeef4ff, roughness: 0.1,  metalness: 0.0, emissive: 0xeef4ff, emissiveIntensity: 0.8 }, // ceiling light panel
     16: { color: 0x2a7a3a, roughness: 0.8,  metalness: 0.0 },   // plant
     17: { color: 0x787e88, roughness: 0.95, metalness: 0.0, transparent: true, opacity: 0.55 },  // smoke
     18: { color: 0x060608, roughness: 0.85, metalness: 0.0 },   // impact
@@ -35,13 +38,8 @@ const MATERIAL_DEFS = {
     22: { color: 0x3374ff, roughness: 0.3, metalness: 0.0, emissive: 0x3374ff, emissiveIntensity: 2.0 }, // emissive blue
 };
 
-// Ceiling light panel positions (x, z) — matches world.js OFFICE_BOXES with matID 15 at y=4.72
-const CEILING_LIGHT_POSITIONS = [
-    [-14, -5], [-14, 5], [14, -5], [14, 5],
-    [0, 0], [0, 19], [0, -19],
-];
-
 const materialCache = new Map();
+const aoMaterialCache = new Map();
 const normalMapCache = new Map();
 let envMap = null;
 
@@ -50,7 +48,8 @@ let envMap = null;
 function generateProceduralNormalMap(type) {
     if (normalMapCache.has(type)) return normalMapCache.get(type);
 
-    const size = 128;
+    const size = 512;
+    const half = size / 2;
     const cvs = document.createElement('canvas');
     cvs.width = size;
     cvs.height = size;
@@ -58,47 +57,92 @@ function generateProceduralNormalMap(type) {
     const imageData = ctx.createImageData(size, size);
     const d = imageData.data;
 
+    // Reusable hash function for fine-grain noise
+    const hash = (a, b) => {
+        const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+        return h - Math.floor(h);
+    };
+
     for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
             const i = (y * size + x) * 4;
             let nx = 0, ny = 0;
 
             if (type === 'carpet') {
-                const hash = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-                nx = (hash - Math.floor(hash) - 0.5) * 0.15;
-                const hash2 = Math.sin(x * 269.5 + y * 183.3) * 43758.5453;
-                ny = (hash2 - Math.floor(hash2) - 0.5) * 0.15;
+                // Multi-octave fiber noise for realistic carpet texture
+                nx = (hash(x, y) - 0.5) * 0.12;
+                ny = (hash(x + 37, y + 91) - 0.5) * 0.12;
+                // Finer detail layer
+                nx += (hash(x * 3.1, y * 3.7) - 0.5) * 0.06;
+                ny += (hash(x * 3.7 + 53, y * 3.1 + 17) - 0.5) * 0.06;
+                // Subtle row pattern (carpet weave lines)
+                const row = y % 8;
+                if (row < 1) ny += 0.05;
+                else if (row > 6) ny -= 0.05;
             } else if (type === 'wall') {
-                const lineY = y % 16;
-                if (lineY < 2) ny = -0.2;
-                else if (lineY > 14) ny = 0.2;
-                const lineX = x % 32;
-                if (lineX < 2) nx = -0.15;
-                else if (lineX > 30) nx = 0.15;
+                // Panel grid with beveled edges + subtle surface texture
+                const lineY = y % 32;
+                if (lineY < 3) ny = -0.25;
+                else if (lineY > 29) ny = 0.25;
+                else if (lineY < 5) ny = -0.08;
+                else if (lineY > 27) ny = 0.08;
+                const lineX = x % 64;
+                if (lineX < 3) nx = -0.2;
+                else if (lineX > 61) nx = 0.2;
+                else if (lineX < 5) nx = -0.06;
+                else if (lineX > 59) nx = 0.06;
+                // Subtle surface imperfection
+                nx += (hash(x * 2.3, y * 2.7) - 0.5) * 0.03;
+                ny += (hash(x * 2.7 + 41, y * 2.3 + 67) - 0.5) * 0.03;
             } else if (type === 'metal') {
-                const scratch = Math.sin(y * 3.7 + Math.sin(x * 0.3) * 2) * 0.5;
-                ny = scratch * 0.12;
-                const pit = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-                if ((pit - Math.floor(pit)) > 0.95) {
-                    nx = 0.3; ny = 0.3;
+                // Brushed metal: directional scratches + pits
+                const scratch1 = Math.sin(y * 3.7 + Math.sin(x * 0.3) * 2) * 0.5;
+                const scratch2 = Math.sin(y * 7.3 + Math.sin(x * 0.7) * 1.5) * 0.25;
+                ny = (scratch1 + scratch2) * 0.1;
+                // Fine cross-scratches
+                nx = Math.sin(x * 5.1 + Math.sin(y * 0.4) * 1.8) * 0.03;
+                // Pitting
+                const pit = hash(x, y);
+                if (pit > 0.96) {
+                    nx += 0.3; ny += 0.3;
+                } else if (pit > 0.93) {
+                    nx -= 0.15; ny -= 0.15;
                 }
             } else if (type === 'wood') {
-                const grain = Math.sin(y * 0.8 + Math.sin(x * 0.15) * 4) * 0.5 + 0.5;
-                ny = (grain - 0.5) * 0.18;
-                const dx2 = x - 64, dy2 = y - 64;
-                const knotDist = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-                if (knotDist < 12) {
-                    const knotAngle = Math.atan2(dy2, dx2);
-                    nx += Math.cos(knotAngle) * (1 - knotDist / 12) * 0.2;
-                    ny += Math.sin(knotAngle) * (1 - knotDist / 12) * 0.2;
+                // Wood grain with knots and fine texture
+                const grain = Math.sin(y * 0.4 + Math.sin(x * 0.08) * 6) * 0.5 + 0.5;
+                const fineGrain = Math.sin(y * 1.6 + Math.sin(x * 0.3) * 2) * 0.25;
+                ny = (grain - 0.5) * 0.16 + fineGrain * 0.06;
+                // Two knots at different positions
+                const knots = [[half * 0.6, half * 0.4, 18], [half * 1.4, half * 1.5, 10]];
+                for (const [kx, ky, kr] of knots) {
+                    const dx2 = x - kx, dy2 = y - ky;
+                    const knotDist = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+                    if (knotDist < kr) {
+                        const knotAngle = Math.atan2(dy2, dx2);
+                        const falloff = 1 - knotDist / kr;
+                        nx += Math.cos(knotAngle) * falloff * 0.2;
+                        ny += Math.sin(knotAngle) * falloff * 0.2;
+                    }
                 }
+                // Fine pore noise
+                nx += (hash(x * 4.1, y * 4.3) - 0.5) * 0.03;
             } else if (type === 'ceiling') {
-                // Subtle tile grid pattern
-                const gx = x % 24, gy = y % 24;
-                if (gx < 1) nx = -0.12;
-                else if (gx > 22) nx = 0.12;
-                if (gy < 1) ny = -0.12;
-                else if (gy > 22) ny = 0.12;
+                // Acoustic tile grid with subtle dimple texture
+                const gx = x % 48, gy = y % 48;
+                if (gx < 2) nx = -0.15;
+                else if (gx > 46) nx = 0.15;
+                else if (gx < 4) nx = -0.05;
+                else if (gx > 44) nx = 0.05;
+                if (gy < 2) ny = -0.15;
+                else if (gy > 46) ny = 0.15;
+                else if (gy < 4) ny = -0.05;
+                else if (gy > 44) ny = 0.05;
+                // Acoustic dimple pattern inside tiles
+                if (gx > 5 && gx < 43 && gy > 5 && gy < 43) {
+                    nx += (hash(x * 5.3, y * 5.7) - 0.5) * 0.04;
+                    ny += (hash(x * 5.7 + 23, y * 5.3 + 47) - 0.5) * 0.04;
+                }
             }
 
             d[i]     = Math.round((nx * 0.5 + 0.5) * 255);
@@ -162,9 +206,12 @@ const VignetteColorGradeShader = {
         tDiffuse: { value: null },
         vignetteStrength: { value: 0.3 },
         vignetteRadius: { value: 0.8 },
-        saturation: { value: 1.12 },
-        contrast: { value: 1.04 },
+        saturation: { value: 1.15 },
+        contrast: { value: 1.14 },
         tintColor: { value: new THREE.Vector3(1.01, 0.99, 0.95) },
+        time: { value: 0 },
+        grainIntensity: { value: 0.02 },
+        chromaticAberration: { value: 0.003 },
     },
     vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -180,21 +227,43 @@ const VignetteColorGradeShader = {
         uniform float saturation;
         uniform float contrast;
         uniform vec3 tintColor;
+        uniform float time;
+        uniform float grainIntensity;
+        uniform float chromaticAberration;
         varying vec2 vUv;
+
+        float hash(vec2 p) {
+            vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+            p3 += dot(p3, p3.yzx + 33.33);
+            return fract((p3.x + p3.y) * p3.z);
+        }
+
         void main() {
-            vec4 color = texture2D(tDiffuse, vUv);
-            // Vignette
+            // Chromatic aberration at vignette edges
             vec2 center = vUv - 0.5;
             float dist = length(center);
+            vec2 dir = normalize(center + 0.0001);
+            float caOffset = chromaticAberration * smoothstep(0.2, 0.8, dist);
+            vec4 color;
+            color.r = texture2D(tDiffuse, vUv + dir * caOffset).r;
+            color.g = texture2D(tDiffuse, vUv).g;
+            color.b = texture2D(tDiffuse, vUv - dir * caOffset).b;
+            color.a = 1.0;
+
+            // Vignette
             float vignette = smoothstep(vignetteRadius, vignetteRadius - 0.45, dist);
             color.rgb *= mix(1.0 - vignetteStrength, 1.0, vignette);
             // Saturation boost
             float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
             color.rgb = mix(vec3(luma), color.rgb, saturation);
-            // Contrast
-            color.rgb = (color.rgb - 0.5) * contrast + 0.5;
+            // Contrast (operating on tonemapped sRGB 0-1 values)
+            color.rgb = clamp((color.rgb - 0.5) * contrast + 0.5, 0.0, 1.0);
             // Warm tint
             color.rgb *= tintColor;
+            // Film grain
+            float grain = hash(vUv * 1000.0 + fract(time) * 100.0) - 0.5;
+            color.rgb += grain * grainIntensity;
+            color.rgb = clamp(color.rgb, 0.0, 1.0);
             gl_FragColor = color;
         }
     `,
@@ -231,25 +300,35 @@ export function getMaterial(matID) {
 
     const mat = new THREE.MeshStandardMaterial(params);
 
-    // Procedural normal maps for surface detail
+    // Procedural normal maps for surface detail (512x512)
     if (matID === 1) {
         mat.normalMap = generateProceduralNormalMap('carpet');
-        mat.normalScale = new THREE.Vector2(0.5, 0.5);
+        mat.normalScale = new THREE.Vector2(0.6, 0.6);
     } else if (matID === 0) {
         mat.normalMap = generateProceduralNormalMap('wall');
-        mat.normalScale = new THREE.Vector2(0.6, 0.6);
+        mat.normalScale = new THREE.Vector2(0.7, 0.7);
     } else if (matID === 3) {
         mat.normalMap = generateProceduralNormalMap('metal');
-        mat.normalScale = new THREE.Vector2(0.4, 0.4);
+        mat.normalScale = new THREE.Vector2(0.5, 0.5);
     } else if (matID === 14) {
         mat.normalMap = generateProceduralNormalMap('wood');
-        mat.normalScale = new THREE.Vector2(0.7, 0.7);
+        mat.normalScale = new THREE.Vector2(0.8, 0.8);
     } else if (matID === 2) {
         mat.normalMap = generateProceduralNormalMap('ceiling');
-        mat.normalScale = new THREE.Vector2(0.3, 0.3);
+        mat.normalScale = new THREE.Vector2(0.4, 0.4);
     }
 
     materialCache.set(matID, mat);
+    return mat;
+}
+
+// Returns a material variant that multiplies vertex colors (used for baked AO).
+export function getAOMaterial(matID) {
+    if (aoMaterialCache.has(matID)) return aoMaterialCache.get(matID);
+    const base = getMaterial(matID);
+    const mat = base.clone();
+    mat.vertexColors = true;
+    aoMaterialCache.set(matID, mat);
     return mat;
 }
 
@@ -265,8 +344,8 @@ export function createFloorMaterial(matID, aoTexture) {
         params.envMapIntensity = 0.6;
     }
     if (aoTexture) {
-        params.aoMap = aoTexture;
-        params.aoMapIntensity = 0.8;
+        params.lightMap = aoTexture;
+        params.lightMapIntensity = 1.0;
     }
     const mat = new THREE.MeshStandardMaterial(params);
     // Apply normal map same as cached version
@@ -285,6 +364,7 @@ export function createBoxMesh(cx, cy, cz, hx, hy, hz, matID) {
     const mat = getMaterial(matID);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(cx, cy, cz);
+    mesh.userData.matID = matID;
     const isTransparent = mat.transparent === true;
     mesh.castShadow = !isTransparent;
     mesh.receiveShadow = !isTransparent;
@@ -305,59 +385,41 @@ export function createRenderer(canvas, options = {}) {
     renderer.shadowMap.enabled = !editorMode;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = editorMode ? 1.0 : 1.15;
+    renderer.toneMappingExposure = editorMode ? 1.0 : 1.3;
     renderer.setClearColor(0x1a1e28, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, editorMode ? 1 : 2));
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x1a1e28, 0.012);
+    scene.fog = new THREE.FogExp2(0x1a1e28, 0.025);
 
     envMap = generateEnvMap(renderer);
     scene.environment = envMap;
 
-    // Lighting (editor: fewer fills, no point lights — bloom off; keeps view readable and FPS up)
-    const ambientLight = new THREE.AmbientLight(0x607090, editorMode ? 0.62 : 0.45);
+    // Lighting — baked lightmaps provide spatial variation from ceiling panels.
+    // Real-time lights are kept low so baked light dominates.
+    const ambientLight = new THREE.AmbientLight(0xc0c8d8, editorMode ? 0.62 : 0.8);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xb0c0d8, 0x282830, editorMode ? 0.5 : 0.4);
+    const hemiLight = new THREE.HemisphereLight(0xd8e4f0, 0x383840, editorMode ? 0.5 : 0.5);
     scene.add(hemiLight);
 
-    const dirLight = new THREE.DirectionalLight(0xf0f0ff, editorMode ? 0.5 : 0.6);
-    dirLight.position.set(8, 18, 6);
-    if (!editorMode) {
-        dirLight.castShadow = true;
-        dirLight.shadow.mapSize.width = 4096;
-        dirLight.shadow.mapSize.height = 4096;
+    // Angled directional for edge definition on surfaces + shadow casting
+    const dirLight = new THREE.DirectionalLight(0xf0f0ff, editorMode ? 0.5 : 0.55);
+    dirLight.position.set(6, 16, 4);
+    dirLight.castShadow = !editorMode;
+    if (dirLight.castShadow) {
+        dirLight.shadow.mapSize.width = 1024;
+        dirLight.shadow.mapSize.height = 1024;
         dirLight.shadow.camera.near = 0.5;
-        dirLight.shadow.camera.far = 80;
-        dirLight.shadow.camera.left = -35;
-        dirLight.shadow.camera.right = 35;
-        dirLight.shadow.camera.top = 35;
-        dirLight.shadow.camera.bottom = -35;
-        dirLight.shadow.bias = -0.0005;
+        dirLight.shadow.camera.far = 60;
+        dirLight.shadow.camera.left = -30;
+        dirLight.shadow.camera.right = 30;
+        dirLight.shadow.camera.top = 30;
+        dirLight.shadow.camera.bottom = -30;
+        dirLight.shadow.bias = -0.002;
         dirLight.shadow.normalBias = 0.02;
     }
     scene.add(dirLight);
-
-    const fillLight = new THREE.DirectionalLight(0x6878a0, editorMode ? 0.18 : 0.25);
-    fillLight.position.set(-10, 12, -8);
-    scene.add(fillLight);
-
-    if (!editorMode) {
-        for (const [x, z] of CEILING_LIGHT_POSITIONS) {
-            const pointLight = new THREE.PointLight(0xe8eeff, 0.8, 20, 1.5);
-            pointLight.position.set(x, 4.5, z);
-            pointLight.castShadow = false;
-            scene.add(pointLight);
-        }
-
-        const cornerPositions = [[-24, -24], [24, -24], [-24, 24], [24, 24]];
-        for (const [x, z] of cornerPositions) {
-            const cornerLight = new THREE.PointLight(0xd0d8ff, 0.35, 16, 2);
-            cornerLight.position.set(x, 3.5, z);
-            scene.add(cornerLight);
-        }
-    }
 
     const camera = new THREE.PerspectiveCamera(90, canvas.width / canvas.height, 0.05, 100);
     scene.add(camera);
@@ -374,28 +436,66 @@ export function createRenderer(canvas, options = {}) {
     worldGroup.name = 'world';
     scene.add(worldGroup);
 
+    // ─── Vertex pools (game mode only) ───
+    let dynamicVertPool = null;
+    let weaponVertPool = null;
+    if (!editorMode) {
+        dynamicVertPool = createVertPool();
+        dynamicGroup.add(dynamicVertPool.group);
+        weaponVertPool = createVertPool();
+        weaponGroup.add(weaponVertPool.group);
+    }
+
     // ─── Post-processing ───
     const w = canvas.width || 1;
     const h = canvas.height || 1;
+    const pr = renderer.getPixelRatio();
 
-    const composer = new EffectComposer(renderer);
+    // Create render target with depth texture so SSR can read scene depth
+    const depthTexture = new THREE.DepthTexture(w * pr, h * pr);
+    const composerRT = new THREE.WebGLRenderTarget(w * pr, h * pr, {
+        type: THREE.HalfFloatType,
+        depthTexture: depthTexture,
+    });
+    const composer = new EffectComposer(renderer, composerRT);
 
     // 1. Beauty pass
     const renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
 
+    let ssrPass = null;
     let bloomPass = null;
     let vignettePass = null;
-    if (!editorMode) {
-        bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.35, 0.75);
-        composer.addPass(bloomPass);
+    let fxaaPass = null;
 
-        vignettePass = new ShaderPass(VignetteColorGradeShader);
-        composer.addPass(vignettePass);
+    if (!editorMode) {
+        // 2. SSR — screen-space reflections (Fresnel-based, subtle)
+        ssrPass = new SSRPass(camera, w * pr, h * pr);
+        ssrPass.uniforms.maxDistance.value = 5.0;
+        ssrPass.uniforms.opacity.value = 0.4;
+        ssrPass.uniforms.thickness.value = 0.015;
+        composer.addPass(ssrPass);
+
+        // 3. Bloom
+        bloomPass = new UnrealBloomPass(new THREE.Vector2(Math.floor(w / 2), Math.floor(h / 2)), 0.45, 0.35, 0.75);
+        composer.addPass(bloomPass);
     }
 
+    // OutputPass converts linear HDR → sRGB 0-1 (tone mapping + gamma).
+    // Must come before color grading which expects values in 0-1 range.
     const outputPass = new OutputPass();
     composer.addPass(outputPass);
+
+    if (!editorMode) {
+        // 5. Vignette + color grading (operates on tonemapped sRGB)
+        vignettePass = new ShaderPass(VignetteColorGradeShader);
+        composer.addPass(vignettePass);
+
+        // 6. FXAA — anti-aliasing (last pass, needs sRGB input)
+        fxaaPass = new ShaderPass(FXAAShader);
+        fxaaPass.uniforms['resolution'].value = new THREE.Vector2(w * pr, h * pr);
+        composer.addPass(fxaaPass);
+    }
 
     return {
         renderer,
@@ -406,9 +506,13 @@ export function createRenderer(canvas, options = {}) {
         weaponGroup,
         gl: renderer.getContext(),
         composer,
+        ssrPass,
         bloomPass,
         vignettePass,
+        fxaaPass,
         editorMode,
+        dynamicVertPool,
+        weaponVertPool,
     };
 }
 
@@ -449,6 +553,10 @@ export function resizeRenderer(r, width, height) {
     if (r.composer) {
         r.composer.setSize(width, height);
     }
+    if (r.fxaaPass) {
+        const pixelRatio = r.renderer.getPixelRatio();
+        r.fxaaPass.uniforms['resolution'].value.set(width * pixelRatio, height * pixelRatio);
+    }
 }
 
 export function updateCamera(r, position, yaw, pitch, fov) {
@@ -465,8 +573,10 @@ export function updateCamera(r, position, yaw, pitch, fov) {
 
 export function clearDynamic(r) {
     const group = r.dynamicGroup;
-    while (group.children.length > 0) {
-        const child = group.children[0];
+    const poolGroup = r.dynamicVertPool?.group;
+    for (let i = group.children.length - 1; i >= 0; i--) {
+        const child = group.children[i];
+        if (child === poolGroup) continue;
         group.remove(child);
         disposeObject(child);
     }
@@ -474,8 +584,10 @@ export function clearDynamic(r) {
 
 export function clearWeapon(r) {
     const group = r.weaponGroup;
-    while (group.children.length > 0) {
-        const child = group.children[0];
+    const poolGroup = r.weaponVertPool?.group;
+    for (let i = group.children.length - 1; i >= 0; i--) {
+        const child = group.children[i];
+        if (child === poolGroup || child.isLight) continue;
         group.remove(child);
         disposeObject(child);
     }
@@ -539,4 +651,90 @@ export function vertsToGroup(verts) {
     }
 
     return group;
+}
+
+// ─── Vertex pool: reuses geometry across frames to avoid GC thrash ───
+
+export function createVertPool() {
+    const group = new THREE.Group();
+    group.name = 'vertPool';
+    return { group, buckets: new Map() };
+}
+
+export function updateVertPool(pool, verts) {
+    if (!verts || verts.length === 0) {
+        for (const entry of pool.buckets.values()) {
+            entry.mesh.visible = false;
+        }
+        return;
+    }
+
+    // First pass: count vertices per material
+    const vertCounts = new Map();
+    for (let i = 0; i < verts.length; i += 6) {
+        const matID = Math.round(verts[i + 5]);
+        vertCounts.set(matID, (vertCounts.get(matID) || 0) + 1);
+    }
+
+    // Ensure each bucket has enough capacity, growing if needed
+    for (const [matID, count] of vertCounts) {
+        let entry = pool.buckets.get(matID);
+        if (!entry || entry.capacity < count) {
+            const newCapacity = Math.max(count * 2, 128);
+            if (entry) {
+                pool.group.remove(entry.mesh);
+                entry.mesh.geometry.dispose();
+            }
+            const geo = new THREE.BufferGeometry();
+            const posAttr = new THREE.BufferAttribute(new Float32Array(newCapacity * 3), 3);
+            posAttr.setUsage(THREE.DynamicDrawUsage);
+            const uvAttr = new THREE.BufferAttribute(new Float32Array(newCapacity * 2), 2);
+            uvAttr.setUsage(THREE.DynamicDrawUsage);
+            geo.setAttribute('position', posAttr);
+            geo.setAttribute('uv', uvAttr);
+            const mat = getMaterial(matID);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.castShadow = !mat.transparent;
+            mesh.receiveShadow = !mat.transparent;
+            mesh.frustumCulled = false;
+            entry = { mesh, capacity: newCapacity };
+            pool.buckets.set(matID, entry);
+            pool.group.add(mesh);
+        }
+    }
+
+    // Second pass: fill vertex data into pre-allocated typed arrays
+    const offsets = new Map();
+    for (const matID of vertCounts.keys()) offsets.set(matID, 0);
+
+    for (let i = 0; i < verts.length; i += 6) {
+        const matID = Math.round(verts[i + 5]);
+        const entry = pool.buckets.get(matID);
+        const off = offsets.get(matID);
+        const posArr = entry.mesh.geometry.attributes.position.array;
+        const uvArr = entry.mesh.geometry.attributes.uv.array;
+        posArr[off * 3]     = verts[i];
+        posArr[off * 3 + 1] = verts[i + 1];
+        posArr[off * 3 + 2] = verts[i + 2];
+        uvArr[off * 2]     = verts[i + 3];
+        uvArr[off * 2 + 1] = verts[i + 4];
+        offsets.set(matID, off + 1);
+    }
+
+    // Mark buffers dirty and set draw ranges
+    for (const [matID, count] of vertCounts) {
+        const geo = pool.buckets.get(matID).mesh.geometry;
+        geo.attributes.position.needsUpdate = true;
+        geo.attributes.uv.needsUpdate = true;
+        geo.setDrawRange(0, count);
+        geo.computeVertexNormals();
+        pool.buckets.get(matID).mesh.visible = true;
+    }
+
+    // Hide material buckets not used this frame
+    for (const [matID, entry] of pool.buckets) {
+        if (!vertCounts.has(matID)) {
+            entry.mesh.visible = false;
+        }
+    }
 }
