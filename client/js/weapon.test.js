@@ -48,24 +48,36 @@ test('fire applies recoil and muzzle-flash state', () => {
     const weapon = createWeapon();
     setWeaponType(weapon, WEAPON_MACHINE_GUN);
 
+    // First shot while still has zero recoil (first-shot accuracy)
     fire(weapon);
-
     const slot = weapon.slots[WEAPON_MACHINE_GUN];
     assert.ok(slot.kickback > 0);
-    assert.ok(slot.recoilPitch > 0);
     assert.ok(slot.flashTime > 0);
+
+    // Second shot adds recoil
+    fire(weapon);
+    assert.ok(slot.recoilTargetPitch > 0);
+    // After one update tick, actual recoilPitch should approach target
+    updateWeapon(weapon, 0.016, false);
+    assert.ok(slot.recoilPitch > 0);
 });
 
 test('updateWeapon settles recoil over time', () => {
     const weapon = createWeapon();
     setWeaponType(weapon, WEAPON_MACHINE_GUN);
-    fire(weapon);
+    // Fire several shots to build up recoil (first shot has zero recoil when still)
+    fire(weapon); fire(weapon); fire(weapon);
+    // Let recoil approach target (short tick so flash hasn't fully decayed)
+    updateWeapon(weapon, 0.02, false);
 
     const slot = weapon.slots[WEAPON_MACHINE_GUN];
     const recoilPitch = slot.recoilPitch;
     const flashTime = slot.flashTime;
+    assert.ok(recoilPitch > 0, 'recoil should have built up');
+    assert.ok(flashTime > 0, 'flash should still be active');
 
-    updateWeapon(weapon, 0.1, false);
+    // Simulate time passing with no firing — recoil and flash should settle
+    updateWeapon(weapon, 0.8, false);
 
     assert.ok(slot.recoilPitch < recoilPitch);
     assert.ok(slot.flashTime < flashTime);
@@ -74,15 +86,17 @@ test('updateWeapon settles recoil over time', () => {
 test('aiming reduces firearm recoil while sustained fire increases it', () => {
     const hipfireWeapon = createWeapon();
     setWeaponType(hipfireWeapon, WEAPON_MACHINE_GUN);
-    fire(hipfireWeapon, false);
-    const hipPitch = hipfireWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
+    fire(hipfireWeapon, false, false, true); // moving=true to skip first-shot zero
+    fire(hipfireWeapon, false, false, true);
+    const hipPitch = hipfireWeapon.slots[WEAPON_MACHINE_GUN].recoilTargetPitch;
 
     const aimedWeapon = createWeapon();
     setWeaponType(aimedWeapon, WEAPON_MACHINE_GUN);
-    fire(aimedWeapon, true);
-    const aimedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
-    fire(aimedWeapon, true);
-    const sustainedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilPitch;
+    fire(aimedWeapon, true, false, true);
+    fire(aimedWeapon, true, false, true);
+    const aimedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilTargetPitch;
+    fire(aimedWeapon, true, false, true);
+    const sustainedPitch = aimedWeapon.slots[WEAPON_MACHINE_GUN].recoilTargetPitch;
 
     assert.ok(aimedPitch < hipPitch);
     assert.ok(sustainedPitch > aimedPitch);

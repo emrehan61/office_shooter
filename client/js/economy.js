@@ -3,7 +3,7 @@ export const MAX_ARMOR = 100;
 export const ROUND_DURATION_MS = 5 * 60 * 1000;
 export const BUY_PHASE_MS = 10 * 1000;
 export const TOTAL_ROUNDS = 30;
-export const RELOAD_DURATION_MS = 800;
+export const RELOAD_DURATION_MS = 1800;
 export const MACHINE_GUN_MAG_SIZE = 30;
 export const MACHINE_GUN_AMMO_MAX = 90;
 export const MACHINE_GUN_AMMO_PACK = 30;
@@ -35,6 +35,7 @@ export const WEAPON_DEFS = {
         adsFovMultiplier: 1,
         adsMoveSpeedMultiplier: 1,
         adsRecoilMultiplier: 1,
+        recoilViewScale: 1,
         renderAs: WEAPON_KNIFE,
     },
     [WEAPON_PISTOL]: {
@@ -50,6 +51,7 @@ export const WEAPON_DEFS = {
         adsFovMultiplier: 0.72,
         adsMoveSpeedMultiplier: 0.78,
         adsRecoilMultiplier: 0.66,
+        recoilViewScale: 2.0,
         renderAs: WEAPON_PISTOL,
     },
     [WEAPON_MACHINE_GUN]: {
@@ -65,6 +67,7 @@ export const WEAPON_DEFS = {
         adsFovMultiplier: 0.56,
         adsMoveSpeedMultiplier: 0.55,
         adsRecoilMultiplier: 0.58,
+        recoilViewScale: 2.0,
         renderAs: WEAPON_MACHINE_GUN,
     },
     [UTILITY_BOMB]: {

@@ -1,4 +1,4 @@
-import { mat4Create, mat4FPSView, clamp, mat4Perspective } from './math.js';
+import { clamp } from './math.js';
 
 export const DEFAULT_FOV = Math.PI / 2;
 
@@ -11,8 +11,6 @@ export function createCamera() {
         near: 0.05,
         far: 100,
         sensitivity: 0.002,
-        viewMatrix: mat4Create(),
-        projMatrix: mat4Create(),
     };
 }
 
@@ -21,11 +19,7 @@ export function approachCameraFov(cam, targetFov, dt) {
     cam.fov += (targetFov - cam.fov) * blend;
 }
 
-export function updateCamera(cam, mouseDX, mouseDY, aspect) {
+export function updateCamera(cam, mouseDX, mouseDY, _aspect) {
     cam.yaw -= mouseDX * cam.sensitivity;
     cam.pitch = clamp(cam.pitch - mouseDY * cam.sensitivity, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
-
-    mat4FPSView(cam.viewMatrix, cam.position, cam.yaw, cam.pitch);
-    const newProj = mat4Perspective(cam.fov, aspect, cam.near, cam.far);
-    cam.projMatrix.set(newProj);
 }
