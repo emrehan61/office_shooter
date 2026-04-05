@@ -145,14 +145,19 @@ function generateFloorAO() {
     return tex;
 }
 
-export function buildWorldGeometry() {
+export function buildWorldGeometry(opts = {}) {
+    const hideCeiling = opts.hideCeiling === true;
+    const skipFloorAO = opts.skipFloorAO === true;
     const meshes = [];
-    const floorAO = generateFloorAO();
+    // Editor skips AO: generateFloorAO is O(512² × geometry) and was freezing every rebuild while dragging.
+    const floorAO = skipFloorAO ? null : generateFloorAO();
 
-    // Floor with baked AO
+    // Floor with baked AO (or flat material when skipFloorAO)
     meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 1, 0, floorAO));
-    // Ceiling (no AO)
-    meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
+    // Ceiling (no AO) — omitted in map editor so orbit view isn’t covered by the roof
+    if (!hideCeiling) {
+        meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
+    }
 
     for (const floor of mapFloorInsets) {
         meshes.push(createFloorMesh(floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01, floorAO));

@@ -26,7 +26,7 @@ const MATERIAL_DEFS = {
     12: { color: 0x1fa8ad, roughness: 0.5,  metalness: 0.15, emissive: 0x1fa8ad, emissiveIntensity: 0.15 },  // teal armor
     13: { color: 0x9ec4d8, roughness: 0.05, metalness: 0.15, transparent: true, opacity: 0.35 }, // glass
     14: { color: 0x7a5430, roughness: 0.7,  metalness: 0.0 },   // wood
-    15: { color: 0x30c0f8, roughness: 0.2,  metalness: 0.0, emissive: 0x30c0f8, emissiveIntensity: 1.5 }, // screen
+    15: { color: 0x30c0f8, roughness: 0.2,  metalness: 0.0, emissive: 0x30c0f8, emissiveIntensity: 0.95 }, // screen (monitors)
     16: { color: 0x2a7a3a, roughness: 0.8,  metalness: 0.0 },   // plant
     17: { color: 0x787e88, roughness: 0.95, metalness: 0.0, transparent: true, opacity: 0.55 },  // smoke
     18: { color: 0x060608, roughness: 0.85, metalness: 0.0 },   // impact
@@ -293,19 +293,21 @@ export function createBoxMesh(cx, cy, cz, hx, hy, hz, matID) {
 
 // ─── Renderer + post-processing pipeline ───
 
-export function createRenderer(canvas) {
+export function createRenderer(canvas, options = {}) {
+    const editorMode = options.editor === true;
+
     const renderer = new THREE.WebGLRenderer({
         canvas,
         antialias: false,  // composer handles quality; skip native AA for perf
         alpha: false,
         powerPreference: 'high-performance',
     });
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !editorMode;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = editorMode ? 1.0 : 1.15;
     renderer.setClearColor(0x1a1e28, 1);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, editorMode ? 1 : 2));
 
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x1a1e28, 0.012);
@@ -313,44 +315,48 @@ export function createRenderer(canvas) {
     envMap = generateEnvMap(renderer);
     scene.environment = envMap;
 
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x506080, 0.45);
+    // Lighting (editor: fewer fills, no point lights — bloom off; keeps view readable and FPS up)
+    const ambientLight = new THREE.AmbientLight(0x607090, editorMode ? 0.62 : 0.45);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xb0c0d8, 0x282830, 0.4);
+    const hemiLight = new THREE.HemisphereLight(0xb0c0d8, 0x282830, editorMode ? 0.5 : 0.4);
     scene.add(hemiLight);
 
-    const dirLight = new THREE.DirectionalLight(0xf0f0ff, 0.6);
+    const dirLight = new THREE.DirectionalLight(0xf0f0ff, editorMode ? 0.5 : 0.6);
     dirLight.position.set(8, 18, 6);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 4096;
-    dirLight.shadow.mapSize.height = 4096;
-    dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 80;
-    dirLight.shadow.camera.left = -35;
-    dirLight.shadow.camera.right = 35;
-    dirLight.shadow.camera.top = 35;
-    dirLight.shadow.camera.bottom = -35;
-    dirLight.shadow.bias = -0.0005;
-    dirLight.shadow.normalBias = 0.02;
+    if (!editorMode) {
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 4096;
+        dirLight.shadow.mapSize.height = 4096;
+        dirLight.shadow.camera.near = 0.5;
+        dirLight.shadow.camera.far = 80;
+        dirLight.shadow.camera.left = -35;
+        dirLight.shadow.camera.right = 35;
+        dirLight.shadow.camera.top = 35;
+        dirLight.shadow.camera.bottom = -35;
+        dirLight.shadow.bias = -0.0005;
+        dirLight.shadow.normalBias = 0.02;
+    }
     scene.add(dirLight);
 
-    const fillLight = new THREE.DirectionalLight(0x6878a0, 0.25);
+    const fillLight = new THREE.DirectionalLight(0x6878a0, editorMode ? 0.18 : 0.25);
     fillLight.position.set(-10, 12, -8);
     scene.add(fillLight);
 
-    for (const [x, z] of CEILING_LIGHT_POSITIONS) {
-        const pointLight = new THREE.PointLight(0xe8eeff, 0.8, 20, 1.5);
-        pointLight.position.set(x, 4.5, z);
-        pointLight.castShadow = false;
-        scene.add(pointLight);
-    }
+    if (!editorMode) {
+        for (const [x, z] of CEILING_LIGHT_POSITIONS) {
+            const pointLight = new THREE.PointLight(0xe8eeff, 0.8, 20, 1.5);
+            pointLight.position.set(x, 4.5, z);
+            pointLight.castShadow = false;
+            scene.add(pointLight);
+        }
 
-    const cornerPositions = [[-24, -24], [24, -24], [-24, 24], [24, 24]];
-    for (const [x, z] of cornerPositions) {
-        const cornerLight = new THREE.PointLight(0xd0d8ff, 0.35, 16, 2);
-        cornerLight.position.set(x, 3.5, z);
-        scene.add(cornerLight);
+        const cornerPositions = [[-24, -24], [24, -24], [-24, 24], [24, 24]];
+        for (const [x, z] of cornerPositions) {
+            const cornerLight = new THREE.PointLight(0xd0d8ff, 0.35, 16, 2);
+            cornerLight.position.set(x, 3.5, z);
+            scene.add(cornerLight);
+        }
     }
 
     const camera = new THREE.PerspectiveCamera(90, canvas.width / canvas.height, 0.05, 100);
@@ -378,15 +384,16 @@ export function createRenderer(canvas) {
     const renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
 
-    // 2. Bloom — gentle glow on emissives
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.35, 0.75);
-    composer.addPass(bloomPass);
+    let bloomPass = null;
+    let vignettePass = null;
+    if (!editorMode) {
+        bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.35, 0.75);
+        composer.addPass(bloomPass);
 
-    // 4. Vignette + color grading
-    const vignettePass = new ShaderPass(VignetteColorGradeShader);
-    composer.addPass(vignettePass);
+        vignettePass = new ShaderPass(VignetteColorGradeShader);
+        composer.addPass(vignettePass);
+    }
 
-    // 5. Output pass — tone mapping + sRGB
     const outputPass = new OutputPass();
     composer.addPass(outputPass);
 
@@ -401,6 +408,7 @@ export function createRenderer(canvas) {
         composer,
         bloomPass,
         vignettePass,
+        editorMode,
     };
 }
 

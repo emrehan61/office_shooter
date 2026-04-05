@@ -14,7 +14,7 @@ const MATERIALS = [
     { id: 16, name: 'Plant' },
 ];
 
-const HIGHLIGHT_MAT = 4; // flash material — bright yellow tint for selection
+const HIGHLIGHT_MAT = 0; // wall panel — readable selection without emissive/bloom
 
 // ── Prefab models (arrays of box offsets relative to placement point) ──
 const PREFABS = {
@@ -171,9 +171,33 @@ let clipboard = null; // { type, data }
 
 // ── Renderer ───────────────────────────────────────────────────────
 const canvas = document.getElementById('viewport');
-const renderer = createRenderer(canvas);
+const renderer = createRenderer(canvas, { editor: true });
 renderer.scene.fog = null; // editor needs clear long-range view
 renderer.camera.far = 500;
+
+// Grid lives outside dynamicGroup so we do not dispose/rebuild vertsToGroup(grid) every frame.
+const editorGridGroup = new THREE.Group();
+editorGridGroup.name = 'editorGrid';
+renderer.scene.add(editorGridGroup);
+let editorGridArenaKey = NaN;
+
+function disposeEditorGeometryOnly(obj) {
+    obj.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+    });
+}
+
+function syncEditorGridMesh() {
+    if (editorGridArenaKey === mapData.arena) return;
+    editorGridArenaKey = mapData.arena;
+    while (editorGridGroup.children.length > 0) {
+        const c = editorGridGroup.children[0];
+        editorGridGroup.remove(c);
+        disposeEditorGeometryOnly(c);
+    }
+    const verts = buildGridVerts();
+    if (verts.length) editorGridGroup.add(vertsToGroup(verts));
+}
 
 // ── Orbit camera ───────────────────────────────────────────────────
 const orbit = {
@@ -207,7 +231,6 @@ function snap(val) {
     return Math.round(val / size) * size;
 }
 
-// ── Grid lines as dynamic geometry ─────────────────────────────────
 function buildGridVerts() {
     const verts = [];
     const a = mapData.arena;
@@ -836,7 +859,7 @@ function setActiveTool(tool) {
 // ── Rebuild and upload world geometry ──────────────────────────────
 function rebuildWorld() {
     loadMap(mapData);
-    const geo = buildWorldGeometry();
+    const geo = buildWorldGeometry({ hideCeiling: true, skipFloorAO: true });
     uploadWorldGeo(renderer, geo);
     dirty = false;
 }
@@ -846,6 +869,8 @@ function frame() {
     requestAnimationFrame(frame);
 
     if (dirty) rebuildWorld();
+
+    syncEditorGridMesh();
 
     // Update Three.js camera from orbit state
     const ct = Math.cos(orbit.theta), st = Math.sin(orbit.theta);
@@ -867,7 +892,6 @@ function frame() {
     clearDynamic(renderer);
 
     const dynVerts = [];
-    appendArr(dynVerts, buildGridVerts());
     appendArr(dynVerts, buildSpawnVerts());
     appendArr(dynVerts, buildSelectionVerts());
     if (ghostVerts.length > 0) appendArr(dynVerts, ghostVerts);
