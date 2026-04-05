@@ -21,3 +21,4 @@ output/office-shooter
 *.log
 .env
 .env.*
+.idea

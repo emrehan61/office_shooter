@@ -14,7 +14,7 @@ import {
     WEAPON_PISTOL,
     isUtilityWeapon,
 } from './economy.js';
-import { MODE_DEATHMATCH } from './modes.js';
+import { MODE_DEATHMATCH, MODE_CTF } from './modes.js';
 import { canOpenBuyMenu, getUtilityCount, getWeaponAmmoState } from './player.js';
 import { TEAM_BLUE, TEAM_GREEN, getTeamLabel, normalizeTeam } from './teams.js';
 
@@ -26,6 +26,7 @@ const LOADOUT_SLOT_DEFS = [
 ];
 
 export function createHUD() {
+    const objectiveMarkers = createObjectiveMarkers();
     const hud = {
         crosshair: document.getElementById('crosshair'),
         healthEl: document.getElementById('health'),
@@ -60,6 +61,7 @@ export function createHUD() {
         leaderboardBody: document.getElementById('leaderboard-body'),
         shopPanel: document.getElementById('shop-panel'),
         hitMarker: document.getElementById('hit-marker'),
+        objectiveMarkers,
         hitMarkerTimer: 0,
         shopItems: [],
         loadoutSlots: [],
@@ -132,6 +134,7 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     updateShop(hud, player, match, !!ui.buyMenuOpen);
     updateFlashbangOverlay(hud, player.flashTimeLeftMs || 0);
     updateCrosshair(hud, ui.crosshairGap, !!player.aiming, ui.crosshairOffsetY || 0);
+    updateObjectiveMarkers(hud, ui.objectiveMarkers || []);
 
     if (!player.alive) {
         if (hud.deathScreen) hud.deathScreen.style.display = 'flex';
@@ -147,6 +150,43 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     }
 
     updateLeaderboard(hud, leaderboard);
+}
+
+function createObjectiveMarkers() {
+    if (typeof document === 'undefined') return [];
+
+    return ['primary', 'secondary'].map((slot) => {
+        const el = document.createElement('div');
+        el.className = `objective-marker objective-marker-${slot}`;
+        el.style.display = 'none';
+
+        const arrow = document.createElement('div');
+        arrow.className = 'objective-marker-arrow';
+        const label = document.createElement('div');
+        label.className = 'objective-marker-label';
+
+        el.append(arrow, label);
+        document.body.appendChild(el);
+        return { el, label };
+    });
+}
+
+function updateObjectiveMarkers(hud, markers) {
+    const slots = hud.objectiveMarkers || [];
+    for (let i = 0; i < slots.length; i += 1) {
+        const slot = slots[i];
+        const marker = markers[i];
+        if (!slot?.el || !marker?.visible) {
+            if (slot?.el) slot.el.style.display = 'none';
+            continue;
+        }
+
+        slot.el.style.display = 'flex';
+        slot.el.style.left = `${Math.round(marker.x)}px`;
+        slot.el.style.top = `${Math.round(marker.y)}px`;
+        slot.el.style.setProperty('--objective-marker-color', marker.color || '#ffffff');
+        slot.label.textContent = marker.label || '';
+    }
 }
 
 const WEAPON_ICONS = {
@@ -288,6 +328,21 @@ export function getMatchBarDisplay(player = {}, match = {}, leaderboard = {}) {
                 name: 'DEATHS',
                 value: String(player.deaths || 0),
                 meta: `PLAYERS ${rows.length}`,
+            },
+        };
+    }
+
+    if (match.mode === MODE_CTF) {
+        return {
+            left: {
+                name: 'BLUE',
+                value: String(match.blueCTFCaptures || 0),
+                meta: `FLAGS ${match.blueCTFCaptures || 0}`,
+            },
+            right: {
+                name: 'GREEN',
+                value: String(match.greenCTFCaptures || 0),
+                meta: `FLAGS ${match.greenCTFCaptures || 0}`,
             },
         };
     }

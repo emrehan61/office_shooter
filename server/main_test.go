@@ -102,6 +102,43 @@ func TestLobbyManagerCreatesPublicAndPrivateLobbies(t *testing.T) {
 	}
 }
 
+func TestNewGameLoadsDefaultMapObjectives(t *testing.T) {
+	g := newGame()
+
+	if g.mapName != defaultMapName {
+		t.Fatalf("expected default map %q, got %q", defaultMapName, g.mapName)
+	}
+	if len(g.mapHostages) == 0 {
+		t.Fatal("expected default map hostages to load")
+	}
+	if len(g.mapRescueZones) == 0 {
+		t.Fatal("expected default map rescue zones to load")
+	}
+	if len(g.mapFlagBases) == 0 {
+		t.Fatal("expected default map flag bases to load")
+	}
+	if len(g.mapBlueSpawns) == 0 || len(g.mapGreenSpawns) == 0 {
+		t.Fatal("expected default map team spawns to load")
+	}
+}
+
+func TestSpawnPointsForTeamUsesExplicitTeamSpawns(t *testing.T) {
+	g := newTestGame()
+	g.mapSpawns = []Vec3{{-1, standEyeHeight, 0}, {1, standEyeHeight, 0}, {0, standEyeHeight, 5}}
+	g.mapBlueSpawns = []Vec3{{-10, standEyeHeight, -10}}
+	g.mapGreenSpawns = []Vec3{{10, standEyeHeight, 10}}
+
+	blue := g.spawnPointsForTeamLocked(TeamBlue)
+	green := g.spawnPointsForTeamLocked(TeamGreen)
+
+	if len(blue) != 1 || blue[0][0] != -10 || blue[0][2] != -10 {
+		t.Fatalf("expected explicit blue spawns, got %#v", blue)
+	}
+	if len(green) != 1 || green[0][0] != 10 || green[0][2] != 10 {
+		t.Fatalf("expected explicit green spawns, got %#v", green)
+	}
+}
+
 func TestLeaveMatchLeavesTeamPlayersInLobby(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")
@@ -1469,6 +1506,126 @@ func TestStaticClientHandlerDisablesCaching(t *testing.T) {
 	}
 	if got := rec.Header().Get("Expires"); got != "0" {
 		t.Fatalf("expected expires 0, got %q", got)
+	}
+}
+
+func TestCanAssignTeamLockedAllowsHostageAndCTF(t *testing.T) {
+	for _, mode := range []GameMode{ModeHostage, ModeCTF} {
+		t.Run(string(mode), func(t *testing.T) {
+			g := newTestGame()
+			g.mode = mode
+			player := addNamedPlayer(g, "Player")
+			idx, _ := g.players.indexOf(player.id)
+
+			if !g.canAssignTeamLocked(idx, TeamBlue) {
+				t.Fatalf("expected team assignment to be allowed in %s mode", mode)
+			}
+		})
+	}
+}
+
+func TestCanAssignTeamLockedRejectsDeathmatch(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	player := addNamedPlayer(g, "Player")
+	idx, _ := g.players.indexOf(player.id)
+
+	if g.canAssignTeamLocked(idx, TeamBlue) {
+		t.Fatal("expected team assignment to be rejected in deathmatch mode")
+	}
+}
+
+func TestSyncFallbackBotLockedAddsBotInHostageMode(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeHostage
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	foundBot := false
+	for i := range g.players.ids {
+		if g.players.isBot[i] && g.players.team[i] == TeamGreen {
+			foundBot = true
+		}
+	}
+	if !foundBot {
+		t.Fatal("expected fallback bot on green team in hostage mode")
+	}
+}
+
+func TestSyncFallbackBotLockedAddsBotInCTFMode(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeCTF
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, green.id, TeamGreen)
+
+	g.syncFallbackBotLocked(1000)
+
+	foundBot := false
+	for i := range g.players.ids {
+		if g.players.isBot[i] && g.players.team[i] == TeamBlue {
+			foundBot = true
+		}
+	}
+	if !foundBot {
+		t.Fatal("expected fallback bot on blue team in CTF mode")
+	}
+}
+
+func TestSyncFallbackBotLockedRemovesBotInDeathmatch(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	g.syncFallbackBotLocked(1000)
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			t.Fatal("expected no fallback bots in deathmatch mode")
+		}
+	}
+}
+
+func TestCanStartMatchLockedHostageWithBot(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeHostage
+	blue := addNamedPlayer(g, "Blue")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+
+	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
+		t.Fatalf("expected bot-backed hostage match to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestCanStartMatchLockedCTFWithBot(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeCTF
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, green.id, TeamGreen)
+
+	g.syncFallbackBotLocked(1000)
+
+	if ok, reason := g.canStartMatchLocked(); !ok || reason != "" {
+		t.Fatalf("expected bot-backed CTF match to start, got ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestSyncFallbackBotLockedRemovesBotWhenHumanJoinsHostage(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeHostage
+	blue := addNamedPlayer(g, "Blue")
+	green := addNamedPlayer(g, "Green")
+	assignPlayerTeam(g, blue.id, TeamBlue)
+
+	g.syncFallbackBotLocked(1000)
+	assignPlayerTeam(g, green.id, TeamGreen)
+	g.syncFallbackBotLocked(1001)
+
+	for i := range g.players.ids {
+		if g.players.isBot[i] {
+			t.Fatal("expected bot to be removed once green human joins in hostage mode")
+		}
 	}
 }
 
