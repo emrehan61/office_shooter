@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/rand"
 	"net"
-	"sort"
 	"net/http"
 	"os"
 	"path/filepath"
