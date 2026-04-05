@@ -1029,8 +1029,7 @@ function frame(time) {
         right: gameplayInputEnabled && isKeyDown('KeyD'),
     };
     const crouchPressed = gameplayInputEnabled && (
-        isKeyDown('ControlLeft')
-        || isKeyDown('ControlRight')
+        isKeyDown('KeyC')
         || isKeyDown('MetaLeft')
         || isKeyDown('MetaRight')
     );
