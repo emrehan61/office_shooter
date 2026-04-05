@@ -15,19 +15,19 @@ const KNIFE_STAB_ANIM_SCALE = 1.3;
 
 // Machine gun 30-shot spray pattern: [pitchAdd, yawAdd]
 const MG_SPRAY_PATTERN = [
-    [0.176, 0.000], [0.160, 0.000], [0.152, 0.000], [0.144, 0.000],
-    [0.136, 0.000], [0.128, 0.004], [0.120, 0.004],
-    [0.104, 0.024], [0.096, 0.028], [0.088, 0.030], [0.080, 0.030],
-    [0.072, 0.028], [0.064, 0.024], [0.056, 0.019],
-    [0.048,-0.027], [0.040,-0.030], [0.040,-0.032], [0.032,-0.032],
-    [0.032,-0.030], [0.024,-0.027], [0.024,-0.022], [0.016,-0.016],
-    [0.016, 0.019], [0.016, 0.016], [0.012, 0.013], [0.012, 0.010],
-    [0.008, 0.006], [0.008, 0.004], [0.008, 0.000], [0.008, 0.000],
+    [0.141, 0.000], [0.128, 0.000], [0.122, 0.000], [0.115, 0.000],
+    [0.109, 0.000], [0.102, 0.003], [0.096, 0.003],
+    [0.083, 0.019], [0.077, 0.022], [0.070, 0.024], [0.064, 0.024],
+    [0.058, 0.022], [0.051, 0.019], [0.045, 0.015],
+    [0.038,-0.022], [0.032,-0.024], [0.032,-0.026], [0.026,-0.026],
+    [0.026,-0.024], [0.019,-0.022], [0.019,-0.018], [0.013,-0.013],
+    [0.013, 0.015], [0.013, 0.013], [0.010, 0.010], [0.010, 0.008],
+    [0.006, 0.005], [0.006, 0.003], [0.006, 0.000], [0.006, 0.000],
 ];
 
 const PISTOL_SPRAY_PATTERN = [
-    [0.18, 0.000], [0.16, 0.008], [0.14, 0.012], [0.12, 0.008],
-    [0.10, 0.005], [0.09,-0.005], [0.08,-0.008],
+    [0.144, 0.000], [0.128, 0.006], [0.112, 0.010], [0.096, 0.006],
+    [0.080, 0.004], [0.072,-0.004], [0.064,-0.006],
 ];
 
 export function createWeapon() {
@@ -100,8 +100,8 @@ export function fire(weapon, aiming = false, alternate = false, moving = false) 
         slot.kickback = Math.min(1.2, slot.kickback + 0.8 * aimRecoilMultiplier);
         slot.recoilTargetPitch += pitchAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
         slot.recoilTargetYaw += yawAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
-        slot.viewPunchPitch += 0.015 * aimRecoilMultiplier;
-        slot.viewPunchYaw += (Math.random() - 0.5) * 0.01;
+        slot.viewPunchPitch += 0.012 * aimRecoilMultiplier;
+        slot.viewPunchYaw += (Math.random() - 0.5) * 0.008;
         slot.heat = Math.min(1, slot.heat + 0.12);
         return;
     }
@@ -113,31 +113,31 @@ export function fire(weapon, aiming = false, alternate = false, moving = false) 
         slot.kickback = Math.min(1.0, slot.kickback + 0.7 * aimRecoilMultiplier);
         slot.recoilTargetPitch += pitchAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
         slot.recoilTargetYaw += yawAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
-        slot.viewPunchPitch += 0.02 * aimRecoilMultiplier;
-        slot.viewPunchYaw += (Math.random() - 0.5) * 0.012;
+        slot.viewPunchPitch += 0.016 * aimRecoilMultiplier;
+        slot.viewPunchYaw += (Math.random() - 0.5) * 0.010;
         slot.heat = Math.min(1, slot.heat + 0.25);
         return;
     }
 
     if (kind === UTILITY_BOMB || kind === UTILITY_SMOKE || kind === UTILITY_FLASHBANG) {
         slot.kickback = Math.min(0.8, slot.kickback + 0.75);
-        slot.recoilTargetPitch += 0.06;
-        slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.02;
+        slot.recoilTargetPitch += 0.048;
+        slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.016;
         slot.heat = Math.min(1, slot.heat + 0.18);
         return;
     }
 
     if (alternate && kind === WEAPON_KNIFE) {
         slot.kickback = Math.min(1.1, slot.kickback + 0.95);
-        slot.recoilTargetPitch += 0.06;
-        slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.028;
+        slot.recoilTargetPitch += 0.048;
+        slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.022;
         slot.heat = Math.min(1, slot.heat + 0.2);
         return;
     }
 
     slot.kickback = Math.min(0.9, slot.kickback + 0.65);
-    slot.recoilTargetPitch += 0.03;
-    slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.01;
+    slot.recoilTargetPitch += 0.024;
+    slot.recoilTargetYaw += [-1, 1][slot.shotIndex % 2] * 0.008;
     slot.heat = Math.min(1, slot.heat + 0.14);
 }
 
