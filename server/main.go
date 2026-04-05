@@ -1069,6 +1069,10 @@ func (g *Game) applyInputLocked(idx int, pos Vec3, yaw, pitch float64, crouching
 	if nextPos == prevPos && crouching == prevCrouching {
 		return
 	}
+	// Moving cancels spawn protection so the player becomes shootable
+	if g.hasSpawnProtectionLocked(idx, nowMS) {
+		g.clearDeathmatchSpawnStateLocked(idx)
+	}
 	recordPositionSample(&g.players.history[idx], nowMS, nextPos, crouching)
 }
 
