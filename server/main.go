@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -388,6 +389,33 @@ type tickMessages struct {
 	directs    map[int][][]byte
 }
 
+type Lobby struct {
+	ID      string
+	Name    string
+	Private bool
+	JoinKey string
+	Game    *Game
+}
+
+type lobbySummary struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Private     bool     `json:"private"`
+	JoinKey     string   `json:"joinKey,omitempty"`
+	Mode        GameMode `json:"mode"`
+	Map         string   `json:"map"`
+	State       string   `json:"state"`
+	PlayerCount int      `json:"playerCount"`
+	MaxPlayers  int      `json:"maxPlayers"`
+}
+
+type LobbyManager struct {
+	mu      sync.RWMutex
+	lobbies map[string]*Lobby
+	keys    map[string]string
+	nextID  int
+}
+
 var defaultSpawns = []Vec3{
 	{-25, standEyeHeight, -25},
 	{25, standEyeHeight, -25},
@@ -399,14 +427,159 @@ var defaultSpawns = []Vec3{
 
 const defaultMapName = "office_studio"
 
-var game = &Game{
-	players:         newPlayerStore(),
-	nextID:          1,
-	mode:            ModeTeam,
-	state:           StateWaiting,
-	deathmatchVotes: make(map[int]bool),
-	mapName:         defaultMapName,
-	mapSpawns:       defaultSpawns,
+func newGame() *Game {
+	return &Game{
+		players:         newPlayerStore(),
+		nextID:          1,
+		mode:            ModeTeam,
+		state:           StateWaiting,
+		deathmatchVotes: make(map[int]bool),
+		mapName:         defaultMapName,
+		mapSpawns:       defaultSpawns,
+	}
+}
+
+func newLobbyManager() *LobbyManager {
+	return &LobbyManager{
+		lobbies: make(map[string]*Lobby),
+		keys:    make(map[string]string),
+		nextID:  1,
+	}
+}
+
+var lobbyManager = newLobbyManager()
+var game = newGame()
+
+func (m *LobbyManager) createLobby(name string, private bool) *Lobby {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	id := fmt.Sprintf("lobby-%d", m.nextID)
+	m.nextID++
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("Lobby %d", m.nextID-1)
+	}
+
+	lobby := &Lobby{
+		ID:      id,
+		Name:    strings.TrimSpace(name),
+		Private: private,
+		Game:    newGame(),
+	}
+	if private {
+		lobby.JoinKey = m.generateJoinKeyLocked()
+		m.keys[lobby.JoinKey] = lobby.ID
+	}
+	m.lobbies[lobby.ID] = lobby
+	return lobby
+}
+
+func (m *LobbyManager) generateJoinKeyLocked() string {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	for {
+		var builder strings.Builder
+		for i := 0; i < 6; i++ {
+			builder.WriteByte(alphabet[rand.Intn(len(alphabet))])
+		}
+		key := builder.String()
+		if _, exists := m.keys[key]; !exists {
+			return key
+		}
+	}
+}
+
+func (m *LobbyManager) getLobby(id string) (*Lobby, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	lobby, ok := m.lobbies[id]
+	return lobby, ok
+}
+
+func (m *LobbyManager) findLobbyByKey(key string) (*Lobby, bool) {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "" {
+		return nil, false
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.keys[key]
+	if !ok {
+		return nil, false
+	}
+	lobby, ok := m.lobbies[id]
+	return lobby, ok
+}
+
+func (m *LobbyManager) listPublicLobbies() []lobbySummary {
+	m.mu.RLock()
+	lobbies := make([]*Lobby, 0, len(m.lobbies))
+	for _, lobby := range m.lobbies {
+		if !lobby.Private {
+			lobbies = append(lobbies, lobby)
+		}
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(lobbies, func(i, j int) bool {
+		return lobbies[i].ID < lobbies[j].ID
+	})
+
+	summaries := make([]lobbySummary, 0, len(lobbies))
+	for _, lobby := range lobbies {
+		summaries = append(summaries, lobby.summary())
+	}
+	return summaries
+}
+
+func (m *LobbyManager) removeLobbyIfEmpty(id string) {
+	if strings.TrimSpace(id) == "" {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lobby, ok := m.lobbies[id]
+	if !ok {
+		return
+	}
+	if lobby.Game.playerCount() > 0 {
+		return
+	}
+	delete(m.lobbies, id)
+	if lobby.JoinKey != "" {
+		delete(m.keys, lobby.JoinKey)
+	}
+}
+
+func (m *LobbyManager) tickAll(nowMS int64) {
+	m.mu.RLock()
+	lobbies := make([]*Lobby, 0, len(m.lobbies))
+	for _, lobby := range m.lobbies {
+		lobbies = append(lobbies, lobby)
+	}
+	m.mu.RUnlock()
+
+	for _, lobby := range lobbies {
+		lobby.Game.tick(nowMS)
+	}
+}
+
+func (l *Lobby) summary() lobbySummary {
+	l.Game.mu.RLock()
+	defer l.Game.mu.RUnlock()
+
+	return lobbySummary{
+		ID:          l.ID,
+		Name:        l.Name,
+		Private:     l.Private,
+		JoinKey:     l.JoinKey,
+		Mode:        normalizeMode(l.Game.mode),
+		Map:         l.Game.mapName,
+		State:       gameStateName(l.Game.state),
+		PlayerCount: l.Game.humanCountLocked(),
+		MaxPlayers:  maxPlayers,
+	}
 }
 
 type mapJSON struct {
@@ -652,6 +825,12 @@ func (g *Game) removePlayer(id int) {
 		g.deathmatchVoteEnds = 0
 		clear(g.deathmatchVotes)
 	}
+}
+
+func (g *Game) playerCount() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.players.ids)
 }
 
 func (g *Game) broadcast(msg []byte, exclude int) {
@@ -1365,6 +1544,31 @@ func (g *Game) setAllNamedPlayersInMatchLocked(inMatch bool) {
 			g.players.alive[i] = false
 		}
 	}
+}
+
+func (g *Game) leaveMatchLocked(playerID int) bool {
+	if g.state != StatePlaying || normalizeMode(g.mode) != ModeTeam {
+		return false
+	}
+
+	idx, ok := g.players.indexOf(playerID)
+	if !ok || g.players.isBot[idx] {
+		return false
+	}
+
+	g.players.inMatch[idx] = false
+	g.players.alive[idx] = false
+	g.players.flashEndsAt[idx] = 0
+	g.clearDeathmatchSpawnStateLocked(idx)
+	g.players.shotBloom[idx] = 0
+	g.players.bloomWeapon[idx] = g.players.activeWeapon[idx]
+	g.players.lastShotAt[idx] = 0
+	g.players.recoilPitch[idx] = 0
+	g.players.recoilYaw[idx] = 0
+	g.players.recoilShotIndex[idx] = 0
+	g.players.nextAttackAt[idx] = 0
+	g.clearReloadLocked(idx)
+	return true
 }
 
 func (g *Game) isDeathmatchVoteActiveLocked(nowMS int64) bool {
@@ -2547,7 +2751,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		})
 		tm.broadcasts = append(tm.broadcasts, shotMsg)
 
-		hit := findHitTargetLocked(botID, shooterPos, dir, shotTime, config.Range)
+		hit := g.findHitTargetLocked(botID, shooterPos, dir, shotTime, config.Range)
 		if hit == nil || !g.players.alive[hit.index] {
 			continue
 		}
@@ -3222,12 +3426,20 @@ func (g *Game) tick(nowMS int64) {
 }
 
 func handleWS(w http.ResponseWriter, r *http.Request) {
+	lobbyID := strings.TrimSpace(r.URL.Query().Get("lobby"))
+	lobby, ok := lobbyManager.getLobby(lobbyID)
+	if !ok {
+		http.Error(w, "Unknown lobby", http.StatusNotFound)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("upgrade error:", err)
 		return
 	}
 
+	game := lobby.Game
 	playerID, sendCh, ok := game.addPlayer(conn)
 	if !ok {
 		conn.WriteJSON(map[string]string{"t": "error", "msg": "server full"})
@@ -3240,6 +3452,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		game.removePlayer(playerID)
 		game.broadcastLobby()
+		lobbyManager.removeLobbyIfEmpty(lobby.ID)
 		close(sendCh)
 	}()
 
@@ -3346,6 +3559,18 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			json.Unmarshal(msg["text"], &text)
 			game.broadcastChat(playerID, text)
 
+		case "leaveMatch":
+			nowMS := time.Now().UnixMilli()
+			game.mu.Lock()
+			left := game.leaveMatchLocked(playerID)
+			if left {
+				game.syncModeBotsLocked(nowMS)
+			}
+			game.mu.Unlock()
+			if left {
+				game.broadcastLobby()
+			}
+
 		case "input":
 			if !game.isPlaying() {
 				continue
@@ -3424,7 +3649,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			})
 			game.broadcast(shotMsg, 0)
 
-			hit := findHitTarget(playerID, shooterPos, dir, shotTime, config.Range)
+			hit := game.findHitTargetLocked(playerID, shooterPos, dir, shotTime, config.Range)
 			if hit == nil {
 				continue
 			}
@@ -4066,19 +4291,70 @@ func staticClientHandler(root http.FileSystem) http.Handler {
 	})
 }
 
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func handleLobbyListOrCreate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, lobbyManager.listPublicLobbies())
+	case http.MethodPost:
+		var req struct {
+			Name    string `json:"name"`
+			Private bool   `json:"private"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid lobby request"})
+			return
+		}
+		lobby := lobbyManager.createLobby(req.Name, req.Private)
+		writeJSON(w, http.StatusCreated, lobby.summary())
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleLobbyJoinKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid join key request"})
+		return
+	}
+
+	lobby, ok := lobbyManager.findLobbyByKey(req.Key)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Lobby not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, lobby.summary())
+}
+
 func main() {
 	port := serverPort()
 	clientDir := resolveClientDir()
 
 	// Load default map spawns from JSON at startup
 	if spawns, err := loadMapSpawns(clientDir, defaultMapName); err == nil {
-		game.mapSpawns = spawns
+		defaultSpawns = spawns
 		log.Printf("Loaded %d spawn points from %s", len(spawns), defaultMapName)
 	} else {
 		log.Printf("Using hardcoded spawns: %v", err)
 	}
 
 	http.Handle("/", staticClientHandler(http.Dir(clientDir)))
+	http.HandleFunc("/api/lobbies", handleLobbyListOrCreate)
+	http.HandleFunc("/api/lobbies/join-key", handleLobbyJoinKey)
 	http.HandleFunc("/ws", handleWS)
 	http.HandleFunc("/api/maps", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -4090,7 +4366,7 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(time.Second / tickRate)
 		for range ticker.C {
-			game.tick(time.Now().UnixMilli())
+			lobbyManager.tickAll(time.Now().UnixMilli())
 		}
 	}()
 

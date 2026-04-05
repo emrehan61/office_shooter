@@ -12,6 +12,10 @@ import {
 
 const KNIFE_SLASH_ANIM_SCALE = 1.45;
 const KNIFE_STAB_ANIM_SCALE = 1.3;
+const MG_RECOIL_SCALE = 0.72;
+const MG_MOVE_RECOIL_MULTIPLIER = 1.15;
+const MG_VIEW_PUNCH_PITCH = 0.0065;
+const MG_VIEW_PUNCH_YAW = 0.004;
 
 // Machine gun 30-shot spray pattern: [pitchAdd, yawAdd]
 const MG_SPRAY_PATTERN = [
@@ -97,11 +101,12 @@ export function fire(weapon, aiming = false, alternate = false, moving = false) 
         const patternIdx = Math.min(slot.shotIndex - 1, MG_SPRAY_PATTERN.length - 1);
         const [pitchAdd, yawAdd] = MG_SPRAY_PATTERN[patternIdx] || [0.005, 0];
         const firstShotMul = isFirstShot && !moving ? 0 : 1;
+        const mgMoveMultiplier = moving ? MG_MOVE_RECOIL_MULTIPLIER : 1;
         slot.kickback = Math.min(1.2, slot.kickback + 0.8 * aimRecoilMultiplier);
-        slot.recoilTargetPitch += pitchAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
-        slot.recoilTargetYaw += yawAdd * firstShotMul * aimRecoilMultiplier * moveRecoilMultiplier;
-        slot.viewPunchPitch += 0.012 * aimRecoilMultiplier;
-        slot.viewPunchYaw += (Math.random() - 0.5) * 0.008;
+        slot.recoilTargetPitch += pitchAdd * MG_RECOIL_SCALE * firstShotMul * aimRecoilMultiplier * mgMoveMultiplier;
+        slot.recoilTargetYaw += yawAdd * MG_RECOIL_SCALE * firstShotMul * aimRecoilMultiplier * mgMoveMultiplier;
+        slot.viewPunchPitch += MG_VIEW_PUNCH_PITCH * aimRecoilMultiplier;
+        slot.viewPunchYaw += (Math.random() - 0.5) * MG_VIEW_PUNCH_YAW;
         slot.heat = Math.min(1, slot.heat + 0.12);
         return;
     }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyPong, createNet, connect, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMode, sendReload, sendRejoin, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { applyPong, createNet, connect, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendLeaveMatch, sendMode, sendReload, sendRejoin, sendShoot, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { applyAuthoritativeState, createPlayer } from './player.js';
 
 class FakeWebSocket {
@@ -140,6 +140,28 @@ test('welcome and lobby messages retain the selected game mode', async () => {
         });
 
         assert.equal(net.match.mode, 'team');
+    } finally {
+        restore();
+    }
+});
+
+test('connect stores selected lobby metadata for the active session', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(
+            net,
+            'ws://example.test/ws?lobby=lobby-2',
+            'Host',
+            { id: 'lobby-2', name: 'Office', private: false }
+        );
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], match: { currentRound: 0, totalRounds: 0, roundTimeLeftMs: 0, buyTimeLeftMs: 0, buyPhase: false } });
+        await connected;
+
+        assert.deepEqual(net.lobby, { id: 'lobby-2', name: 'Office', private: false });
     } finally {
         restore();
     }
@@ -499,6 +521,25 @@ test('rejoin vote requests send the selected answer', async () => {
 
         assert.deepEqual(ws.sent[ws.sent.length - 2], { t: 'rejoin', yes: true });
         assert.deepEqual(ws.sent[ws.sent.length - 1], { t: 'rejoin', yes: false });
+    } finally {
+        restore();
+    }
+});
+
+test('leave-match requests send the expected websocket payload', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const net = createNet();
+        const connected = connect(net, 'ws://example.test/ws?lobby=lobby-2', 'Host');
+        const ws = FakeWebSocket.instances[0];
+
+        ws.open();
+        ws.emit({ t: 'welcome', id: 1, pos: [0, 1.7, 0], state: 'playing', match: { currentRound: 1, totalRounds: 30, roundTimeLeftMs: 300000, buyTimeLeftMs: 0, buyPhase: false } });
+        await connected;
+
+        sendLeaveMatch(net);
+
+        assert.deepEqual(ws.sent[ws.sent.length - 1], { t: 'leaveMatch' });
     } finally {
         restore();
     }

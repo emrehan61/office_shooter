@@ -23,9 +23,9 @@ import {
 } from './player.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, getCrosshairOffsetY, getViewPunch, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendLeaveMatch, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { createAvatarPool, updateAvatarPool, hideAvatarPool } from './avatar.js';
-import { buildWebSocketURL, getDefaultServerAddress } from './config.js';
+import { buildHttpURL, buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch } from './math.js';
 import { RELOAD_DURATION_MS, WEAPON_DEFS, WEAPON_KNIFE, getRenderableWeapon, getWeaponSwitchByCode, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
@@ -52,9 +52,11 @@ const CHAT_MESSAGE_LIFETIME_MS = 8000;
 let lastTime = 0;
 let sendTimer = 0;
 let buyMenuOpen = false;
+let pauseMenuOpen = false;
 let chatOpen = false;
 let restorePointerLockAfterChat = false;
 let lastClosedVisibleChatCount = 0;
+let disconnectMessageOverride = '';
 const localImpactEffects = [];
 const worldDynamicVerts = [];
 const mergedEffects = [];
@@ -168,8 +170,19 @@ window.addEventListener('keydown', warmAudio, { once: true });
 const serverInput = document.getElementById('server-input');
 const nameInput = document.getElementById('name-input');
 const connectBtn = document.getElementById('connect-btn');
+const createLobbyNameInput = document.getElementById('create-lobby-name-input');
+const createLobbyBtn = document.getElementById('create-lobby-btn');
+const createLobbyStatus = document.getElementById('create-lobby-status');
+const privateLobbyToggle = document.getElementById('private-lobby-toggle');
+const publicLobbyStatus = document.getElementById('public-lobby-status');
+const publicLobbyList = document.getElementById('public-lobby-list');
+const joinKeyInput = document.getElementById('join-key-input');
+const joinKeyBtn = document.getElementById('join-key-btn');
+const joinKeyStatus = document.getElementById('join-key-status');
 const lobbyPanel = document.getElementById('lobby-panel');
 const lobbyForm = document.querySelector('.lobby-form');
+const currentLobbyName = document.getElementById('current-lobby-name');
+const currentLobbyAccess = document.getElementById('current-lobby-access');
 const lobbyStatus = document.getElementById('lobby-status');
 const playerList = document.getElementById('player-list');
 const startBtn = document.getElementById('start-btn');
@@ -189,6 +202,10 @@ const rejoinYesBtn = document.getElementById('rejoin-yes-btn');
 const rejoinNoBtn = document.getElementById('rejoin-no-btn');
 const mapDropdown = document.getElementById('map-dropdown');
 const mapSelect = document.getElementById('map-select');
+const pauseMenu = document.getElementById('pause-menu');
+const pauseCopy = document.getElementById('pause-copy');
+const resumeMatchBtn = document.getElementById('resume-match-btn');
+const leaveMatchBtn = document.getElementById('leave-match-btn');
 let rejoinVoteChoice = null;
 let availableMaps = [];
 
@@ -211,6 +228,141 @@ function getLobbyStartState() {
         : getTeamStartState(net.players);
 }
 
+function getServerAddress() {
+    return (serverInput ? serverInput.value.trim() : '') || getDefaultServerAddress(window.location);
+}
+
+function getPlayerName() {
+    return (nameInput ? nameInput.value.trim() : '') || 'Player';
+}
+
+function buildApiURL(path) {
+    return buildHttpURL(getServerAddress(), path, window.location);
+}
+
+function setCreateLobbyStatus(text) {
+    if (createLobbyStatus) createLobbyStatus.textContent = text;
+}
+
+function setJoinKeyStatus(text) {
+    if (joinKeyStatus) joinKeyStatus.textContent = text;
+}
+
+function setPublicLobbyStatus(text) {
+    if (publicLobbyStatus) publicLobbyStatus.textContent = text;
+}
+
+function updateLobbyMeta() {
+    if (currentLobbyName) {
+        currentLobbyName.textContent = net.lobby?.name || 'Lobby';
+    }
+    if (currentLobbyAccess) {
+        if (!net.lobby) {
+            currentLobbyAccess.textContent = '';
+            return;
+        }
+        currentLobbyAccess.textContent = net.lobby.private
+            ? `PRIVATE KEY ${net.lobby.joinKey || 'HIDDEN'}`
+            : `PUBLIC LOBBY ${net.lobby.id || ''}`.trim();
+    }
+}
+
+function renderPublicLobbies(lobbies = []) {
+    if (!publicLobbyList) return;
+    publicLobbyList.replaceChildren();
+
+    if (!Array.isArray(lobbies) || lobbies.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'home-status';
+        empty.textContent = 'No public lobbies are open yet.';
+        publicLobbyList.appendChild(empty);
+        return;
+    }
+
+    for (const lobby of lobbies) {
+        const row = document.createElement('div');
+        row.className = 'public-lobby-row';
+
+        const copy = document.createElement('div');
+        copy.className = 'public-lobby-copy';
+
+        const name = document.createElement('div');
+        name.className = 'public-lobby-name';
+        name.textContent = lobby.name || lobby.id || 'Lobby';
+
+        const meta = document.createElement('div');
+        meta.className = 'public-lobby-meta';
+        meta.textContent = `${getModeLabel(lobby.mode)} | ${(lobby.map || 'office_studio').replace(/_/g, ' ')} | ${lobby.playerCount || 0}/${lobby.maxPlayers || 6} PLAYERS | ${(lobby.state || 'waiting').toUpperCase()}`;
+
+        const joinBtn = document.createElement('button');
+        joinBtn.textContent = 'Join';
+        joinBtn.addEventListener('click', () => {
+            void connectToLobby(lobby);
+        });
+
+        copy.append(name, meta);
+        row.append(copy, joinBtn);
+        publicLobbyList.appendChild(row);
+    }
+}
+
+function setPauseMenuOpen(nextOpen) {
+    const allowed = !!nextOpen && isLocalInMatch();
+    pauseMenuOpen = allowed;
+    if (pauseMenu) {
+        pauseMenu.style.display = pauseMenuOpen ? 'flex' : 'none';
+    }
+    if (pauseCopy) {
+        pauseCopy.textContent = isDeathmatchMode()
+            ? 'Leaving a deathmatch returns you to the main menu.'
+            : 'Leaving a team match returns you to the lobby while the match continues.';
+    }
+    syncPointerLockAvailability();
+
+    if (pauseMenuOpen && document.pointerLockElement === canvas && document.exitPointerLock) {
+        document.exitPointerLock();
+        return;
+    }
+
+    if (!pauseMenuOpen && isLocalInMatch() && !buyMenuOpen && !chatOpen && canvas.requestPointerLock) {
+        try {
+            canvas.requestPointerLock();
+        } catch {
+            // Ignore browsers that reject keyboard-triggered pointer lock restores.
+        }
+    }
+}
+
+function returnToMenu(message = 'Returned to menu') {
+    disconnectMessageOverride = message;
+    setPauseMenuOpen(false);
+    setBuyMenuOpen(false);
+    if (net.ws && (net.ws.readyState === WebSocket.CONNECTING || net.ws.readyState === WebSocket.OPEN)) {
+        try {
+            net.ws.close(1000, message);
+            return;
+        } catch {
+            // Fall through to local reset if close fails synchronously.
+        }
+    }
+
+    disconnectMessageOverride = '';
+    resetAfterDisconnect(message);
+    void fetchPublicLobbies();
+}
+
+function leaveCurrentMatch() {
+    if (!isLocalInMatch()) return;
+    if (isDeathmatchMode()) {
+        returnToMenu('Returned to menu');
+        return;
+    }
+
+    setPauseMenuOpen(false);
+    setLobbyStatus('Returning to lobby...');
+    sendLeaveMatch(net);
+}
+
 function updateRejoinPrompt() {
     const active = !!net.match.deathmatchVoteActive && !!player.inMatch && !player.isBot;
     if (!active) {
@@ -223,7 +375,7 @@ function updateRejoinPrompt() {
     if (rejoinCopy) {
         rejoinCopy.textContent = rejoinVoteChoice == null
             ? 'Play another 10-minute deathmatch?'
-            : (rejoinVoteChoice ? 'You will join the next match automatically.' : 'You will return to the lobby when the vote ends.');
+            : (rejoinVoteChoice ? 'You will join the next match automatically.' : 'You will return to the main menu.');
     }
     if (rejoinYesBtn) {
         rejoinYesBtn.disabled = rejoinVoteChoice === true;
@@ -237,10 +389,77 @@ function updateRejoinPrompt() {
 
 async function fetchMapList() {
     try {
-        const resp = await fetch('/api/maps');
+        const resp = await fetch(buildApiURL('/api/maps'));
         if (resp.ok) availableMaps = await resp.json();
     } catch { /* offline / no server */ }
     populateMapDropdown();
+}
+
+async function fetchPublicLobbies() {
+    setPublicLobbyStatus('Loading public lobbies...');
+
+    try {
+        const resp = await fetch(buildApiURL('/api/lobbies'), {
+            cache: 'no-store',
+        });
+        if (!resp.ok) {
+            throw new Error('Could not load public lobbies');
+        }
+        const lobbies = await resp.json();
+        renderPublicLobbies(lobbies);
+        setPublicLobbyStatus(Array.isArray(lobbies) && lobbies.length > 0
+            ? 'Select a lobby to join.'
+            : 'No public lobbies are open yet.');
+    } catch (err) {
+        renderPublicLobbies([]);
+        setPublicLobbyStatus(err.message || 'Could not load public lobbies');
+    }
+}
+
+async function connectToLobby(lobby) {
+    const name = getPlayerName();
+    const server = getServerAddress();
+    const url = buildWebSocketURL(server, window.location, lobby.id);
+
+    warmAudio();
+    if (connectBtn) connectBtn.disabled = true;
+    if (createLobbyBtn) createLobbyBtn.disabled = true;
+    if (joinKeyBtn) joinKeyBtn.disabled = true;
+    setLobbyStatus('Connecting...');
+
+    try {
+        const msg = await connect(net, url, name, {
+            id: lobby.id,
+            name: lobby.name || 'Lobby',
+            private: !!lobby.private,
+            joinKey: lobby.joinKey || '',
+        });
+        resetMatchState(player);
+        applyAuthoritativeState(player, msg);
+        syncLocalWeaponState();
+        camera.position = player.pos;
+        clearChat();
+        await fetchMapList();
+        await syncMapIfNeeded();
+        showLobbyPanel();
+        updateLobbyMeta();
+        populatePlayerList();
+        setLobbyStatus(net.gameStarted
+            ? (player.inMatch ? 'Match in progress' : `${getModeLabel(net.match.mode)} in progress`)
+            : `Connected to ${net.lobby?.name || `${getModeLabel(net.match.mode)} lobby`}`);
+        lastAnnouncerMatch = snapshotMatchForAnnouncer(net.match);
+        killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
+        setCreateLobbyStatus(net.lobby?.private && net.lobby?.joinKey
+            ? `Private key: ${net.lobby.joinKey}`
+            : 'Create a public lobby or generate a private join key.');
+        setJoinKeyStatus('Use a 6-character private lobby key.');
+    } catch (err) {
+        resetAfterDisconnect(err.message || 'Connection failed');
+    } finally {
+        if (connectBtn) connectBtn.disabled = false;
+        if (createLobbyBtn) createLobbyBtn.disabled = false;
+        if (joinKeyBtn) joinKeyBtn.disabled = false;
+    }
 }
 
 function populateMapDropdown() {
@@ -338,6 +557,7 @@ function updateTeamControls() {
 
     updateRejoinPrompt();
     updateMapControls();
+    updateLobbyMeta();
 }
 
 function setBuyMenuOpen(nextOpen) {
@@ -362,11 +582,11 @@ function canChat() {
 }
 
 function syncPointerLockAvailability() {
-    setPointerLockEnabled(!buyMenuOpen && !chatOpen);
+    setPointerLockEnabled(!buyMenuOpen && !chatOpen && !pauseMenuOpen);
 }
 
 function requestPointerLockIfNeeded() {
-    if (!restorePointerLockAfterChat || buyMenuOpen || !net.gameStarted || !player.alive || !canvas.requestPointerLock) {
+    if (!restorePointerLockAfterChat || buyMenuOpen || pauseMenuOpen || !net.gameStarted || !player.alive || !canvas.requestPointerLock) {
         restorePointerLockAfterChat = false;
         return;
     }
@@ -501,6 +721,7 @@ function pushChatMessage(message) {
 if (serverInput) serverInput.value = getDefaultServerAddress(window.location);
 renderChat();
 syncPointerLockAvailability();
+void fetchPublicLobbies();
 
 function populatePlayerList() {
     if (!playerList) return;
@@ -589,6 +810,7 @@ function resetAfterDisconnect(message) {
     syncLocalWeaponState();
     sendTimer = 0;
     setBuyMenuOpen(false);
+    setPauseMenuOpen(false);
     setChatOpen(false);
     clearChat();
     camera.fov = DEFAULT_FOV;
@@ -599,6 +821,7 @@ function resetAfterDisconnect(message) {
     if (hud.overlay) hud.overlay.style.display = 'flex';
     showConnectForm();
     setLobbyStatus(message || 'Disconnected from server');
+    updateLobbyMeta();
     populatePlayerList();
 }
 
@@ -654,35 +877,56 @@ if (chatInput) {
 }
 
 if (connectBtn) {
-    connectBtn.addEventListener('click', async () => {
-        const name = (nameInput ? nameInput.value.trim() : '') || 'Player';
-        const server = (serverInput ? serverInput.value.trim() : '') || 'localhost:8080';
-        const url = buildWebSocketURL(server, window.location);
+    connectBtn.addEventListener('click', () => {
+        void fetchPublicLobbies();
+    });
+}
 
-        warmAudio();
-        connectBtn.disabled = true;
-        setLobbyStatus('Connecting...');
-
+if (createLobbyBtn) {
+    createLobbyBtn.addEventListener('click', async () => {
+        setCreateLobbyStatus('Creating lobby...');
         try {
-            const msg = await connect(net, url, name);
-            resetMatchState(player);
-            applyAuthoritativeState(player, msg);
-            syncLocalWeaponState();
-            camera.position = player.pos;
-            clearChat();
-            await fetchMapList();
-            await syncMapIfNeeded();
-            showLobbyPanel();
-            populatePlayerList();
-            setLobbyStatus(net.gameStarted
-                ? (player.inMatch ? 'Match in progress' : `${getModeLabel(net.match.mode)} in progress`)
-                : `Connected to ${getModeLabel(net.match.mode)} lobby`);
-            lastAnnouncerMatch = snapshotMatchForAnnouncer(net.match);
-            killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
+            const resp = await fetch(buildApiURL('/api/lobbies'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: createLobbyNameInput ? createLobbyNameInput.value.trim() : '',
+                    private: !!privateLobbyToggle?.checked,
+                }),
+            });
+            if (!resp.ok) {
+                throw new Error('Could not create lobby');
+            }
+            const lobby = await resp.json();
+            setCreateLobbyStatus(lobby.private && lobby.joinKey
+                ? `Private key: ${lobby.joinKey}`
+                : 'Public lobby created.');
+            await connectToLobby(lobby);
         } catch (err) {
-            resetAfterDisconnect(err.message || 'Connection failed');
-        } finally {
-            connectBtn.disabled = false;
+            setCreateLobbyStatus(err.message || 'Could not create lobby');
+        }
+    });
+}
+
+if (joinKeyBtn) {
+    joinKeyBtn.addEventListener('click', async () => {
+        setJoinKeyStatus('Resolving private lobby...');
+        try {
+            const resp = await fetch(buildApiURL('/api/lobbies/join-key'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    key: (joinKeyInput ? joinKeyInput.value : '').trim().toUpperCase(),
+                }),
+            });
+            if (!resp.ok) {
+                throw new Error('Private lobby not found');
+            }
+            const lobby = await resp.json();
+            setJoinKeyStatus(`Joining ${lobby.name || 'private lobby'}...`);
+            await connectToLobby(lobby);
+        } catch (err) {
+            setJoinKeyStatus(err.message || 'Private lobby not found');
         }
     });
 }
@@ -692,6 +936,7 @@ net.onLobby = (msg) => {
     populatePlayerList();
     if (net.match.deathmatchVoteActive && player.inMatch) {
         setBuyMenuOpen(false);
+        setPauseMenuOpen(false);
         if (hud.overlay) hud.overlay.style.display = 'flex';
         showLobbyPanel();
         setLobbyStatus('Time expired. Vote to play again.');
@@ -701,16 +946,18 @@ net.onLobby = (msg) => {
                 ? 'Deathmatch live'
                 : `Round ${net.match.currentRound}/${net.match.totalRounds}`);
         } else {
+            setPauseMenuOpen(false);
             if (hud.overlay) hud.overlay.style.display = 'flex';
             showLobbyPanel();
             setLobbyStatus(`${getModeLabel(net.match.mode)} in progress. Waiting for the next match.`);
         }
     } else {
         setBuyMenuOpen(false);
+        setPauseMenuOpen(false);
         if (hud.overlay) hud.overlay.style.display = 'flex';
         showLobbyPanel();
         setLobbyStatus(net.match.currentRound === 0
-            ? `Connected to ${getModeLabel(net.match.mode)} lobby`
+            ? `Connected to ${net.lobby?.name || `${getModeLabel(net.match.mode)} lobby`}`
             : 'Match finished');
     }
     updateTeamControls();
@@ -753,8 +1000,11 @@ net.onRejoin = (msg) => {
         return;
     }
     rejoinVoteChoice = !!msg.yes;
-    setLobbyStatus(msg.yes ? 'Queued for the next deathmatch.' : 'You will return to the lobby.');
+    setLobbyStatus(msg.yes ? 'Queued for the next deathmatch.' : 'Returning to menu...');
     updateRejoinPrompt();
+    if (!msg.yes && isDeathmatchMode()) {
+        returnToMenu('Returned to menu');
+    }
 };
 
 net.onStartDenied = (msg) => {
@@ -825,6 +1075,18 @@ if (rejoinNoBtn) {
     });
 }
 
+if (resumeMatchBtn) {
+    resumeMatchBtn.addEventListener('click', () => {
+        setPauseMenuOpen(false);
+    });
+}
+
+if (leaveMatchBtn) {
+    leaveMatchBtn.addEventListener('click', () => {
+        leaveCurrentMatch();
+    });
+}
+
 window.addEventListener('keydown', (e) => {
     if (isEditableTarget(e.target)) {
         return;
@@ -833,6 +1095,12 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Escape' && chatOpen) {
         e.preventDefault();
         setChatOpen(false);
+        return;
+    }
+
+    if (e.code === 'Escape' && pauseMenuOpen) {
+        e.preventDefault();
+        setPauseMenuOpen(false);
         return;
     }
 
@@ -852,6 +1120,12 @@ window.addEventListener('keydown', (e) => {
         return;
     }
 
+    if (e.code === 'Escape' && localInMatch) {
+        e.preventDefault();
+        setPauseMenuOpen(true);
+        return;
+    }
+
     if (e.code === 'KeyB') {
         if (localInMatch && canOpenBuyMenu(player, net.match)) {
             e.preventDefault();
@@ -860,7 +1134,7 @@ window.addEventListener('keydown', (e) => {
         return;
     }
 
-    if (buyMenuOpen) {
+    if (buyMenuOpen || pauseMenuOpen) {
         if (e.code.startsWith('Digit')) {
             e.preventDefault();
         }
@@ -960,6 +1234,7 @@ net.onRespawn = (msg) => {
     syncLocalWeaponState();
     camera.position = player.pos;
     setBuyMenuOpen(false);
+    setPauseMenuOpen(false);
     localImpactEffects.length = 0;
 };
 
@@ -971,6 +1246,7 @@ net.onRound = () => {
     syncLocalWeaponState();
     camera.position = player.pos;
     setBuyMenuOpen(false);
+    setPauseMenuOpen(false);
     localImpactEffects.length = 0;
     killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
     if (hud.overlay) hud.overlay.style.display = 'none';
@@ -1033,7 +1309,10 @@ net.onEconomy = (msg) => {
 };
 
 net.onDisconnect = ({ reason }) => {
-    resetAfterDisconnect(reason);
+    const message = disconnectMessageOverride || reason;
+    disconnectMessageOverride = '';
+    resetAfterDisconnect(message);
+    void fetchPublicLobbies();
 };
 
 net.onMatch = (match) => {
@@ -1067,7 +1346,7 @@ function frame(time) {
         }
     }
 
-    const gameplayInputEnabled = !chatOpen;
+    const gameplayInputEnabled = !chatOpen && !pauseMenuOpen;
     const rawMouse = consumeMouse();
     const mouse = gameplayInputEnabled ? rawMouse : { dx: 0, dy: 0 };
     updateCamera(camera, mouse.dx, mouse.dy, canvas.width / canvas.height);

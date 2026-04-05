@@ -111,11 +111,40 @@
         <div id="overlay-content">
             <h1>ALYO SHOOTER</h1>
             <div class="lobby-form">
-                <input type="text" id="name-input" placeholder="Your name" maxlength="12" autocomplete="off">
-                <input type="text" id="server-input" placeholder="host:port" autocomplete="off">
-                <button id="connect-btn">Connect</button>
+                <div class="home-identity-row">
+                    <input type="text" id="name-input" placeholder="Your name" maxlength="12" autocomplete="off">
+                    <input type="text" id="server-input" placeholder="host:port" autocomplete="off">
+                </div>
+                <div class="home-card-grid">
+                    <div class="home-card">
+                        <div class="team-select-title">Create Lobby</div>
+                        <input type="text" id="create-lobby-name-input" placeholder="Lobby name" maxlength="24" autocomplete="off">
+                        <label class="home-checkbox">
+                            <input type="checkbox" id="private-lobby-toggle">
+                            <span>Private lobby</span>
+                        </label>
+                        <button id="create-lobby-btn">Create Lobby</button>
+                        <div id="create-lobby-status" class="home-status">Create a public lobby or generate a private join key.</div>
+                    </div>
+                    <div class="home-card">
+                        <div class="team-select-title">Join Public Lobby</div>
+                        <button id="connect-btn">Refresh Public Lobbies</button>
+                        <div id="public-lobby-status" class="home-status">Refresh to see public lobbies on this server.</div>
+                        <div id="public-lobby-list" class="public-lobby-list"></div>
+                    </div>
+                    <div class="home-card">
+                        <div class="team-select-title">Join With Key</div>
+                        <input type="text" id="join-key-input" placeholder="Private lobby key" maxlength="6" autocomplete="off">
+                        <button id="join-key-btn">Join Private Lobby</button>
+                        <div id="join-key-status" class="home-status">Use a 6-character private lobby key.</div>
+                    </div>
+                </div>
             </div>
             <div id="lobby-panel" style="display:none;">
+                <div id="current-lobby-meta">
+                    <div id="current-lobby-name">Lobby</div>
+                    <div id="current-lobby-access"></div>
+                </div>
                 <div id="lobby-status">Connected</div>
                 <div id="mode-select">
                     <div class="team-select-title">Select Mode</div>
@@ -149,6 +178,14 @@
             </div>
             <p class="controls">WASD - Move &nbsp; Mouse - Look &nbsp; Right Click - Aim &nbsp; Space - Jump &nbsp; Ctrl/Cmd - Crouch &nbsp; Click - Attack &nbsp; R - Reload &nbsp; 1/2/3 - Weapons &nbsp; 4 - Cycle Utility &nbsp; B - Buy Menu &nbsp; Enter - Chat &nbsp; Esc - Close Chat/Buy Menu &nbsp; Tab - Leaderboard</p>
             <a href="editor.html" class="editor-link">Map Editor</a>
+        </div>
+    </div>
+    <div id="pause-menu" style="display:none;">
+        <div class="pause-title">PAUSED</div>
+        <div id="pause-copy">Resume or leave the current match.</div>
+        <div class="pause-actions">
+            <button id="resume-match-btn">Resume</button>
+            <button id="leave-match-btn">Leave Match</button>
         </div>
     </div>
 

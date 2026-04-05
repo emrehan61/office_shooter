@@ -102,6 +102,19 @@ test('aiming reduces firearm recoil while sustained fire increases it', () => {
     assert.ok(sustainedPitch > aimedPitch);
 });
 
+test('machine gun burst recoil stays controlled enough for an m4a1-s style feel', () => {
+    const weapon = createWeapon();
+    setWeaponType(weapon, WEAPON_MACHINE_GUN);
+
+    for (let i = 0; i < 5; i++) {
+        fire(weapon, false, false, true);
+    }
+
+    const slot = weapon.slots[WEAPON_MACHINE_GUN];
+    assert.ok(slot.recoilTargetPitch < 0.6);
+    assert.ok(slot.viewPunchPitch < 0.04);
+});
+
 test('crosshair gap shrinks on aim and expands with sustained fire', () => {
     const weapon = createWeapon();
     setWeaponType(weapon, WEAPON_PISTOL);

@@ -4,6 +4,7 @@ export function createNet() {
     return {
         ws: null,
         myId: null,
+        lobby: null,
         players: {},
         projectiles: [],
         effects: [],
@@ -34,7 +35,7 @@ export function createNet() {
     };
 }
 
-export function connect(net, url, name) {
+export function connect(net, url, name, lobby = null) {
     net.sessionToken += 1;
     const token = net.sessionToken;
     const previous = net.ws;
@@ -48,6 +49,7 @@ export function connect(net, url, name) {
     }
 
     resetSession(net);
+    net.lobby = lobby ? { ...lobby } : null;
 
     return new Promise((resolve, reject) => {
         const ws = new WebSocket(url);
@@ -149,6 +151,9 @@ function handleMsg(net, msg) {
                 const player = ensurePlayer(net, entry.id);
                 ids.add(key);
                 applyPlayerState(player, entry, false);
+                if (Number(entry.id) === net.myId) {
+                    notifySelfState(net, entry.id);
+                }
             }
 
             for (const id of Object.keys(net.players)) {
@@ -349,6 +354,11 @@ export function sendMap(net, mapName) {
 export function sendRejoin(net, yes) {
     if (!canSend(net)) return;
     net.ws.send(JSON.stringify({ t: 'rejoin', yes: !!yes }));
+}
+
+export function sendLeaveMatch(net) {
+    if (!canSend(net)) return;
+    net.ws.send(JSON.stringify({ t: 'leaveMatch' }));
 }
 
 export function sendBuy(net, item) {
@@ -591,6 +601,7 @@ function resetSession(net) {
     stopHeartbeat(net);
     net.ws = null;
     net.myId = null;
+    net.lobby = null;
     net.players = {};
     net.projectiles = [];
     net.effects = [];

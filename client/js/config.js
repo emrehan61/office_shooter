@@ -24,15 +24,27 @@ export function normalizeServerAddress(server = '', locationLike = {}) {
     return parsed.host;
 }
 
-export function buildWebSocketURL(server = '', locationLike = {}) {
+export function buildHttpURL(server = '', path = '/', locationLike = {}) {
+    return buildURL(server, path, locationLike, false);
+}
+
+function buildURL(server = '', path = '/', locationLike = {}, websocket = false, lobbyId = '') {
     const trimmed = String(server || '').trim();
     const parsed = trimmed ? parseServerAddress(trimmed) : null;
     const host = parsed?.host || getDefaultServerAddress(locationLike);
     const protocol = parsed?.protocol
-        ? websocketProtocolFor(parsed.protocol)
-        : (locationLike.protocol === 'https:' ? 'wss:' : 'ws:');
+        ? (websocket ? websocketProtocolFor(parsed.protocol) : httpProtocolFor(parsed.protocol))
+        : defaultProtocol(locationLike, websocket);
+    const basePath = String(path || '/');
+    const query = websocket && lobbyId
+        ? `?lobby=${encodeURIComponent(lobbyId)}`
+        : '';
 
-    return `${protocol}//${host}/ws`;
+    return `${protocol}//${host}${basePath}${query}`;
+}
+
+export function buildWebSocketURL(server = '', locationLike = {}, lobbyId = '') {
+    return buildURL(server, '/ws', locationLike, true, lobbyId);
 }
 
 function parseServerAddress(value) {
@@ -52,4 +64,19 @@ function websocketProtocolFor(protocol) {
         return 'wss:';
     }
     return 'ws:';
+}
+
+function httpProtocolFor(protocol) {
+    if (protocol === 'wss:' || protocol === 'https:') {
+        return 'https:';
+    }
+    return 'http:';
+}
+
+function defaultProtocol(locationLike, websocket) {
+    const secure = locationLike.protocol === 'https:';
+    if (websocket) {
+        return secure ? 'wss:' : 'ws:';
+    }
+    return secure ? 'https:' : 'http:';
 }
