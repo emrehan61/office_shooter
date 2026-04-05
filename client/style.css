@@ -97,6 +97,31 @@ canvas { display: block; width: 100vw; height: 100vh; }
     40% { transform: translate(-50%,-50%) scale(1.1) rotate(8deg); opacity: 1; }
     100% { transform: translate(-50%,-50%) scale(1) rotate(0); opacity: 0; }
 }
+#hit-marker .hm-dmg {
+    position: absolute;
+    top: -18px; left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    font-weight: bold;
+    color: rgba(255,255,255,0.95);
+    text-shadow: 0 0 4px rgba(0,0,0,0.8);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+}
+#hit-marker.active .hm-dmg {
+    opacity: 1;
+    animation: hm-dmg-float 0.6s ease-out forwards;
+}
+#hit-marker.headshot .hm-dmg {
+    color: #ff3333;
+    font-size: 16px;
+}
+@keyframes hm-dmg-float {
+    0% { opacity: 1; transform: translateX(-50%) translateY(0); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-16px); }
+}
 
 /* Health */
 #network-stats {

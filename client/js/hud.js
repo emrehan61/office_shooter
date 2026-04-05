@@ -162,7 +162,7 @@ export function addKill(hud, killer, victim) {
     }
 }
 
-export function showHitMarker(hud, zone = 'body') {
+export function showHitMarker(hud, zone = 'body', damage = 0) {
     if (!hud.crosshair) return;
     hud.crosshair.classList.add('hit');
     setTimeout(() => hud.crosshair.classList.remove('hit'), 150);
@@ -174,7 +174,11 @@ export function showHitMarker(hud, zone = 'body') {
     void marker.offsetWidth; // force reflow for re-animation
     marker.classList.add('active');
     if (zone === 'head') marker.classList.add('headshot');
-    const duration = zone === 'head' ? 300 : 200;
+
+    const dmgEl = marker.querySelector('.hm-dmg');
+    if (dmgEl && damage > 0) dmgEl.textContent = damage;
+
+    const duration = zone === 'head' ? 600 : 600;
     if (hud.hitMarkerTimer) clearTimeout(hud.hitMarkerTimer);
     hud.hitMarkerTimer = setTimeout(() => marker.classList.remove('active', 'headshot'), duration);
 }

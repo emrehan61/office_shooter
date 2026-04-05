@@ -885,7 +885,7 @@ net.onHit = (msg) => {
         showDamageFlash(hud, msg.zone);
     }
     if (msg.from == net.myId) {
-        showHitMarker(hud, msg.zone);
+        showHitMarker(hud, msg.zone, msg.dmg);
         soundHitMarker(msg.zone);
     }
 };
