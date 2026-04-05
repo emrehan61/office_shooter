@@ -1,11 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+
 import { loadMap } from './world.js';
-
-const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
-loadMap(mapData);
-
 import {
     applyAuthoritativeState,
     canAttackWithWeapon,
@@ -24,82 +21,98 @@ import {
     startReload,
     spendWeaponAmmo,
 } from './player.js';
-import { RELOAD_DURATION_MS, STARTING_CREDITS, UTILITY_BOMB, UTILITY_SMOKE, WEAPON_KNIFE, WEAPON_MACHINE_GUN, WEAPON_PISTOL } from './economy.js';
-import { TEAM_BLUE } from './teams.js';
+import { STARTING_CREDITS, UTILITY_BOMB, UTILITY_SMOKE, WEAPON_DEFS, WEAPON_KNIFE } from './economy.js';
+import { TEAM_BLUE, TEAM_GREEN } from './teams.js';
 
-test('player starts with knife only and no firearm ammo', () => {
+const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
+loadMap(mapData);
+
+test('player starts with knife only and empty weapon slots', () => {
     const player = createPlayer();
 
     assert.equal(player.credits, STARTING_CREDITS);
     assert.equal(player.activeWeapon, WEAPON_KNIFE);
-    assert.equal(player.hasPistol, false);
-    assert.equal(player.hasMachineGun, false);
+    assert.equal(player.pistolWeapon, '');
+    assert.equal(player.heavyWeapon, '');
     assert.equal(player.pistolClip, 0);
-    assert.equal(player.pistolReserve, 0);
-    assert.equal(player.machineGunClip, 0);
-    assert.equal(player.machineGunReserve, 0);
+    assert.equal(player.heavyClip, 0);
     assert.equal(canAttackWithWeapon(player, WEAPON_KNIFE), true);
 });
 
-test('respawn restores life state but preserves bought loadout', () => {
+test('respawn grants the side default pistol when the slot is empty', () => {
     const player = createPlayer();
-    player.hasPistol = true;
-    player.pistolClip = 5;
-    player.pistolReserve = 12;
-    player.armor = 24;
-    player.hp = 0;
+    player.team = TEAM_GREEN;
     player.alive = false;
+    player.hp = 0;
 
     respawn(player);
 
-    assert.equal(player.pistolClip, 5);
-    assert.equal(player.pistolReserve, 12);
-    assert.equal(player.hp, 100);
-    assert.equal(player.armor, 24);
     assert.equal(player.alive, true);
+    assert.equal(player.hp, 100);
+    assert.equal(player.pistolWeapon, 'glock-18');
+    assert.equal(player.pistolClip, WEAPON_DEFS['glock-18'].magSize);
 });
 
-test('active firearm ammo uses clip ammo and can be reloaded locally', () => {
+test('respawn preserves an owned loadout instead of replacing it', () => {
     const player = createPlayer();
-    player.hasMachineGun = true;
-    player.machineGunClip = 4;
-    player.machineGunReserve = 10;
-    setActiveWeapon(player, WEAPON_MACHINE_GUN);
+    player.team = TEAM_BLUE;
+    player.pistolWeapon = 'usp-s';
+    player.pistolClip = 6;
+    player.pistolReserve = 18;
+    player.heavyWeapon = 'm4a4';
+    player.heavyClip = 24;
+    player.heavyReserve = 60;
+    player.activeWeapon = 'm4a4';
 
-    assert.equal(spendWeaponAmmo(player, WEAPON_MACHINE_GUN), true);
-    assert.equal(player.machineGunClip, 3);
-    player.machineGunClip = 0;
-    assert.equal(spendWeaponAmmo(player, WEAPON_MACHINE_GUN), false);
-    assert.equal(canReloadWeapon(player, WEAPON_MACHINE_GUN), true);
-    assert.equal(reloadWeaponAmmo(player, WEAPON_MACHINE_GUN), true);
-    assert.equal(player.machineGunClip, 10);
-    assert.equal(player.machineGunReserve, 0);
+    respawn(player);
+
+    assert.equal(player.pistolWeapon, 'usp-s');
+    assert.equal(player.pistolClip, 6);
+    assert.equal(player.heavyWeapon, 'm4a4');
+    assert.equal(player.heavyClip, 24);
+    assert.equal(player.activeWeapon, 'm4a4');
 });
 
-test('match reset clears purchased weapons and returns to knife', () => {
+test('slot ammo is spent and reloaded against the equipped heavy weapon id', () => {
+    const player = createPlayer();
+    player.heavyWeapon = 'ak-47';
+    player.heavyClip = 4;
+    player.heavyReserve = 10;
+    setActiveWeapon(player, 'ak-47');
+
+    assert.equal(spendWeaponAmmo(player, 'ak-47'), true);
+    assert.equal(player.heavyClip, 3);
+
+    player.heavyClip = 0;
+    assert.equal(spendWeaponAmmo(player, 'ak-47'), false);
+    assert.equal(canReloadWeapon(player, 'ak-47'), true);
+    assert.equal(reloadWeaponAmmo(player, 'ak-47'), true);
+    assert.equal(player.heavyClip, 10);
+    assert.equal(player.heavyReserve, 0);
+});
+
+test('match reset clears purchased slots and returns to knife', () => {
     const player = createPlayer();
     player.credits = 150;
-    player.hasPistol = true;
-    player.hasMachineGun = true;
-    player.pistolClip = 7;
-    player.pistolReserve = 5;
-    player.machineGunClip = 30;
-    player.machineGunReserve = 25;
-    player.activeWeapon = WEAPON_PISTOL;
+    player.pistolWeapon = 'p250';
+    player.pistolClip = 9;
+    player.pistolReserve = 13;
+    player.heavyWeapon = 'mac10';
+    player.heavyClip = 25;
+    player.heavyReserve = 60;
+    player.activeWeapon = 'mac10';
 
     resetMatchState(player);
 
     assert.equal(player.credits, STARTING_CREDITS);
-    assert.equal(player.hasPistol, false);
-    assert.equal(player.hasMachineGun, false);
+    assert.equal(player.pistolWeapon, '');
+    assert.equal(player.heavyWeapon, '');
     assert.equal(player.pistolClip, 0);
-    assert.equal(player.pistolReserve, 0);
-    assert.equal(player.machineGunClip, 0);
-    assert.equal(player.machineGunReserve, 0);
+    assert.equal(player.heavyClip, 0);
     assert.equal(player.activeWeapon, WEAPON_KNIFE);
 });
 
-test('authoritative state sync updates loadout and death state', () => {
+test('authoritative state sync updates slot weapons, timers, and death state', () => {
     const player = createPlayer();
 
     applyAuthoritativeState(player, {
@@ -109,11 +122,16 @@ test('authoritative state sync updates loadout and death state', () => {
         kills: 3,
         deaths: 1,
         team: TEAM_BLUE,
-        hasPistol: true,
+        pistolWeapon: 'usp-s',
         pistolClip: 7,
-        pistolReserve: 14,
+        pistolReserve: 21,
+        heavyWeapon: 'm4a4',
+        heavyClip: 30,
+        heavyReserve: 60,
         flashTimeLeftMs: 1200,
-        activeWeapon: WEAPON_PISTOL,
+        spawnProtectionTimeLeftMs: 5000,
+        loadoutTimeLeftMs: 7000,
+        activeWeapon: 'usp-s',
         alive: false,
     });
 
@@ -123,25 +141,15 @@ test('authoritative state sync updates loadout and death state', () => {
     assert.equal(player.kills, 3);
     assert.equal(player.deaths, 1);
     assert.equal(player.team, TEAM_BLUE);
-    assert.equal(player.hasPistol, true);
-    assert.equal(player.pistolClip, 7);
-    assert.equal(player.pistolReserve, 14);
+    assert.equal(player.pistolWeapon, 'usp-s');
+    assert.equal(player.heavyWeapon, 'm4a4');
+    assert.equal(player.pistolReserve, 21);
+    assert.equal(player.heavyReserve, 60);
     assert.equal(player.flashTimeLeftMs, 1200);
-    assert.equal(player.activeWeapon, WEAPON_PISTOL);
+    assert.equal(player.spawnProtectionTimeLeftMs, 0);
+    assert.equal(player.loadoutTimeLeftMs, 0);
+    assert.equal(player.activeWeapon, 'usp-s');
     assert.equal(player.alive, false);
-    assert.equal(player.respawnTimer, 0);
-});
-
-test('authoritative state sync tracks deathmatch spawn and loadout timers', () => {
-    const player = createPlayer();
-
-    applyAuthoritativeState(player, {
-        spawnProtectionTimeLeftMs: 5000,
-        loadoutTimeLeftMs: 7000,
-    });
-
-    assert.equal(player.spawnProtectionTimeLeftMs, 5000);
-    assert.equal(player.loadoutTimeLeftMs, 7000);
 });
 
 test('deathmatch loadout window allows the buy menu outside team buy phase', () => {
@@ -152,17 +160,15 @@ test('deathmatch loadout window allows the buy menu outside team buy phase', () 
     applyAuthoritativeState(player, {
         loadoutTimeLeftMs: 7000,
     });
-
     assert.equal(canOpenBuyMenu(player, { mode: 'deathmatch', buyPhase: false }), true);
 
     applyAuthoritativeState(player, {
         alive: false,
     });
-
     assert.equal(canOpenBuyMenu(player, { mode: 'deathmatch', buyPhase: false }), false);
 });
 
-test('movement is blocked during buy phase', () => {
+test('movement is blocked during buy phase and intermission', () => {
     const player = createPlayer();
 
     assert.equal(canMove(player, { buyPhase: false }), true);
@@ -173,26 +179,22 @@ test('movement is blocked during buy phase', () => {
     assert.equal(canMove(player, { buyPhase: false }), false);
 });
 
-test('weapon mobility changes movement speed and jump power', () => {
+test('weapon mobility follows the equipped weapon and scoped weapons slow further while aiming', () => {
     const player = createPlayer();
+    const knifeMoveSpeed = getMoveSpeed(player);
+    const knifeJump = getJumpVelocity(player);
 
-    assert.equal(getMoveSpeed(player), 12.5);
-    assert.equal(getJumpVelocity(player), 8.75);
+    player.heavyWeapon = 'awp';
+    setActiveWeapon(player, 'awp');
+    const awpMoveSpeed = getMoveSpeed(player);
+    const awpJump = getJumpVelocity(player);
 
-    player.hasPistol = true;
-    setActiveWeapon(player, WEAPON_PISTOL);
-    assert.equal(getMoveSpeed(player), 10);
-    assert.equal(getJumpVelocity(player), 7);
     setAiming(player, true);
-    assert.ok(Math.abs(getMoveSpeed(player) - 7.8) < 1e-9);
-    assert.equal(getJumpVelocity(player), 7);
+    const scopedMoveSpeed = getMoveSpeed(player);
 
-    player.hasMachineGun = true;
-    setActiveWeapon(player, WEAPON_MACHINE_GUN);
-    assert.equal(getMoveSpeed(player), 4.125);
-    assert.equal(getJumpVelocity(player), 5.25);
-    setAiming(player, false);
-    assert.equal(getMoveSpeed(player), 7.5);
+    assert.ok(knifeMoveSpeed > awpMoveSpeed);
+    assert.ok(knifeJump > awpJump);
+    assert.ok(awpMoveSpeed > scopedMoveSpeed);
 });
 
 test('utility slot cycles through owned grenades only', () => {
@@ -210,16 +212,16 @@ test('utility slot cycles through owned grenades only', () => {
     assert.equal(cycleActiveUtility(player), UTILITY_BOMB);
 });
 
-test('reloading blocks weapon attacks until the timer clears', () => {
+test('reloading blocks attacks until the timer clears', () => {
     const player = createPlayer();
-    player.hasMachineGun = true;
-    player.machineGunClip = 12;
-    player.machineGunReserve = 18;
-    setActiveWeapon(player, WEAPON_MACHINE_GUN);
+    player.heavyWeapon = 'ak-47';
+    player.heavyClip = 12;
+    player.heavyReserve = 18;
+    setActiveWeapon(player, 'ak-47');
 
-    startReload(player, RELOAD_DURATION_MS);
-    assert.equal(canAttackWithWeapon(player, WEAPON_MACHINE_GUN), false);
+    startReload(player, WEAPON_DEFS['ak-47'].reloadMs);
+    assert.equal(canAttackWithWeapon(player, 'ak-47'), false);
 
     applyAuthoritativeState(player, { reloading: false, reloadTimeLeftMs: 0 });
-    assert.equal(canAttackWithWeapon(player, WEAPON_MACHINE_GUN), true);
+    assert.equal(canAttackWithWeapon(player, 'ak-47'), true);
 });

@@ -1,19 +1,16 @@
-import { forwardFromYaw, rightFromYaw, clamp } from './math.js';
+import { clamp, forwardFromYaw, rightFromYaw } from './math.js';
 import { collideWalls, getSpawnPoints } from './world.js';
 import {
     GRENADE_MAX,
-    MACHINE_GUN_AMMO_MAX,
-    MACHINE_GUN_MAG_SIZE,
     MAX_ARMOR,
-    PISTOL_AMMO_MAX,
-    PISTOL_MAG_SIZE,
     STARTING_CREDITS,
     UTILITY_IDS,
     WEAPON_DEFS,
     WEAPON_KNIFE,
-    WEAPON_MACHINE_GUN,
-    WEAPON_PISTOL,
     canAimWeapon,
+    getDefaultPistolForTeam,
+    isHeavyWeapon,
+    isPistolWeapon,
     isUtilityWeapon,
 } from './economy.js';
 import { MODE_DEATHMATCH } from './modes.js';
@@ -37,12 +34,12 @@ export function createPlayer() {
         hp: MAX_HP,
         armor: 0,
         credits: STARTING_CREDITS,
-        hasPistol: false,
-        hasMachineGun: false,
+        pistolWeapon: '',
         pistolClip: 0,
         pistolReserve: 0,
-        machineGunClip: 0,
-        machineGunReserve: 0,
+        heavyWeapon: '',
+        heavyClip: 0,
+        heavyReserve: 0,
         bombs: 0,
         smokes: 0,
         flashbangs: 0,
@@ -67,12 +64,12 @@ export function createPlayer() {
 export function resetMatchState(player) {
     player.credits = STARTING_CREDITS;
     player.armor = 0;
-    player.hasPistol = false;
-    player.hasMachineGun = false;
+    player.pistolWeapon = '';
     player.pistolClip = 0;
     player.pistolReserve = 0;
-    player.machineGunClip = 0;
-    player.machineGunReserve = 0;
+    player.heavyWeapon = '';
+    player.heavyClip = 0;
+    player.heavyReserve = 0;
     player.bombs = 0;
     player.smokes = 0;
     player.flashbangs = 0;
@@ -106,12 +103,12 @@ export function applyAuthoritativeState(player, state) {
     if (typeof state.credits === 'number') player.credits = Math.max(0, state.credits);
     if (typeof state.kills === 'number') player.kills = Math.max(0, state.kills);
     if (typeof state.deaths === 'number') player.deaths = Math.max(0, state.deaths);
-    if (typeof state.hasPistol === 'boolean') player.hasPistol = state.hasPistol;
-    if (typeof state.hasMachineGun === 'boolean') player.hasMachineGun = state.hasMachineGun;
-    if (typeof state.pistolClip === 'number') player.pistolClip = clampAmmo(state.pistolClip, PISTOL_MAG_SIZE);
-    if (typeof state.pistolReserve === 'number') player.pistolReserve = clampAmmo(state.pistolReserve, PISTOL_AMMO_MAX);
-    if (typeof state.machineGunClip === 'number') player.machineGunClip = clampAmmo(state.machineGunClip, MACHINE_GUN_MAG_SIZE);
-    if (typeof state.machineGunReserve === 'number') player.machineGunReserve = clampAmmo(state.machineGunReserve, MACHINE_GUN_AMMO_MAX);
+    if (typeof state.pistolWeapon === 'string') player.pistolWeapon = state.pistolWeapon;
+    if (typeof state.heavyWeapon === 'string') player.heavyWeapon = state.heavyWeapon;
+    if (typeof state.pistolClip === 'number') player.pistolClip = clampAmmo(state.pistolClip, getClipSize(player.pistolWeapon));
+    if (typeof state.pistolReserve === 'number') player.pistolReserve = clampAmmo(state.pistolReserve, getReserveMax(player.pistolWeapon));
+    if (typeof state.heavyClip === 'number') player.heavyClip = clampAmmo(state.heavyClip, getClipSize(player.heavyWeapon));
+    if (typeof state.heavyReserve === 'number') player.heavyReserve = clampAmmo(state.heavyReserve, getReserveMax(player.heavyWeapon));
     if (typeof state.bombs === 'number') player.bombs = clampInventory(state.bombs, GRENADE_MAX);
     if (typeof state.smokes === 'number') player.smokes = clampInventory(state.smokes, GRENADE_MAX);
     if (typeof state.flashbangs === 'number') player.flashbangs = clampInventory(state.flashbangs, GRENADE_MAX);
@@ -249,27 +246,27 @@ export function setAiming(player, aiming) {
 
 export function hasWeapon(player, weaponId) {
     if (weaponId === WEAPON_KNIFE) return true;
-    if (weaponId === WEAPON_PISTOL) return !!player.hasPistol;
-    if (weaponId === WEAPON_MACHINE_GUN) return !!player.hasMachineGun;
+    if (weaponId && player.pistolWeapon === weaponId) return true;
+    if (weaponId && player.heavyWeapon === weaponId) return true;
     if (isUtilityWeapon(weaponId)) return getUtilityCount(player, weaponId) > 0;
     return false;
 }
 
 export function getWeaponAmmoState(player, weaponId = player.activeWeapon) {
-    if (weaponId === WEAPON_PISTOL) {
+    if (weaponId && player.pistolWeapon === weaponId) {
         return {
             clip: player.pistolClip,
             reserve: player.pistolReserve,
-            clipSize: PISTOL_MAG_SIZE,
-            reserveMax: PISTOL_AMMO_MAX,
+            clipSize: getClipSize(weaponId),
+            reserveMax: getReserveMax(weaponId),
         };
     }
-    if (weaponId === WEAPON_MACHINE_GUN) {
+    if (weaponId && player.heavyWeapon === weaponId) {
         return {
-            clip: player.machineGunClip,
-            reserve: player.machineGunReserve,
-            clipSize: MACHINE_GUN_MAG_SIZE,
-            reserveMax: MACHINE_GUN_AMMO_MAX,
+            clip: player.heavyClip,
+            reserve: player.heavyReserve,
+            clipSize: getClipSize(weaponId),
+            reserveMax: getReserveMax(weaponId),
         };
     }
     return null;
@@ -297,18 +294,16 @@ export function canAttackWithWeapon(player, weaponId = player.activeWeapon) {
 }
 
 export function spendWeaponAmmo(player, weaponId = player.activeWeapon, amount = 1) {
-    if (weaponId === WEAPON_PISTOL) {
+    if (weaponId && player.pistolWeapon === weaponId) {
         if (player.pistolClip < amount) return false;
         player.pistolClip -= amount;
         return true;
     }
-
-    if (weaponId === WEAPON_MACHINE_GUN) {
-        if (player.machineGunClip < amount) return false;
-        player.machineGunClip -= amount;
+    if (weaponId && player.heavyWeapon === weaponId) {
+        if (player.heavyClip < amount) return false;
+        player.heavyClip -= amount;
         return true;
     }
-
     return weaponId === WEAPON_KNIFE;
 }
 
@@ -332,18 +327,16 @@ export function reloadWeaponAmmo(player, weaponId = player.activeWeapon) {
     const needed = ammo.clipSize - ammo.clip;
     const transferred = Math.min(needed, ammo.reserve);
 
-    if (weaponId === WEAPON_PISTOL) {
+    if (weaponId && player.pistolWeapon === weaponId) {
         player.pistolClip += transferred;
         player.pistolReserve -= transferred;
         return transferred > 0;
     }
-
-    if (weaponId === WEAPON_MACHINE_GUN) {
-        player.machineGunClip += transferred;
-        player.machineGunReserve -= transferred;
+    if (weaponId && player.heavyWeapon === weaponId) {
+        player.heavyClip += transferred;
+        player.heavyReserve -= transferred;
         return transferred > 0;
     }
-
     return false;
 }
 
@@ -371,11 +364,17 @@ export function respawn(player) {
     const spawn = spawns[Math.floor(Math.random() * spawns.length)];
     player.pos = [...spawn];
     resetCombatState(player);
+    if (!player.pistolWeapon) {
+        player.pistolWeapon = getDefaultPistolForTeam(player.team);
+        player.pistolClip = getClipSize(player.pistolWeapon);
+        player.pistolReserve = 0;
+    }
+    player.activeWeapon = normalizeWeaponForPlayer(player, player.activeWeapon);
 }
 
 function normalizeWeaponForPlayer(player, weaponId) {
-    if (weaponId === WEAPON_MACHINE_GUN && player.hasMachineGun) return weaponId;
-    if (weaponId === WEAPON_PISTOL && player.hasPistol) return weaponId;
+    if (weaponId && player.heavyWeapon === weaponId) return weaponId;
+    if (weaponId && player.pistolWeapon === weaponId) return weaponId;
     if (isUtilityWeapon(weaponId) && getUtilityCount(player, weaponId) > 0) return weaponId;
     return WEAPON_KNIFE;
 }
@@ -389,7 +388,7 @@ function clampInventory(count, maxCount) {
 }
 
 function clampAmmo(count, maxCount) {
-    return clamp(count, 0, maxCount);
+    return clamp(count, 0, Math.max(0, maxCount || 0));
 }
 
 function getOwnedUtilities(player) {
@@ -397,12 +396,29 @@ function getOwnedUtilities(player) {
 }
 
 function normalizeAmmoTotals(player) {
-    player.pistolClip = clamp(player.pistolClip, 0, PISTOL_MAG_SIZE);
-    player.machineGunClip = clamp(player.machineGunClip, 0, MACHINE_GUN_MAG_SIZE);
-    player.pistolReserve = clamp(player.pistolReserve, 0, PISTOL_AMMO_MAX);
-    player.machineGunReserve = clamp(player.machineGunReserve, 0, MACHINE_GUN_AMMO_MAX);
+    player.pistolClip = clamp(player.pistolClip, 0, getClipSize(player.pistolWeapon));
+    player.heavyClip = clamp(player.heavyClip, 0, getClipSize(player.heavyWeapon));
+    player.pistolReserve = clamp(player.pistolReserve, 0, getReserveMax(player.pistolWeapon));
+    player.heavyReserve = clamp(player.heavyReserve, 0, getReserveMax(player.heavyWeapon));
     if (player.reloadTimeLeftMs <= 0) {
         player.reloadTimeLeftMs = 0;
         player.reloading = false;
     }
 }
+
+function getClipSize(weaponId) {
+    return WEAPON_DEFS[weaponId]?.magSize || 0;
+}
+
+function getReserveMax(weaponId) {
+    return WEAPON_DEFS[weaponId]?.reserveMax || 0;
+}
+
+export function getOwnedPistol(player) {
+    return player.pistolWeapon;
+}
+
+export function getOwnedHeavy(player) {
+    return player.heavyWeapon;
+}
+
