@@ -52,8 +52,8 @@ function generateFloorAO() {
 
     function worldToPixel(wx, wz) {
         return [
-            ((wx + ARENA) / (ARENA * 2)) * size,
-            ((wz + ARENA) / (ARENA * 2)) * size,
+            ((wx + mapArena) / (mapArena * 2)) * size,
+            ((wz + mapArena) / (mapArena * 2)) * size,
         ];
     }
 
@@ -70,11 +70,11 @@ function generateFloorAO() {
     // Paint wall shadows
     for (let py = 0; py < size; py++) {
         for (let px = 0; px < size; px++) {
-            const wx = (px / size) * ARENA * 2 - ARENA;
-            const wz = (py / size) * ARENA * 2 - ARENA;
+            const wx = (px / size) * mapArena * 2 - mapArena;
+            const wz = (py / size) * mapArena * 2 - mapArena;
             const idx = py * size + px;
 
-            for (const wall of MAP_WALLS) {
+            for (const wall of mapWalls) {
                 const dist = pointToSegmentDist(wx, wz, wall.x1, wall.z1, wall.x2, wall.z2);
                 if (dist < SHADOW_RANGE_WALL) {
                     const t = dist / SHADOW_RANGE_WALL;
@@ -83,7 +83,7 @@ function generateFloorAO() {
                 }
             }
 
-            for (const box of OFFICE_BOXES) {
+            for (const box of mapBoxes) {
                 if (box.cy > 2.0) continue; // skip ceiling-mounted stuff
                 const dx = Math.max(0, Math.abs(wx - box.cx) - box.hx);
                 const dz = Math.max(0, Math.abs(wz - box.cz) - box.hz);
@@ -150,18 +150,18 @@ export function buildWorldGeometry() {
     const floorAO = generateFloorAO();
 
     // Floor with baked AO
-    meshes.push(createFloorMesh(-ARENA, -ARENA, ARENA, ARENA, 1, 0, floorAO));
+    meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 1, 0, floorAO));
     // Ceiling (no AO)
-    meshes.push(createFloorMesh(-ARENA, -ARENA, ARENA, ARENA, 2, WALL_HEIGHT, null));
+    meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
 
-    for (const floor of FLOOR_INSETS) {
+    for (const floor of mapFloorInsets) {
         meshes.push(createFloorMesh(floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01, floorAO));
     }
 
     // Walls
     const wallVerts = new Map();
-    for (const wall of MAP_WALLS) {
-        pushThickWall(wallVerts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? WALL_HEIGHT);
+    for (const wall of mapWalls) {
+        pushThickWall(wallVerts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? mapWallHeight);
     }
     for (const [matID, positions] of wallVerts) {
         const geo = new THREE.BufferGeometry();
@@ -176,7 +176,7 @@ export function buildWorldGeometry() {
     }
 
     // Office props
-    for (const box of OFFICE_BOXES) {
+    for (const box of mapBoxes) {
         meshes.push(createBoxMesh(box.cx, box.cy, box.cz, box.hx, box.hy, box.hz, box.matID));
     }
 
@@ -192,15 +192,15 @@ function createFloorMesh(x1, z1, x2, z2, matID, y, aoTexture) {
     geo.rotateX(-Math.PI / 2);
 
     if (aoTexture) {
-        // UV2 maps world position to lightmap: (worldX + ARENA) / (2*ARENA)
+        // UV2 maps world position to lightmap: (worldX + mapArena) / (2*mapArena)
         const posAttr = geo.getAttribute('position');
         const uv2 = new Float32Array(posAttr.count * 2);
         for (let i = 0; i < posAttr.count; i++) {
             // After rotateX(-PI/2), local X → world X offset, local Z → world Z offset
             const lx = posAttr.getX(i);
             const lz = posAttr.getZ(i);
-            uv2[i * 2]     = (lx + cx + ARENA) / (ARENA * 2);
-            uv2[i * 2 + 1] = (lz + cz + ARENA) / (ARENA * 2);
+            uv2[i * 2]     = (lx + cx + mapArena) / (mapArena * 2);
+            uv2[i * 2 + 1] = (lz + cz + mapArena) / (mapArena * 2);
         }
         geo.setAttribute('uv2', new THREE.Float32BufferAttribute(uv2, 2));
     }
@@ -212,7 +212,7 @@ function createFloorMesh(x1, z1, x2, z2, matID, y, aoTexture) {
     return mesh;
 }
 
-function pushThickWall(buckets, x1, z1, x2, z2, matID, height = WALL_HEIGHT) {
+function pushThickWall(buckets, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const dx = x2 - x1;
     const dz = z2 - z1;
     const len = Math.sqrt(dx * dx + dz * dz);

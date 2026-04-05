@@ -79,9 +79,6 @@ const TRACER_LIFE_MS = 100;
 window._cam = camera;
 init(canvas);
 
-const worldGeo = buildWorldGeometry();
-uploadWorldGeo(renderer, worldGeo);
-
 // Muzzle flash dynamic point light (reusable, intensity toggled)
 const muzzleFlashLight = new THREE.PointLight(0xffe080, 0, 8, 2);
 muzzleFlashLight.castShadow = false;

@@ -1,6 +1,6 @@
-import { createRenderer, uploadWorldGeo, drawWorld, drawDynamic } from './renderer.js';
+import * as THREE from 'three';
+import { createRenderer, uploadWorldGeo, render, resizeRenderer, clearDynamic, vertsToGroup } from './renderer.js';
 import { buildWorldGeometry, loadMap, rayAABBIntersection } from './world.js';
-import { mat4Create, mat4Multiply, mat4Perspective, vec3Normalize, vec3Sub, vec3Cross } from './math.js';
 
 // ── Material palette ───────────────────────────────────────────────
 const MATERIALS = [
@@ -172,6 +172,8 @@ let clipboard = null; // { type, data }
 // ── Renderer ───────────────────────────────────────────────────────
 const canvas = document.getElementById('viewport');
 const renderer = createRenderer(canvas);
+renderer.scene.fog = null; // editor needs clear long-range view
+renderer.camera.far = 500;
 
 // ── Orbit camera ───────────────────────────────────────────────────
 const orbit = {
@@ -184,47 +186,15 @@ const orbit = {
     far: 500,
 };
 
-function orbitViewMatrix() {
-    const ct = Math.cos(orbit.theta), st = Math.sin(orbit.theta);
-    const cp = Math.cos(orbit.phi), sp = Math.sin(orbit.phi);
-    const eye = [
-        orbit.target[0] + orbit.distance * cp * st,
-        orbit.target[1] + orbit.distance * sp,
-        orbit.target[2] + orbit.distance * cp * ct,
-    ];
-
-    const f = vec3Normalize(vec3Sub(orbit.target, eye));
-    const worldUp = [0, 1, 0];
-    const r = vec3Normalize(vec3Cross(f, worldUp));
-    const u = vec3Cross(r, f);
-
-    const out = mat4Create();
-    out[0] = r[0]; out[1] = u[0]; out[2] = -f[0]; out[3] = 0;
-    out[4] = r[1]; out[5] = u[1]; out[6] = -f[1]; out[7] = 0;
-    out[8] = r[2]; out[9] = u[2]; out[10] = -f[2]; out[11] = 0;
-    out[12] = -(r[0] * eye[0] + r[1] * eye[1] + r[2] * eye[2]);
-    out[13] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
-    out[14] = (f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2]);
-    out[15] = 1;
-    return out;
-}
-
-function orbitEye() {
-    const ct = Math.cos(orbit.theta), st = Math.sin(orbit.theta);
-    const cp = Math.cos(orbit.phi), sp = Math.sin(orbit.phi);
-    return [
-        orbit.target[0] + orbit.distance * cp * st,
-        orbit.target[1] + orbit.distance * sp,
-        orbit.target[2] + orbit.distance * cp * ct,
-    ];
-}
-
 // ── Resize ─────────────────────────────────────────────────────────
 function resize() {
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * devicePixelRatio;
     canvas.height = rect.height * devicePixelRatio;
-    renderer.gl.viewport(0, 0, canvas.width, canvas.height);
+    resizeRenderer(renderer, canvas.width, canvas.height);
+    renderer.camera.far = orbit.far;
+    renderer.camera.near = orbit.near;
+    renderer.camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -472,66 +442,26 @@ function screenToRay(mx, my) {
     const ndcX = ((mx - rect.left) / rect.width) * 2 - 1;
     const ndcY = 1 - ((my - rect.top) / rect.height) * 2;
 
-    const aspect = canvas.width / canvas.height;
-    const proj = mat4Perspective(orbit.fov, aspect, orbit.near, orbit.far);
-    const view = orbitViewMatrix();
-    const vpMat = mat4Create();
-    mat4Multiply(vpMat, proj, view);
+    // Sync Three.js camera to current orbit state before unprojecting
+    const cam = renderer.camera;
+    const ct = Math.cos(orbit.theta), st = Math.sin(orbit.theta);
+    const cp = Math.cos(orbit.phi), sp = Math.sin(orbit.phi);
+    cam.position.set(
+        orbit.target[0] + orbit.distance * cp * st,
+        orbit.target[1] + orbit.distance * sp,
+        orbit.target[2] + orbit.distance * cp * ct,
+    );
+    cam.lookAt(orbit.target[0], orbit.target[1], orbit.target[2]);
+    cam.fov = orbit.fov * (180 / Math.PI);
+    cam.near = orbit.near;
+    cam.far = orbit.far;
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld(true);
 
-    const inv = mat4Invert(vpMat);
-    if (!inv) return null;
-
-    const nearPt = mat4TransformPoint(inv, [ndcX, ndcY, -1]);
-    const farPt = mat4TransformPoint(inv, [ndcX, ndcY, 1]);
-    const dir = vec3Normalize(vec3Sub(farPt, nearPt));
-    return { origin: nearPt, dir };
-}
-
-function mat4Invert(m) {
-    const out = new Float32Array(16);
-    const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
-    const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
-    const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
-    const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
-
-    const b00 = m00 * m11 - m01 * m10, b01 = m00 * m12 - m02 * m10;
-    const b02 = m00 * m13 - m03 * m10, b03 = m01 * m12 - m02 * m11;
-    const b04 = m01 * m13 - m03 * m11, b05 = m02 * m13 - m03 * m12;
-    const b06 = m20 * m31 - m21 * m30, b07 = m20 * m32 - m22 * m30;
-    const b08 = m20 * m33 - m23 * m30, b09 = m21 * m32 - m22 * m31;
-    const b10 = m21 * m33 - m23 * m31, b11 = m22 * m33 - m23 * m32;
-
-    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-    if (Math.abs(det) < 1e-8) return null;
-    det = 1.0 / det;
-
-    out[0] = (m11 * b11 - m12 * b10 + m13 * b09) * det;
-    out[1] = (m02 * b10 - m01 * b11 - m03 * b09) * det;
-    out[2] = (m31 * b05 - m32 * b04 + m33 * b03) * det;
-    out[3] = (m22 * b04 - m21 * b05 - m23 * b03) * det;
-    out[4] = (m12 * b08 - m10 * b11 - m13 * b07) * det;
-    out[5] = (m00 * b11 - m02 * b08 + m03 * b07) * det;
-    out[6] = (m32 * b02 - m30 * b05 - m33 * b01) * det;
-    out[7] = (m20 * b05 - m22 * b02 + m23 * b01) * det;
-    out[8] = (m10 * b10 - m11 * b08 + m13 * b06) * det;
-    out[9] = (m01 * b08 - m00 * b10 - m03 * b06) * det;
-    out[10] = (m30 * b04 - m31 * b02 + m33 * b00) * det;
-    out[11] = (m21 * b02 - m20 * b04 - m23 * b00) * det;
-    out[12] = (m11 * b07 - m10 * b09 - m12 * b06) * det;
-    out[13] = (m00 * b09 - m01 * b07 + m02 * b06) * det;
-    out[14] = (m31 * b01 - m30 * b03 - m32 * b00) * det;
-    out[15] = (m20 * b03 - m21 * b01 + m22 * b00) * det;
-    return out;
-}
-
-function mat4TransformPoint(m, p) {
-    const x = p[0], y = p[1], z = p[2];
-    const w = m[3] * x + m[7] * y + m[11] * z + m[15];
-    return [
-        (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
-        (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
-        (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
-    ];
+    const near = new THREE.Vector3(ndcX, ndcY, -1).unproject(cam);
+    const far = new THREE.Vector3(ndcX, ndcY, 1).unproject(cam);
+    const dir = new THREE.Vector3().subVectors(far, near).normalize();
+    return { origin: [near.x, near.y, near.z], dir: [dir.x, dir.y, dir.z] };
 }
 
 function groundPlaneHit(ray) {
@@ -917,14 +847,24 @@ function frame() {
 
     if (dirty) rebuildWorld();
 
-    const aspect = canvas.width / canvas.height;
-    const viewMat = orbitViewMatrix();
-    const projMat = mat4Perspective(orbit.fov, aspect, orbit.near, orbit.far);
+    // Update Three.js camera from orbit state
+    const ct = Math.cos(orbit.theta), st = Math.sin(orbit.theta);
+    const cp = Math.cos(orbit.phi), sp = Math.sin(orbit.phi);
+    const eye = [
+        orbit.target[0] + orbit.distance * cp * st,
+        orbit.target[1] + orbit.distance * sp,
+        orbit.target[2] + orbit.distance * cp * ct,
+    ];
+    const cam = renderer.camera;
+    cam.position.set(eye[0], eye[1], eye[2]);
+    cam.lookAt(orbit.target[0], orbit.target[1], orbit.target[2]);
+    cam.fov = orbit.fov * (180 / Math.PI);
+    cam.near = orbit.near;
+    cam.far = orbit.far;
+    cam.updateProjectionMatrix();
 
-    drawWorld(renderer, viewMat, projMat);
-
-    const mvp = mat4Create();
-    mat4Multiply(mvp, projMat, viewMat);
+    // Clear previous dynamic objects
+    clearDynamic(renderer);
 
     const dynVerts = [];
     appendArr(dynVerts, buildGridVerts());
@@ -933,17 +873,23 @@ function frame() {
     if (ghostVerts.length > 0) appendArr(dynVerts, ghostVerts);
 
     if (dynVerts.length > 0) {
-        drawDynamic(renderer, dynVerts, mvp);
+        renderer.dynamicGroup.add(vertsToGroup(dynVerts));
     }
 
-    // Gizmo always on top
+    // Gizmo always on top (disable depth test on its materials)
     const gizmoVerts = buildGizmoVerts();
     if (gizmoVerts.length > 0) {
-        const gl = renderer.gl;
-        gl.disable(gl.DEPTH_TEST);
-        drawDynamic(renderer, gizmoVerts, mvp);
-        gl.enable(gl.DEPTH_TEST);
+        const gizmoGroup = vertsToGroup(gizmoVerts);
+        gizmoGroup.traverse((obj) => {
+            if (obj.material) {
+                obj.material.depthTest = false;
+                obj.renderOrder = 999;
+            }
+        });
+        renderer.dynamicGroup.add(gizmoGroup);
     }
+
+    render(renderer);
 }
 
 function appendArr(target, src) {

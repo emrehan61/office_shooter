@@ -30,6 +30,9 @@ const MATERIAL_DEFS = {
     16: { color: 0x2a7a3a, roughness: 0.8,  metalness: 0.0 },   // plant
     17: { color: 0x787e88, roughness: 0.95, metalness: 0.0, transparent: true, opacity: 0.55 },  // smoke
     18: { color: 0x060608, roughness: 0.85, metalness: 0.0 },   // impact
+    20: { color: 0xff2618, roughness: 0.3, metalness: 0.0, emissive: 0xff2618, emissiveIntensity: 2.0 }, // emissive red
+    21: { color: 0x1ae634, roughness: 0.3, metalness: 0.0, emissive: 0x1ae634, emissiveIntensity: 2.0 }, // emissive green
+    22: { color: 0x3374ff, roughness: 0.3, metalness: 0.0, emissive: 0x3374ff, emissiveIntensity: 2.0 }, // emissive blue
 };
 
 // Ceiling light panel positions (x, z) — matches world.js OFFICE_BOXES with matID 15 at y=4.72
