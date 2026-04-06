@@ -99,10 +99,11 @@ let mapData = {
     boxes: [],
     spawnPoints: [],
     healthRestorePoints: [],
+    puddles: [],
     sky: normalizeSkyConfig(),
 };
 
-let selectedType = null; // 'wall' | 'box' | 'floorInset' | 'spawn' | 'healthRestorePoint'
+let selectedType = null; // 'wall' | 'box' | 'floorInset' | 'spawn' | 'healthRestorePoint' | 'puddle'
 let selectedIndex = -1;
 let dirty = true;
 
@@ -113,6 +114,16 @@ function normalizeHealthRestorePoint(point = {}) {
         radius: point.radius ?? 1.5,
         healAmount: point.healAmount ?? 35,
         cooldownSec: point.cooldownSec ?? 12,
+    };
+}
+
+function normalizePuddle(puddle = {}) {
+    return {
+        x: puddle.x ?? 0,
+        z: puddle.z ?? 0,
+        radiusX: Math.max(0.2, puddle.radiusX ?? 1.8),
+        radiusZ: Math.max(0.2, puddle.radiusZ ?? 1.2),
+        opacity: Math.max(0.12, Math.min(0.92, puddle.opacity ?? 0.58)),
     };
 }
 
@@ -127,6 +138,7 @@ function normalizeMapData(data = {}) {
         boxes: data.boxes || [],
         spawnPoints: data.spawnPoints || [],
         healthRestorePoints: (data.healthRestorePoints || []).map(normalizeHealthRestorePoint),
+        puddles: (data.puddles || []).map(normalizePuddle),
         sky: normalizeSkyConfig(data.sky),
     };
 }
@@ -317,6 +329,18 @@ function buildHealthRestoreVerts() {
     return verts;
 }
 
+function buildPuddleVerts() {
+    const verts = [];
+    for (let i = 0; i < mapData.puddles.length; i++) {
+        const puddle = mapData.puddles[i];
+        const isSelected = selectedType === 'puddle' && selectedIndex === i;
+        const mat = isSelected ? HIGHLIGHT_MAT : 22;
+        pushEllipseRing(verts, puddle.x, 0.025, puddle.z, puddle.radiusX, puddle.radiusZ, 28, mat);
+        pushCross(verts, puddle.x, 0.02, puddle.z, Math.max(0.3, Math.min(puddle.radiusX, puddle.radiusZ) * 0.35), mat);
+    }
+    return verts;
+}
+
 function pushRing(v, cx, y, cz, radius, segments, mat) {
     for (let i = 0; i < segments; i++) {
         const a0 = (i / segments) * Math.PI * 2;
@@ -329,6 +353,24 @@ function pushRing(v, cx, y, cz, radius, segments, mat) {
             cx + Math.cos(a1) * radius,
             y,
             cz + Math.sin(a1) * radius,
+            0.05,
+            mat
+        );
+    }
+}
+
+function pushEllipseRing(v, cx, y, cz, radiusX, radiusZ, segments, mat) {
+    for (let i = 0; i < segments; i++) {
+        const a0 = (i / segments) * Math.PI * 2;
+        const a1 = ((i + 1) / segments) * Math.PI * 2;
+        pushLine(
+            v,
+            cx + Math.cos(a0) * radiusX,
+            y,
+            cz + Math.sin(a0) * radiusZ,
+            cx + Math.cos(a1) * radiusX,
+            y,
+            cz + Math.sin(a1) * radiusZ,
             0.05,
             mat
         );
@@ -387,11 +429,11 @@ function buildSelectionVerts() {
     pushVLineEdge(verts, x0, y0, z1, y1, t, mat);
     pushVLineEdge(verts, x1, y0, z1, y1, t, mat);
 
-    if (selectedType === 'floorInset' || selectedType === 'box') {
+    if (selectedType === 'floorInset' || selectedType === 'box' || selectedType === 'puddle') {
         const hy = 0.15;
         const hs = 0.25;
         const midX = (x0 + x1) / 2, midZ = (z0 + z1) / 2;
-        const handleY = selectedType === 'floorInset' ? 0.1 : (mn[1] + mx[1]) / 2;
+        const handleY = selectedType === 'box' ? (mn[1] + mx[1]) / 2 : 0.1;
         for (const [hx, hz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1], [midX, z0], [midX, z1], [x0, midZ], [x1, midZ]]) {
             pushHandleBox(verts, hx, handleY, hz, hs, hy, hs, mat);
         }
@@ -483,6 +525,14 @@ function getSelectedAABB() {
             [point.x + radius, 0.8, point.z + radius],
         ];
     }
+    if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        if (!puddle) return null;
+        return [
+            [puddle.x - puddle.radiusX, 0, puddle.z - puddle.radiusZ],
+            [puddle.x + puddle.radiusX, 0.08, puddle.z + puddle.radiusZ],
+        ];
+    }
     return null;
 }
 
@@ -530,6 +580,14 @@ function getAllAABBs() {
             type: 'healthRestorePoint', index: i,
             min: [point.x - radius, 0, point.z - radius],
             max: [point.x + radius, 0.8, point.z + radius],
+        });
+    }
+    for (let i = 0; i < mapData.puddles.length; i++) {
+        const puddle = mapData.puddles[i];
+        result.push({
+            type: 'puddle', index: i,
+            min: [puddle.x - puddle.radiusX, 0, puddle.z - puddle.radiusZ],
+            max: [puddle.x + puddle.radiusX, 0.08, puddle.z + puddle.radiusZ],
         });
     }
     return result;
@@ -611,6 +669,10 @@ function getGizmoCenter() {
     if (selectedType === 'healthRestorePoint') {
         const point = mapData.healthRestorePoints[selectedIndex];
         return [point.x, 0.35, point.z];
+    }
+    if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        return [puddle.x, 0.04, puddle.z];
     }
     return null;
 }
@@ -837,6 +899,11 @@ function applyGizmoMove(axis, delta) {
         const o = gizmoDragOriginObj;
         if (idx === 0) point.x = o.x + snapped;
         else if (idx === 2) point.z = o.z + snapped;
+    } else if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        const o = gizmoDragOriginObj;
+        if (idx === 0) puddle.x = o.x + snapped;
+        else if (idx === 2) puddle.z = o.z + snapped;
     }
 }
 
@@ -863,6 +930,11 @@ function applyGizmoScale(axis, delta) {
         if (axis === 'y') { w.height = Math.max(0.1, (o.height ?? mapData.wallHeight) + snapped); }
         else if (axis === 'x') { w.x2 = o.x2 + snapped; }
         else { w.z2 = o.z2 + snapped; }
+    } else if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        const o = gizmoDragOriginObj;
+        if (axis === 'x') puddle.radiusX = Math.max(0.2, o.radiusX + snapped);
+        else if (axis === 'z') puddle.radiusZ = Math.max(0.2, o.radiusZ + snapped);
     }
 }
 
@@ -929,6 +1001,7 @@ function snapshotSelectedObject() {
     if (selectedType === 'floorInset') return { ...mapData.floorInsets[selectedIndex] };
     if (selectedType === 'spawn') return [...mapData.spawnPoints[selectedIndex]];
     if (selectedType === 'healthRestorePoint') return { ...mapData.healthRestorePoints[selectedIndex] };
+    if (selectedType === 'puddle') return { ...mapData.puddles[selectedIndex] };
     return null;
 }
 
@@ -984,6 +1057,7 @@ function frame() {
     const dynVerts = [];
     appendArr(dynVerts, buildSpawnVerts());
     appendArr(dynVerts, buildHealthRestoreVerts());
+    appendArr(dynVerts, buildPuddleVerts());
     appendArr(dynVerts, buildSelectionVerts());
     if (ghostVerts.length > 0) appendArr(dynVerts, ghostVerts);
 
@@ -1183,13 +1257,17 @@ canvas.addEventListener('wheel', (e) => {
 
 // ── Detect which edge/corner a ground point is near ────────────────
 function detectScaleEdge(gp) {
-    if (selectedType !== 'floorInset' && selectedType !== 'box') return null;
+    if (selectedType !== 'floorInset' && selectedType !== 'box' && selectedType !== 'puddle') return null;
 
     let x1, z1, x2, z2;
     if (selectedType === 'floorInset') {
         const f = mapData.floorInsets[selectedIndex];
         x1 = Math.min(f.x1, f.x2); x2 = Math.max(f.x1, f.x2);
         z1 = Math.min(f.z1, f.z2); z2 = Math.max(f.z1, f.z2);
+    } else if (selectedType === 'puddle') {
+        const p = mapData.puddles[selectedIndex];
+        x1 = p.x - p.radiusX; x2 = p.x + p.radiusX;
+        z1 = p.z - p.radiusZ; z2 = p.z + p.radiusZ;
     } else {
         const b = mapData.boxes[selectedIndex];
         x1 = b.cx - b.hx; x2 = b.cx + b.hx;
@@ -1236,6 +1314,20 @@ function scaleSelected(edge, gp) {
         b.hx = Math.abs(nx2 - nx1) / 2;
         b.cz = (nz1 + nz2) / 2;
         b.hz = Math.abs(nz2 - nz1) / 2;
+    } else if (selectedType === 'puddle') {
+        const p = mapData.puddles[selectedIndex];
+        let x1 = p.x - p.radiusX;
+        let x2 = p.x + p.radiusX;
+        let z1 = p.z - p.radiusZ;
+        let z2 = p.z + p.radiusZ;
+        if (edge.includes('x1')) x1 = sx;
+        if (edge.includes('x2')) x2 = sx;
+        if (edge.includes('z1')) z1 = sz;
+        if (edge.includes('z2')) z2 = sz;
+        p.x = (x1 + x2) / 2;
+        p.z = (z1 + z2) / 2;
+        p.radiusX = Math.max(0.2, Math.abs(x2 - x1) / 2);
+        p.radiusZ = Math.max(0.2, Math.abs(z2 - z1) / 2);
     }
 }
 
@@ -1260,6 +1352,9 @@ function moveSelected(dx, dz) {
     } else if (selectedType === 'healthRestorePoint') {
         const point = mapData.healthRestorePoints[selectedIndex];
         point.x += dx; point.z += dz;
+    } else if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        puddle.x += dx; puddle.z += dz;
     }
 }
 
@@ -1275,6 +1370,7 @@ function deleteSelected() {
     else if (selectedType === 'floorInset') mapData.floorInsets.splice(selectedIndex, 1);
     else if (selectedType === 'spawn') mapData.spawnPoints.splice(selectedIndex, 1);
     else if (selectedType === 'healthRestorePoint') mapData.healthRestorePoints.splice(selectedIndex, 1);
+    else if (selectedType === 'puddle') mapData.puddles.splice(selectedIndex, 1);
     selectedType = null;
     selectedIndex = -1;
     dirty = true;
@@ -1292,6 +1388,7 @@ function copySelected() {
     else if (selectedType === 'floorInset') clipboard = { type: 'floorInset', data: { ...mapData.floorInsets[selectedIndex] } };
     else if (selectedType === 'spawn') clipboard = { type: 'spawn', data: [...mapData.spawnPoints[selectedIndex]] };
     else if (selectedType === 'healthRestorePoint') clipboard = { type: 'healthRestorePoint', data: { ...mapData.healthRestorePoints[selectedIndex] } };
+    else if (selectedType === 'puddle') clipboard = { type: 'puddle', data: { ...mapData.puddles[selectedIndex] } };
     setStatus('Copied');
 }
 
@@ -1328,6 +1425,11 @@ function pasteClipboard() {
         mapData.healthRestorePoints.push(normalizeHealthRestorePoint(d));
         selectedType = 'healthRestorePoint';
         selectedIndex = mapData.healthRestorePoints.length - 1;
+    } else if (clipboard.type === 'puddle') {
+        const d = { ...clipboard.data, x: clipboard.data.x + offset, z: clipboard.data.z + offset };
+        mapData.puddles.push(normalizePuddle(d));
+        selectedType = 'puddle';
+        selectedIndex = mapData.puddles.length - 1;
     }
     dirty = true;
     updateProperties();
@@ -1445,6 +1547,10 @@ function addObject(type, x, z) {
         mapData.healthRestorePoints.push(normalizeHealthRestorePoint({ x, z }));
         selectedType = 'healthRestorePoint';
         selectedIndex = mapData.healthRestorePoints.length - 1;
+    } else if (type === 'puddle') {
+        mapData.puddles.push(normalizePuddle({ x, z }));
+        selectedType = 'puddle';
+        selectedIndex = mapData.puddles.length - 1;
     }
     dirty = true;
     updateProperties();
@@ -1492,6 +1598,8 @@ function updateGhost(mx, my) {
     } else if (dragType === 'healthRestorePoint') {
         pushCross(ghostVerts, x, 0.02, z, 0.75, mat);
         pushRing(ghostVerts, x, 0.03, z, 1.5, 24, mat);
+    } else if (dragType === 'puddle') {
+        pushEllipseRing(ghostVerts, x, 0.025, z, 1.8, 1.2, 28, mat);
     }
 }
 
@@ -1543,6 +1651,13 @@ function updateProperties() {
         addPropNum('radius', point.radius, (v) => { point.radius = Math.max(0.1, v); }, 0.1);
         addPropNum('healAmount', point.healAmount, (v) => { point.healAmount = Math.max(1, Math.round(v)); }, 1);
         addPropNum('cooldownSec', point.cooldownSec, (v) => { point.cooldownSec = Math.max(0.1, v); }, 0.1);
+    } else if (selectedType === 'puddle') {
+        const puddle = mapData.puddles[selectedIndex];
+        addPropNum('x', puddle.x, (v) => { puddle.x = v; });
+        addPropNum('z', puddle.z, (v) => { puddle.z = v; });
+        addPropNum('radiusX', puddle.radiusX, (v) => { puddle.radiusX = Math.max(0.2, v); }, 0.1);
+        addPropNum('radiusZ', puddle.radiusZ, (v) => { puddle.radiusZ = Math.max(0.2, v); }, 0.1);
+        addPropNum('opacity', puddle.opacity, (v) => { puddle.opacity = Math.max(0.12, Math.min(0.92, v)); }, 0.05);
     }
 }
 
@@ -1650,6 +1765,7 @@ document.getElementById('btn-new').addEventListener('click', () => {
         boxes: [],
         spawnPoints: [],
         healthRestorePoints: [],
+        puddles: [],
         sky: normalizeSkyConfig(),
     };
     nameInput.value = mapData.name;

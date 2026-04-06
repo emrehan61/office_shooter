@@ -49,6 +49,7 @@ const MATERIAL_DEFS = {
 const materialCache = new Map();
 const aoMaterialCache = new Map();
 const normalMapCache = new Map();
+const puddleMaterialCache = new Map();
 let envMap = null;
 
 const INDOOR_FOG_COLOR = 0x1a1e28;
@@ -58,9 +59,10 @@ const DEFAULT_SUN_DIRECTION = new THREE.Vector3(0.72, 0.58, -0.36).normalize();
 
 export function normalizeRendererSkyConfig(sky = {}) {
     const enabled = sky?.enabled === true;
+    const preset = sky?.preset === 'rain_day' ? 'rain_day' : 'clear_day';
     return {
         enabled,
-        preset: enabled ? (sky?.preset || 'clear_day') : 'clear_day',
+        preset: enabled ? preset : 'clear_day',
         sunMode: enabled ? (sky?.sunMode || 'fixed') : 'fixed',
     };
 }
@@ -87,6 +89,47 @@ export function resolveAtmosphereForSky(sky = {}) {
             sunHaloColor: 0xffe2ae,
             sunSize: 0.022,
             sunHalo: 0.12,
+            cloudEnabled: false,
+            cloudColor: 0xffffff,
+            cloudCoverage: 0.65,
+            cloudSoftness: 0.15,
+            cloudScale: 2.0,
+            cloudSpeed: 0.002,
+            cloudStrength: 0.0,
+            rainEnabled: false,
+            thunderEnabled: false,
+        };
+    }
+
+    if (config.preset === 'rain_day') {
+        return {
+            enabled: true,
+            clearColor: 0x65788a,
+            fogColor: 0x788b9b,
+            fogDensity: 0.017,
+            ambientIntensity: 0.78,
+            hemisphereSky: 0xa7b7c7,
+            hemisphereGround: 0x55606a,
+            hemisphereIntensity: 0.72,
+            dirLightColor: 0xdde6f2,
+            dirLightIntensity: 0.72,
+            sunDirection: [0.48, 0.42, -0.77],
+            skyTop: 0x4f6171,
+            skyHorizon: 0x90a0ad,
+            groundColor: 0x889198,
+            sunColor: 0xe6eef8,
+            sunHaloColor: 0xcbd8e8,
+            sunSize: 0.015,
+            sunHalo: 0.08,
+            cloudEnabled: true,
+            cloudColor: 0xc0c8cf,
+            cloudCoverage: 0.44,
+            cloudSoftness: 0.16,
+            cloudScale: 2.8,
+            cloudSpeed: 0.004,
+            cloudStrength: 0.92,
+            rainEnabled: true,
+            thunderEnabled: true,
         };
     }
 
@@ -109,6 +152,15 @@ export function resolveAtmosphereForSky(sky = {}) {
         sunHaloColor: 0xffd89a,
         sunSize: 0.028,
         sunHalo: 0.16,
+        cloudEnabled: false,
+        cloudColor: 0xffffff,
+        cloudCoverage: 0.65,
+        cloudSoftness: 0.15,
+        cloudScale: 2.0,
+        cloudSpeed: 0.002,
+        cloudStrength: 0.0,
+        rainEnabled: false,
+        thunderEnabled: false,
     };
 }
 
@@ -133,6 +185,42 @@ const SkyFragmentShader = /* glsl */`
     uniform vec3 sunHaloColor;
     uniform float sunSize;
     uniform float sunHalo;
+    uniform float time;
+    uniform float cloudEnabled;
+    uniform vec3 cloudColor;
+    uniform float cloudCoverage;
+    uniform float cloudSoftness;
+    uniform float cloudScale;
+    uniform float cloudSpeed;
+    uniform float cloudStrength;
+
+    float hash(vec2 p) {
+        p = fract(p * vec2(123.34, 345.45));
+        p += dot(p, p + 34.345);
+        return fract(p.x * p.y);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+            mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+        );
+    }
+
+    float fbm(vec2 p) {
+        float value = 0.0;
+        float amplitude = 0.5;
+        for (int i = 0; i < 4; i++) {
+            value += noise(p) * amplitude;
+            p = p * 2.03 + vec2(17.1, 11.7);
+            amplitude *= 0.5;
+        }
+        return value;
+    }
 
     void main() {
         vec3 viewDir = normalize(vWorldPosition);
@@ -142,10 +230,23 @@ const SkyFragmentShader = /* glsl */`
         float groundMix = smoothstep(-0.18, 0.08, viewDir.y);
         base = mix(groundColor, base, groundMix);
 
+        float cloudMask = 0.0;
+        if (cloudEnabled > 0.5) {
+            float domeFade = smoothstep(0.03, 0.28, viewDir.y);
+            vec2 cloudUv = (viewDir.xz / max(0.18, viewDir.y + 0.24)) * cloudScale;
+            cloudUv += vec2(time * cloudSpeed, -time * cloudSpeed * 0.35);
+            float cloudNoise = fbm(cloudUv);
+            cloudNoise = mix(cloudNoise, fbm(cloudUv * 1.9 + vec2(8.0, 13.0)), 0.35);
+            cloudMask = smoothstep(cloudCoverage - cloudSoftness, cloudCoverage + cloudSoftness, cloudNoise);
+            cloudMask *= domeFade;
+            base = mix(base, cloudColor, cloudMask * cloudStrength);
+        }
+
         float sunDot = max(dot(viewDir, normalize(sunDirection)), 0.0);
         float sunDisc = smoothstep(1.0 - sunSize, 1.0 - sunSize * 0.25, sunDot);
         float halo = pow(sunDot, max(2.0, 1.0 / max(0.0001, sunHalo)));
-        vec3 color = base + sunHaloColor * halo * 0.35 + sunColor * sunDisc;
+        float sunOcclusion = 1.0 - cloudMask * 0.82;
+        vec3 color = base + sunHaloColor * halo * 0.35 * sunOcclusion + sunColor * sunDisc * sunOcclusion;
 
         gl_FragColor = vec4(color, 1.0);
     }
@@ -301,6 +402,11 @@ function generateProceduralNormalMap(type) {
                 else if (ty > 14) ny = 0.3;
                 nx += (hash(x * 2.1, y * 2.1) - 0.5) * 0.04; // Very slight bumps
                 ny += (hash(x * 2.1, y * 2.1) - 0.5) * 0.04;
+            } else if (type === 'puddle') {
+                const rippleA = Math.sin(x * 0.22 + y * 0.11) * Math.cos(y * 0.19 - x * 0.07);
+                const rippleB = Math.sin(x * 0.41 - y * 0.17);
+                nx = rippleA * 0.08 + rippleB * 0.03;
+                ny = Math.cos(y * 0.23 + x * 0.13) * 0.08 + (hash(x * 3.7, y * 3.9) - 0.5) * 0.04;
             } else if (type === 'metal_container') {
                 // Corrugated metal (vertical waves)
                 nx = Math.sin(x * 0.4) * 0.4;
@@ -564,6 +670,39 @@ export function createBoxMesh(cx, cy, cz, hx, hy, hz, matID) {
     return mesh;
 }
 
+export function createPuddleMesh(cx, cz, radiusX, radiusZ, opacity = 0.58) {
+    const geo = new THREE.CircleGeometry(1, 28);
+    geo.rotateX(-Math.PI / 2);
+    geo.scale(Math.max(0.2, radiusX), Math.max(0.2, radiusZ), 1);
+
+    const clampedOpacity = Math.round(Math.max(0.12, Math.min(0.92, opacity)) * 100) / 100;
+    let mat = puddleMaterialCache.get(clampedOpacity);
+    if (!mat) {
+        mat = getMaterial(30).clone();
+        mat.color = new THREE.Color(0x546978);
+        mat.roughness = 0.05;
+        mat.metalness = 0.28;
+        mat.opacity = clampedOpacity;
+        mat.transparent = true;
+        mat.depthWrite = false;
+        mat.normalMap = generateProceduralNormalMap('puddle');
+        mat.normalScale = new THREE.Vector2(0.25, 0.25);
+        if (envMap) {
+            mat.envMap = envMap;
+            mat.envMapIntensity = 1.05;
+        }
+        puddleMaterialCache.set(clampedOpacity, mat);
+    }
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(cx, 0.035, cz);
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    mesh.renderOrder = 6;
+    mesh.userData.kind = 'puddle';
+    return mesh;
+}
+
 function createSkyDome() {
     const geometry = new THREE.SphereGeometry(80, 32, 24);
     const material = new THREE.ShaderMaterial({
@@ -581,6 +720,14 @@ function createSkyDome() {
             sunHaloColor: { value: new THREE.Color(0xffd89a) },
             sunSize: { value: 0.028 },
             sunHalo: { value: 0.16 },
+            time: { value: 0 },
+            cloudEnabled: { value: 0 },
+            cloudColor: { value: new THREE.Color(0xffffff) },
+            cloudCoverage: { value: 0.65 },
+            cloudSoftness: { value: 0.15 },
+            cloudScale: { value: 2.0 },
+            cloudSpeed: { value: 0.002 },
+            cloudStrength: { value: 0.0 },
         },
     });
     const mesh = new THREE.Mesh(geometry, material);
@@ -628,9 +775,29 @@ export function applySkyConfig(r, sky = {}) {
         uniforms.sunHaloColor.value.setHex(atmosphere.sunHaloColor);
         uniforms.sunSize.value = atmosphere.sunSize;
         uniforms.sunHalo.value = atmosphere.sunHalo;
+        uniforms.cloudEnabled.value = atmosphere.cloudEnabled ? 1 : 0;
+        uniforms.cloudColor.value.setHex(atmosphere.cloudColor);
+        uniforms.cloudCoverage.value = atmosphere.cloudCoverage;
+        uniforms.cloudSoftness.value = atmosphere.cloudSoftness;
+        uniforms.cloudScale.value = atmosphere.cloudScale;
+        uniforms.cloudSpeed.value = atmosphere.cloudSpeed;
+        uniforms.cloudStrength.value = atmosphere.cloudStrength;
     }
 
     r.activeSky = normalizeRendererSkyConfig(sky);
+    r.activeAtmosphere = atmosphere;
+}
+
+export function applyLightningFlash(r, amount = 0) {
+    const atmosphere = r.activeAtmosphere || resolveAtmosphereForSky();
+    const flash = Math.max(0, amount);
+    r.ambientLight.intensity = (r.editorMode ? atmosphere.ambientIntensity * 0.78 : atmosphere.ambientIntensity) + flash * 0.45;
+    r.hemiLight.intensity = (r.editorMode ? atmosphere.hemisphereIntensity * 0.8 : atmosphere.hemisphereIntensity) + flash * 0.55;
+    r.dirLight.intensity = (r.editorMode ? atmosphere.dirLightIntensity * 0.75 : atmosphere.dirLightIntensity) + flash * 2.6;
+    if (r.vignettePass) {
+        r.vignettePass.uniforms.contrast.value = 1.14 + flash * 0.08;
+        r.vignettePass.uniforms.grainIntensity.value = 0.02 + flash * 0.015;
+    }
 }
 
 // ─── Renderer + post-processing pipeline ───
@@ -814,6 +981,9 @@ export function drawDynamic(r, _vertices, _mvp) {
 }
 
 export function render(r) {
+    if (r.skyDome?.material?.uniforms?.time) {
+        r.skyDome.material.uniforms.time.value = performance.now() * 0.001;
+    }
     if (r.composer) {
         r.composer.render();
     } else {
