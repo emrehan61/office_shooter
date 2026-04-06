@@ -3,6 +3,11 @@
   "arena": 45,
   "wallHeight": 5,
   "wallThick": 0.4,
+  "sky": {
+    "enabled": true,
+    "preset": "rain_day",
+    "sunMode": "fixed"
+  },
   "walls": [
     { "x1": -45, "z1": -45, "x2": 45, "z2": -45, "matID": 23 },
     { "x1": 45, "z1": -45, "x2": 45, "z2": 45, "matID": 23 },
@@ -36,6 +41,12 @@
   ],
   "floorInsets": [
     { "x1": -45, "z1": -45, "x2": 45, "z2": 45, "matID": 24 }
+  ],
+  "puddles": [
+    { "x": -28, "z": -11, "radiusX": 2.8, "radiusZ": 1.9, "opacity": 0.56 },
+    { "x": -8, "z": 22, "radiusX": 3.4, "radiusZ": 2.1, "opacity": 0.62 },
+    { "x": 12, "z": -29, "radiusX": 2.2, "radiusZ": 1.4, "opacity": 0.52 },
+    { "x": 23, "z": 16, "radiusX": 2.9, "radiusZ": 1.7, "opacity": 0.59 }
   ],
   "boxes": [
     { "cx": -35, "cy": 1, "cz": -35, "hx": 1, "hy": 1, "hz": 1, "matID": 25 },

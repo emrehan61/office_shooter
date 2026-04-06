@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getMaterial, getAOMaterial, createBoxMesh, createFloorMaterial } from './renderer.js';
+import { getMaterial, getAOMaterial, createBoxMesh, createFloorMaterial, createPuddleMesh } from './renderer.js';
 
 // Office-themed world definition: open software studio with meeting pods and workstations.
 // Material IDs: 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 13=glass, 14=wood, 15=screen, 16=plant
@@ -12,7 +12,19 @@ let mapFloorInsets = [];
 let mapBoxes = [];
 let mapSpawnPoints = [];
 let mapHealthRestorePoints = [];
+let mapPuddles = [];
+let mapSky = normalizeSkyConfig();
 let shotBlockers = [];
+
+export function normalizeSkyConfig(sky = {}) {
+    const enabled = sky?.enabled === true;
+    const preset = sky?.preset === 'rain_day' ? 'rain_day' : 'clear_day';
+    return {
+        enabled,
+        preset: enabled ? preset : 'clear_day',
+        sunMode: enabled ? (sky?.sunMode || 'fixed') : 'fixed',
+    };
+}
 
 export function getSpawnPoints() {
     return mapSpawnPoints;
@@ -20,6 +32,20 @@ export function getSpawnPoints() {
 
 export function getHealthRestorePoints() {
     return mapHealthRestorePoints;
+}
+
+export function getPuddles() {
+    return mapPuddles;
+}
+
+export function getSkyConfig() {
+    return mapSky;
+}
+
+export function shouldBuildCeiling(opts = {}) {
+    const hideCeiling = opts.hideCeiling === true;
+    const skyEnabled = opts.skyEnabled ?? mapSky.enabled;
+    return !hideCeiling && !skyEnabled;
 }
 
 export function loadMap(data) {
@@ -31,7 +57,19 @@ export function loadMap(data) {
     mapBoxes = data.boxes || [];
     mapSpawnPoints = data.spawnPoints || [];
     mapHealthRestorePoints = data.healthRestorePoints || [];
+    mapPuddles = (data.puddles || []).map(normalizePuddle);
+    mapSky = normalizeSkyConfig(data.sky);
     rebuildShotBlockers();
+}
+
+function normalizePuddle(puddle = {}) {
+    return {
+        x: puddle.x ?? 0,
+        z: puddle.z ?? 0,
+        radiusX: Math.max(0.2, puddle.radiusX ?? 1.8),
+        radiusZ: Math.max(0.2, puddle.radiusZ ?? 1.2),
+        opacity: Math.max(0.12, Math.min(0.92, puddle.opacity ?? 0.58)),
+    };
 }
 
 function rebuildShotBlockers() {
@@ -371,7 +409,6 @@ function computeWorldLighting(meshes) {
 }
 
 export function buildWorldGeometry(opts = {}) {
-    const hideCeiling = opts.hideCeiling === true;
     const skipFloorAO = opts.skipFloorAO === true;
     const meshes = [];
     // Editor skips AO: generateFloorAO is O(512² × geometry) and was freezing every rebuild while dragging.
@@ -380,12 +417,18 @@ export function buildWorldGeometry(opts = {}) {
     // Floor with baked AO (or flat material when skipFloorAO)
     meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 1, 0, floorAO));
     // Ceiling (no AO) — omitted in map editor so orbit view isn’t covered by the roof
-    if (!hideCeiling) {
+    if (shouldBuildCeiling(opts)) {
         meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
     }
 
     for (const floor of mapFloorInsets) {
         meshes.push(createFloorMesh(floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01, floorAO));
+    }
+
+    if (mapSky.enabled && mapSky.preset === 'rain_day') {
+        for (const puddle of mapPuddles) {
+            meshes.push(createPuddleMesh(puddle.x, puddle.z, puddle.radiusX, puddle.radiusZ, puddle.opacity));
+        }
     }
 
     // Walls

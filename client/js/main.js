@@ -1,7 +1,7 @@
-import { createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, updateVertPool } from './renderer.js';
+import { applyLightningFlash, applySkyConfig, createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, updateVertPool } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
 import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
-import { buildWorldGeometry, traceShotImpact, loadMap } from './world.js';
+import { buildWorldGeometry, getSkyConfig, traceShotImpact, loadMap } from './world.js';
 import {
     applyAuthoritativeState,
     canMove,
@@ -40,7 +40,7 @@ import {
     primeAnnouncer,
     snapshotMatchForAnnouncer,
 } from './audio.js';
-import { createSoundEngine, updateSoundListener, soundGunshot, soundFootstep, soundHitMarker, soundImpact, primeSoundEngine } from './sound.js';
+import { createSoundEngine, updateSoundListener, soundGunshot, soundFootstep, soundHitMarker, soundImpact, soundThunder, updateWeatherAudio, primeSoundEngine } from './sound.js';
 import * as THREE from 'three';
 
 const SEND_RATE = 1 / 60;
@@ -118,6 +118,24 @@ for (let i = 0; i < MAX_TRACERS; i++) {
 // Pre-allocated avatar mesh pool (GPU transforms instead of CPU vertex math)
 const avatarPool = createAvatarPool(renderer.scene);
 const objectivesPool = createObjectivesPool(renderer.scene);
+const weatherGroup = new THREE.Group();
+weatherGroup.name = 'weather';
+renderer.scene.add(weatherGroup);
+const RAIN_DROP_COUNT = 520;
+const RAIN_RADIUS = 18;
+const RAIN_HEIGHT = 18;
+const RAIN_FLOOR_OFFSET = 2;
+const rainState = {
+    drops: [],
+    geometry: null,
+    positions: null,
+    mesh: null,
+    enabled: false,
+    lightningTimeLeft: 0,
+    thunderDelayLeft: 0,
+    thunderPendingIntensity: 0,
+    nextThunderIn: 6 + Math.random() * 5,
+};
 const healthRestoreGroup = new THREE.Group();
 healthRestoreGroup.name = 'health-restore-points';
 renderer.scene.add(healthRestoreGroup);
@@ -133,6 +151,133 @@ for (let i = 0; i < REMOTE_FLASH_POOL_SIZE; i++) {
     renderer.scene.add(light);
     remoteFlashPool.push(light);
 }
+
+function createRainSystem() {
+    const positions = new Float32Array(RAIN_DROP_COUNT * 2 * 3);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.LineBasicMaterial({
+        color: 0xaec7db,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+        fog: true,
+        toneMapped: false,
+    });
+    const mesh = new THREE.LineSegments(geometry, material);
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    weatherGroup.add(mesh);
+
+    rainState.geometry = geometry;
+    rainState.positions = positions;
+    rainState.mesh = mesh;
+    rainState.drops = Array.from({ length: RAIN_DROP_COUNT }, () => ({
+        x: 0,
+        y: 0,
+        z: 0,
+        speed: 0,
+        length: 0,
+        driftX: 0,
+        driftZ: 0,
+    }));
+}
+
+function resetRainDrop(drop, anchor, topOnly = false) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.random() * RAIN_RADIUS;
+    drop.x = anchor[0] + Math.cos(angle) * radius;
+    drop.z = anchor[2] + Math.sin(angle) * radius;
+    drop.y = anchor[1] + (topOnly ? 6 + Math.random() * RAIN_HEIGHT : -RAIN_FLOOR_OFFSET + Math.random() * (RAIN_HEIGHT + RAIN_FLOOR_OFFSET + 6));
+    drop.speed = 15 + Math.random() * 12;
+    drop.length = 0.55 + Math.random() * 0.9;
+    drop.driftX = -1.8 + Math.random() * 0.6;
+    drop.driftZ = 0.25 + Math.random() * 0.5;
+}
+
+function updateRain(anchor, dt, enabled) {
+    if (!rainState.mesh || !rainState.positions) return;
+    rainState.enabled = enabled;
+    rainState.mesh.visible = enabled;
+    if (!enabled) return;
+
+    const positions = rainState.positions;
+    for (let i = 0; i < rainState.drops.length; i += 1) {
+        const drop = rainState.drops[i];
+        if (drop.speed === 0) {
+            resetRainDrop(drop, anchor, false);
+        }
+        drop.y -= drop.speed * dt;
+        drop.x += drop.driftX * dt;
+        drop.z += drop.driftZ * dt;
+        if (
+            drop.y < anchor[1] - RAIN_FLOOR_OFFSET
+            || Math.abs(drop.x - anchor[0]) > RAIN_RADIUS * 1.15
+            || Math.abs(drop.z - anchor[2]) > RAIN_RADIUS * 1.15
+        ) {
+            resetRainDrop(drop, anchor, true);
+        }
+
+        const idx = i * 6;
+        positions[idx] = drop.x;
+        positions[idx + 1] = drop.y;
+        positions[idx + 2] = drop.z;
+        positions[idx + 3] = drop.x + drop.driftX * 0.025;
+        positions[idx + 4] = drop.y + drop.length;
+        positions[idx + 5] = drop.z + drop.driftZ * 0.025;
+    }
+
+    rainState.geometry.attributes.position.needsUpdate = true;
+}
+
+function resetWeatherState() {
+    rainState.lightningTimeLeft = 0;
+    rainState.thunderDelayLeft = 0;
+    rainState.thunderPendingIntensity = 0;
+    rainState.nextThunderIn = 6 + Math.random() * 5;
+}
+
+function updateWeatherEffects(match, dt) {
+    const sky = renderer.activeSky || { enabled: false, preset: 'clear_day' };
+    const rainy = sky.enabled && sky.preset === 'rain_day';
+    const anchor = camera.position || player.pos || [0, 1.7, 0];
+
+    updateRain(anchor, dt, rainy);
+    updateWeatherAudio(soundEngine, { rainy }, dt);
+
+    if (!rainy) {
+        resetWeatherState();
+        applyLightningFlash(renderer, 0);
+        return;
+    }
+
+    rainState.nextThunderIn -= dt;
+    if (rainState.nextThunderIn <= 0 && rainState.thunderDelayLeft <= 0 && rainState.lightningTimeLeft <= 0) {
+        const intensity = 0.55 + Math.random() * 0.8;
+        rainState.lightningTimeLeft = 0.1 + Math.random() * 0.12;
+        rainState.thunderDelayLeft = 0.8 + Math.random() * 2.3;
+        rainState.thunderPendingIntensity = intensity;
+        rainState.nextThunderIn = 7 + Math.random() * 12;
+    }
+
+    if (rainState.lightningTimeLeft > 0) {
+        rainState.lightningTimeLeft = Math.max(0, rainState.lightningTimeLeft - dt);
+    }
+    if (rainState.thunderDelayLeft > 0) {
+        rainState.thunderDelayLeft = Math.max(0, rainState.thunderDelayLeft - dt);
+        if (rainState.thunderDelayLeft === 0 && rainState.thunderPendingIntensity > 0) {
+            soundThunder(rainState.thunderPendingIntensity);
+            rainState.thunderPendingIntensity = 0;
+        }
+    }
+
+    const flashAmount = rainState.lightningTimeLeft > 0
+        ? Math.max(0, Math.sin((rainState.lightningTimeLeft / 0.22) * Math.PI) * (0.55 + rainState.thunderPendingIntensity * 0.45))
+        : 0;
+    applyLightningFlash(renderer, flashAmount);
+}
+
+createRainSystem();
 
 function ensureHealthRestoreMesh(index) {
     while (healthRestorePool.length <= index) {
@@ -232,6 +377,8 @@ async function loadMapByName(name) {
     if (!resp.ok) return false;
     const data = await resp.json();
     loadMap(data);
+    applySkyConfig(renderer, getSkyConfig());
+    resetWeatherState();
 
     // Show loading screen and yield a frame so the browser paints it
     // before the synchronous buildWorldGeometry() blocks the main thread.
@@ -1630,6 +1777,7 @@ function frame(time) {
     // Update sound listener position
     const fwd = lookDirFromYawPitch(renderYaw, renderPitch);
     updateSoundListener(camera.position, fwd);
+    updateWeatherEffects(net.match, dt);
 
     // Footsteps for local player
     if (localInMatch && player.alive) {

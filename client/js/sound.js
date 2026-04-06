@@ -272,6 +272,9 @@ function playImpactSpatial(pos, listenerPos) {
 export function createSoundEngine() {
     return {
         footstepAccum: 0,
+        rainSource: null,
+        rainGain: null,
+        rainFilter: null,
     };
 }
 
@@ -313,4 +316,85 @@ export function soundImpact(pos, listenerPos) {
 
 export function primeSoundEngine() {
     getContext();
+}
+
+export function updateWeatherAudio(engine, weather = {}, dt = 0) {
+    void dt;
+    const rainy = weather?.rainy === true;
+    if (!engine) return;
+
+    if (!rainy) {
+        if (engine.rainGain) {
+            const audioCtx = getContext();
+            const now = audioCtx.currentTime;
+            engine.rainGain.gain.cancelScheduledValues(now);
+            engine.rainGain.gain.setTargetAtTime(0.0001, now, 0.12);
+        }
+        return;
+    }
+
+    const audioCtx = getContext();
+    if (!engine.rainSource) {
+        const source = audioCtx.createBufferSource();
+        source.buffer = getNoiseBuffer();
+        source.loop = true;
+
+        const hp = audioCtx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 900;
+
+        const lp = audioCtx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 5400;
+
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.0001;
+
+        source.connect(hp).connect(lp).connect(gain).connect(masterGain);
+        source.start();
+        engine.rainSource = source;
+        engine.rainFilter = lp;
+        engine.rainGain = gain;
+    }
+
+    const now = audioCtx.currentTime;
+    engine.rainGain.gain.cancelScheduledValues(now);
+    engine.rainGain.gain.setTargetAtTime(0.055, now, 0.35);
+}
+
+export function soundThunder(intensity = 1) {
+    if (!canPlay()) return;
+    const audioCtx = getContext();
+    const now = audioCtx.currentTime;
+    const duration = 2.6;
+    const gainScale = Math.max(0.4, Math.min(1.6, intensity || 1));
+
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = getNoiseBuffer();
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.setValueAtTime(420, now);
+    lowpass.frequency.linearRampToValueAtTime(180, now + duration);
+
+    const thunderGain = audioCtx.createGain();
+    thunderGain.gain.setValueAtTime(0.0001, now);
+    thunderGain.gain.linearRampToValueAtTime(0.12 * gainScale, now + 0.04);
+    thunderGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    noise.connect(lowpass).connect(thunderGain).connect(masterGain);
+    noise.start(now);
+    noise.stop(now + duration + 0.05);
+
+    const rumble = audioCtx.createOscillator();
+    rumble.type = 'sine';
+    rumble.frequency.setValueAtTime(68, now);
+    rumble.frequency.exponentialRampToValueAtTime(34, now + duration);
+    const rumbleGain = audioCtx.createGain();
+    rumbleGain.gain.setValueAtTime(0.0001, now);
+    rumbleGain.gain.linearRampToValueAtTime(0.07 * gainScale, now + 0.08);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    rumble.connect(rumbleGain).connect(masterGain);
+    rumble.start(now);
+    rumble.stop(now + duration + 0.05);
+
+    trackSound(duration * 1000 + 150);
 }
