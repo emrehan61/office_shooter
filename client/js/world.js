@@ -11,10 +11,15 @@ let mapWalls = [];
 let mapFloorInsets = [];
 let mapBoxes = [];
 let mapSpawnPoints = [];
+let mapHealthRestorePoints = [];
 let shotBlockers = [];
 
 export function getSpawnPoints() {
     return mapSpawnPoints;
+}
+
+export function getHealthRestorePoints() {
+    return mapHealthRestorePoints;
 }
 
 export function loadMap(data) {
@@ -25,6 +30,7 @@ export function loadMap(data) {
     mapFloorInsets = data.floorInsets || [];
     mapBoxes = data.boxes || [];
     mapSpawnPoints = data.spawnPoints || [];
+    mapHealthRestorePoints = data.healthRestorePoints || [];
     rebuildShotBlockers();
 }
 

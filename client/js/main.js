@@ -118,6 +118,10 @@ for (let i = 0; i < MAX_TRACERS; i++) {
 // Pre-allocated avatar mesh pool (GPU transforms instead of CPU vertex math)
 const avatarPool = createAvatarPool(renderer.scene);
 const objectivesPool = createObjectivesPool(renderer.scene);
+const healthRestoreGroup = new THREE.Group();
+healthRestoreGroup.name = 'health-restore-points';
+renderer.scene.add(healthRestoreGroup);
+const healthRestorePool = [];
 
 // Pre-allocated remote muzzle flash light pool (avoids per-frame PointLight allocation)
 const REMOTE_FLASH_POOL_SIZE = 6;
@@ -128,6 +132,87 @@ for (let i = 0; i < REMOTE_FLASH_POOL_SIZE; i++) {
     light.visible = false;
     renderer.scene.add(light);
     remoteFlashPool.push(light);
+}
+
+function ensureHealthRestoreMesh(index) {
+    while (healthRestorePool.length <= index) {
+        const root = new THREE.Group();
+
+        const pad = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.85, 0.85, 0.18, 18),
+            new THREE.MeshStandardMaterial({
+                color: 0x8a8f9c,
+                roughness: 0.65,
+                metalness: 0.25,
+            })
+        );
+        pad.position.y = 0.09;
+        root.add(pad);
+
+        const crossMat = new THREE.MeshStandardMaterial({
+            color: 0x55ff8f,
+            emissive: 0x1faa54,
+            emissiveIntensity: 1.4,
+            roughness: 0.25,
+            metalness: 0.05,
+        });
+        const crossBarA = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.16, 0.28), crossMat);
+        crossBarA.position.y = 0.28;
+        root.add(crossBarA);
+        const crossBarB = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.95), crossMat);
+        crossBarB.position.y = 0.28;
+        root.add(crossBarB);
+
+        const halo = new THREE.Mesh(
+            new THREE.TorusGeometry(1.1, 0.06, 8, 28),
+            new THREE.MeshStandardMaterial({
+                color: 0x83ffb0,
+                emissive: 0x39d978,
+                emissiveIntensity: 1.2,
+                roughness: 0.2,
+                metalness: 0.0,
+                transparent: true,
+                opacity: 0.9,
+            })
+        );
+        halo.rotation.x = Math.PI / 2;
+        halo.position.y = 0.12;
+        root.add(halo);
+
+        root.visible = false;
+        healthRestoreGroup.add(root);
+        healthRestorePool.push({ root, pad, crossBarA, crossBarB, halo, crossMat });
+    }
+
+    return healthRestorePool[index];
+}
+
+function updateHealthRestoreVisuals(match, timeSeconds) {
+    const points = Array.isArray(match.healthRestorePoints) ? match.healthRestorePoints : [];
+
+    for (let i = 0; i < points.length; i += 1) {
+        const point = points[i];
+        const mesh = ensureHealthRestoreMesh(i);
+        const active = point.active !== false && (point.cooldownTimeLeftMs ?? 0) <= 0;
+        const pulse = 0.92 + Math.sin(timeSeconds * 4 + i * 0.9) * 0.08;
+
+        mesh.root.visible = true;
+        mesh.root.position.set(point.x ?? 0, 0, point.z ?? 0);
+        mesh.root.scale.setScalar(active ? pulse : 0.82);
+        mesh.pad.scale.set(Math.max(0.5, point.radius ?? 1), 1, Math.max(0.5, point.radius ?? 1));
+        mesh.crossMat.color.setHex(active ? 0x55ff8f : 0x4e5d55);
+        mesh.crossMat.emissive.setHex(active ? 0x1faa54 : 0x1c251f);
+        mesh.crossMat.emissiveIntensity = active ? 1.4 : 0.2;
+        mesh.halo.material.color.setHex(active ? 0x83ffb0 : 0x5f6b65);
+        mesh.halo.material.emissive.setHex(active ? 0x39d978 : 0x18211b);
+        mesh.halo.material.emissiveIntensity = active ? 1.2 : 0.15;
+        mesh.halo.material.opacity = active ? 0.92 : 0.32;
+        mesh.halo.scale.setScalar(active ? 1 : 0.85);
+    }
+
+    for (let i = points.length; i < healthRestorePool.length; i += 1) {
+        healthRestorePool[i].root.visible = false;
+    }
 }
 
 function resize() {
@@ -1579,6 +1664,7 @@ function frame(time) {
 
     if (localInMatch) {
         const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
+        updateHealthRestoreVisuals(net.match, performance.now() * 0.001);
 
         // Update avatar mesh pool (GPU transforms — no per-vertex CPU math)
         updateAvatarPool(avatarPool, net.players, net.myId, renderServerTimeMs, sampleRemotePlayer);
@@ -1650,6 +1736,7 @@ function frame(time) {
 
         updateVertPool(renderer.weaponVertPool, player.alive ? weaponVerts(weapon) : []);
     } else {
+        updateHealthRestoreVisuals({ healthRestorePoints: [] }, performance.now() * 0.001);
         hideAvatarPool(avatarPool);
         updateVertPool(renderer.dynamicVertPool, []);
         updateVertPool(renderer.weaponVertPool, []);

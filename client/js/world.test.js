@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { traceShotImpact, loadMap } from './world.js';
+import { getHealthRestorePoints, traceShotImpact, loadMap } from './world.js';
 
 const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
 loadMap(mapData);
@@ -33,4 +33,13 @@ test('traceShotImpact resolves nearby player hits before distant walls', () => {
     assert.ok(Math.abs(impact[0] - 20) < 1e-6);
     assert.ok(impact[2] < 0.5);
     assert.ok(impact[2] > -0.5);
+});
+
+test('loadMap preserves health restore points', () => {
+    const points = getHealthRestorePoints();
+
+    assert.ok(Array.isArray(points));
+    assert.ok(points.length > 0);
+    assert.equal(points[0].healAmount, 35);
+    assert.equal(points[0].cooldownSec, 12);
 });

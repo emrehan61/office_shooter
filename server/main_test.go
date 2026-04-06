@@ -217,6 +217,94 @@ func TestBuildMatchStateIncludesSelectedMode(t *testing.T) {
 	}
 }
 
+func TestTickHealthRestorePointsHealsAndStartsCooldown(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	g.mapHealthRestorePoints = []healthRestorePointState{{
+		X: 0, Z: 0, Radius: 1.5, HealAmount: 35, CooldownMS: 12_000,
+	}}
+
+	player := addNamedPlayer(g, "Medic")
+	idx, ok := g.players.indexOf(player.id)
+	if !ok {
+		t.Fatal("expected player index")
+	}
+	g.players.pos[idx] = Vec3{0.5, standEyeHeight, 0.5}
+	g.players.hp[idx] = 40
+
+	g.tickHealthRestorePointsLocked(1_000)
+
+	if got := g.players.hp[idx]; got != 75 {
+		t.Fatalf("expected hp 75, got %d", got)
+	}
+	if got := g.mapHealthRestorePoints[0].CooldownEndsAt; got != 13_000 {
+		t.Fatalf("expected cooldown end 13000, got %d", got)
+	}
+}
+
+func TestTickHealthRestorePointsClampsAndSkipsCooldown(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	g.mapHealthRestorePoints = []healthRestorePointState{{
+		X: 0, Z: 0, Radius: 1.5, HealAmount: 35, CooldownMS: 12_000,
+	}}
+
+	player := addNamedPlayer(g, "Healthy")
+	idx, ok := g.players.indexOf(player.id)
+	if !ok {
+		t.Fatal("expected player index")
+	}
+	g.players.pos[idx] = Vec3{0, standEyeHeight, 0}
+	g.players.hp[idx] = 90
+
+	g.tickHealthRestorePointsLocked(2_000)
+	if got := g.players.hp[idx]; got != 100 {
+		t.Fatalf("expected hp to clamp at 100, got %d", got)
+	}
+
+	g.players.hp[idx] = 20
+	g.tickHealthRestorePointsLocked(3_000)
+	if got := g.players.hp[idx]; got != 20 {
+		t.Fatalf("expected point on cooldown to skip healing, got %d", got)
+	}
+}
+
+func TestTickHealthRestorePointsDeathmatchOnly(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeTeam
+	g.mapHealthRestorePoints = []healthRestorePointState{{
+		X: 0, Z: 0, Radius: 1.5, HealAmount: 35, CooldownMS: 12_000,
+	}}
+
+	player := addNamedPlayer(g, "Team")
+	idx, ok := g.players.indexOf(player.id)
+	if !ok {
+		t.Fatal("expected player index")
+	}
+	g.players.pos[idx] = Vec3{0, standEyeHeight, 0}
+	g.players.hp[idx] = 40
+
+	g.tickHealthRestorePointsLocked(1_000)
+	if got := g.players.hp[idx]; got != 40 {
+		t.Fatalf("expected no heal outside deathmatch, got %d", got)
+	}
+}
+
+func TestResetHealthRestorePointsOnMatchStart(t *testing.T) {
+	g := newTestGame()
+	g.mode = ModeDeathmatch
+	g.mapHealthRestorePoints = []healthRestorePointState{{
+		X: 0, Z: 0, Radius: 1.5, HealAmount: 35, CooldownMS: 12_000, CooldownEndsAt: 9_999,
+	}}
+
+	addNamedPlayer(g, "Reset")
+	g.startMatchLocked(5_000)
+
+	if got := g.mapHealthRestorePoints[0].CooldownEndsAt; got != 0 {
+		t.Fatalf("expected restore point to reset on match start, got %d", got)
+	}
+}
+
 func TestBroadcastChatQueuesSanitizedMessage(t *testing.T) {
 	g := newTestGame()
 
