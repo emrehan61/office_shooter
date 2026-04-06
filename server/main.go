@@ -262,12 +262,6 @@ const (
 
 type Vec3 [3]float64
 
-type inputMessage struct {
-	Pos       Vec3    `json:"pos"`
-	Yaw       float64 `json:"yaw"`
-	Pitch     float64 `json:"pitch"`
-	Crouching bool    `json:"crouching"`
-}
 
 type shootMessage struct {
 	Dir       Vec3     `json:"dir"`
@@ -322,24 +316,11 @@ type projectileState struct {
 	DetonateAt int64
 }
 
-type projectileSnapshot struct {
-	ID   int      `json:"id"`
-	Type WeaponID `json:"type"`
-	Pos  Vec3     `json:"pos"`
-}
-
 type areaEffectState struct {
 	Type      string
 	Pos       Vec3
 	Radius    float64
 	ExpiresAt int64
-}
-
-type areaEffectSnapshot struct {
-	Type       string  `json:"type"`
-	Pos        Vec3    `json:"pos"`
-	Radius     float64 `json:"radius"`
-	TimeLeftMS int64   `json:"timeLeftMs"`
 }
 
 type healthRestorePointJSON struct {
@@ -407,6 +388,11 @@ type playerStore struct {
 	deaths              []int
 	alive               []bool
 	inMatch             []bool
+	velY                   []float64
+	onGround               []bool
+	lastProcessedSeq       []uint16
+	inputQueue             [][]InputCommand
+	lastAckedSnapshotSeq   []uint16
 	botNextThink        []int64
 	botShotCount        []int64
 	conns               []*websocket.Conn
@@ -474,6 +460,8 @@ type Game struct {
 	flags            [2]flagState // 0=blue flag, 1=green flag
 	blueCTFCaptures  int
 	greenCTFCaptures int
+	snapshotSeq      uint16
+	snapshotBuf      snapshotBuffer
 }
 
 type hitCandidate struct {
@@ -949,6 +937,11 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.deaths = append(ps.deaths, 0)
 	ps.alive = append(ps.alive, true)
 	ps.inMatch = append(ps.inMatch, true)
+	ps.velY = append(ps.velY, 0)
+	ps.onGround = append(ps.onGround, true)
+	ps.lastProcessedSeq = append(ps.lastProcessedSeq, 0)
+	ps.inputQueue = append(ps.inputQueue, nil)
+	ps.lastAckedSnapshotSeq = append(ps.lastAckedSnapshotSeq, 0)
 	ps.botNextThink = append(ps.botNextThink, 0)
 	ps.botShotCount = append(ps.botShotCount, 0)
 	ps.conns = append(ps.conns, conn)
@@ -1004,6 +997,11 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.deaths[idx] = ps.deaths[last]
 		ps.alive[idx] = ps.alive[last]
 		ps.inMatch[idx] = ps.inMatch[last]
+		ps.velY[idx] = ps.velY[last]
+		ps.onGround[idx] = ps.onGround[last]
+		ps.lastProcessedSeq[idx] = ps.lastProcessedSeq[last]
+		ps.inputQueue[idx] = ps.inputQueue[last]
+		ps.lastAckedSnapshotSeq[idx] = ps.lastAckedSnapshotSeq[last]
 		ps.botNextThink[idx] = ps.botNextThink[last]
 		ps.botShotCount[idx] = ps.botShotCount[last]
 		ps.conns[idx] = ps.conns[last]
@@ -1049,6 +1047,11 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.deaths = ps.deaths[:last]
 	ps.alive = ps.alive[:last]
 	ps.inMatch = ps.inMatch[:last]
+	ps.velY = ps.velY[:last]
+	ps.onGround = ps.onGround[:last]
+	ps.lastProcessedSeq = ps.lastProcessedSeq[:last]
+	ps.inputQueue = ps.inputQueue[:last]
+	ps.lastAckedSnapshotSeq = ps.lastAckedSnapshotSeq[:last]
 	ps.botNextThink = ps.botNextThink[:last]
 	ps.botShotCount = ps.botShotCount[:last]
 	ps.conns = ps.conns[:last]
@@ -1239,15 +1242,6 @@ type playerState struct {
 	ActiveWeapon              WeaponID `json:"activeWeapon"`
 	Reloading                 bool     `json:"reloading"`
 	ReloadTimeLeftMS          int64    `json:"reloadTimeLeftMs"`
-}
-
-type playerStateMessage struct {
-	T           string               `json:"t"`
-	ServerTime  int64                `json:"serverTime"`
-	Players     map[int]playerState  `json:"players"`
-	Projectiles []projectileSnapshot `json:"projectiles,omitempty"`
-	Effects     []areaEffectSnapshot `json:"effects,omitempty"`
-	Match       matchState           `json:"match"`
 }
 
 type economyUpdate struct {
@@ -1655,44 +1649,6 @@ func (g *Game) buildPlayerStateLocked(idx int, nowMS int64) playerState {
 	}
 }
 
-func (g *Game) buildPlayerStateMessageLocked(messageType string, nowMS int64) playerStateMessage {
-	state := make(map[int]playerState, len(g.players.ids))
-	for i, id := range g.players.ids {
-		state[id] = g.buildPlayerStateLocked(i, nowMS)
-	}
-
-	projectiles := make([]projectileSnapshot, 0, len(g.projectiles))
-	for _, projectile := range g.projectiles {
-		projectiles = append(projectiles, projectileSnapshot{
-			ID:   projectile.ID,
-			Type: projectile.Type,
-			Pos:  projectile.Pos,
-		})
-	}
-
-	effects := make([]areaEffectSnapshot, 0, len(g.effects))
-	for _, effect := range g.effects {
-		timeLeft := effect.ExpiresAt - nowMS
-		if timeLeft <= 0 {
-			continue
-		}
-		effects = append(effects, areaEffectSnapshot{
-			Type:       effect.Type,
-			Pos:        effect.Pos,
-			Radius:     effect.Radius,
-			TimeLeftMS: timeLeft,
-		})
-	}
-
-	return playerStateMessage{
-		T:           messageType,
-		ServerTime:  nowMS,
-		Players:     state,
-		Projectiles: projectiles,
-		Effects:     effects,
-		Match:       g.buildMatchStateLocked(nowMS),
-	}
-}
 
 func (g *Game) stateTick(nowMS int64) {
 	g.mu.RLock()
@@ -1700,10 +1656,52 @@ func (g *Game) stateTick(nowMS int64) {
 		g.mu.RUnlock()
 		return
 	}
-	msg, _ := json.Marshal(g.buildPlayerStateMessageLocked("state", nowMS))
-	g.mu.RUnlock()
 
-	g.broadcast(msg, 0)
+	// Advance snapshot sequence.
+	g.snapshotSeq = (g.snapshotSeq + 1) & 0xFFFF
+	seq := g.snapshotSeq
+
+	// Build current quantized player states for delta comparison.
+	currentStates := make(map[int][]byte, len(g.players.ids))
+	for i, id := range g.players.ids {
+		ps := g.buildPlayerStateLocked(i, nowMS)
+		data := make([]byte, playerStateDataSize)
+		quantizePlayerBlock(data, ps)
+		currentStates[id] = data
+	}
+
+	// Store in ring buffer for future baselines.
+	g.snapshotBuf.store(seq, currentStates)
+
+	// For each human client, send delta or full snapshot.
+	for idx, id := range g.players.ids {
+		if g.players.isBot[idx] {
+			continue
+		}
+		sendCh := g.players.sendChs[idx]
+		if sendCh == nil {
+			continue
+		}
+
+		ackedSeq := g.players.lastAckedSnapshotSeq[idx]
+		baseline := g.snapshotBuf.find(ackedSeq)
+
+		var msg []byte
+		if baseline == nil || ackedSeq == 0 {
+			// No valid baseline — send full snapshot.
+			msg = g.encodeStateBinary(msgServerState, nowMS, seq)
+		} else {
+			// Send delta-compressed snapshot.
+			msg = g.encodeDeltaStateBinary(nowMS, seq, baseline, currentStates)
+		}
+
+		select {
+		case sendCh <- msg:
+		default:
+		}
+		_ = id
+	}
+	g.mu.RUnlock()
 }
 
 func normalizeMode(mode GameMode) GameMode {
@@ -1781,35 +1779,58 @@ func (g *Game) stateName() string {
 	return gameStateName(g.state)
 }
 
-func (g *Game) applyInputLocked(idx int, pos Vec3, yaw, pitch float64, crouching bool, nowMS int64) {
-	prevPos := g.players.pos[idx]
-	prevCrouching := g.players.crouching[idx]
-	g.players.yaw[idx] = yaw
-	g.players.pitch[idx] = pitch
-	if g.isIntermissionLocked(nowMS) {
-		return
-	}
-	g.players.crouching[idx] = crouching
-	if !g.players.alive[idx] || !g.players.inMatch[idx] {
-		return
-	}
+// processInputsLocked drains each player's input queue, runs server-authoritative
+// movement simulation for each buffered command, and sends an input ack.
+// Must be called once per tick with g.mu held.
+func (g *Game) processInputsLocked(nowMS int64) {
+	dt := 1.0 / float64(tickRate)
+	isIntermission := g.isIntermissionLocked(nowMS)
+	canMove := nowMS >= g.buyEndsAt && !isIntermission
 
-	nextPos := g.players.pos[idx]
-	nextPos[1] = pos[1]
-	if nowMS >= g.buyEndsAt {
-		nextPos[0] = pos[0]
-		nextPos[2] = pos[2]
-	}
+	for idx := range g.players.ids {
+		if g.players.isBot[idx] {
+			continue // bots use their own AI movement
+		}
+		queue := g.players.inputQueue[idx]
+		if len(queue) == 0 {
+			continue
+		}
 
-	g.players.pos[idx] = nextPos
-	if nextPos == prevPos && crouching == prevCrouching {
-		return
+		prevPos := g.players.pos[idx]
+		prevCrouching := g.players.crouching[idx]
+
+		for _, cmd := range queue {
+			if canMove {
+				g.simulateMovement(idx, cmd, dt)
+			} else {
+				// During buy phase / intermission: only accept crouch toggle, no movement.
+				g.players.crouching[idx] = cmd.Crouch
+			}
+			g.players.lastProcessedSeq[idx] = cmd.Seq
+		}
+		g.players.inputQueue[idx] = queue[:0] // clear processed
+
+		// Send input ack to this player.
+		sendCh := g.players.sendChs[idx]
+		if sendCh != nil {
+			ack := encodeInputAck(g.players.lastProcessedSeq[idx], g.players.velY[idx], g.players.onGround[idx])
+			select {
+			case sendCh <- ack:
+			default:
+			}
+		}
+
+		// Record position history for lag compensation.
+		newPos := g.players.pos[idx]
+		newCrouching := g.players.crouching[idx]
+		if newPos != prevPos || newCrouching != prevCrouching {
+			// Moving cancels spawn protection so the player becomes shootable.
+			if g.hasSpawnProtectionLocked(idx, nowMS) {
+				g.clearDeathmatchSpawnStateLocked(idx)
+			}
+			recordPositionSample(&g.players.history[idx], nowMS, newPos, newCrouching)
+		}
 	}
-	// Moving cancels spawn protection so the player becomes shootable
-	if g.hasSpawnProtectionLocked(idx, nowMS) {
-		g.clearDeathmatchSpawnStateLocked(idx)
-	}
-	recordPositionSample(&g.players.history[idx], nowMS, nextPos, crouching)
 }
 
 func queueJSON(sendCh chan []byte, payload any) {
@@ -3554,7 +3575,12 @@ func absInt(v int) int {
 
 func writer(conn *websocket.Conn, sendCh <-chan []byte) {
 	for msg := range sendCh {
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		// Binary messages start with a non-'{' byte; JSON always starts with '{'.
+		msgType := websocket.TextMessage
+		if len(msg) > 0 && msg[0] != '{' {
+			msgType = websocket.BinaryMessage
+		}
+		if err := conn.WriteMessage(msgType, msg); err != nil {
 			break
 		}
 	}
@@ -3644,32 +3670,31 @@ func (g *Game) scheduleRespawn(victimID int, roundNumber int) {
 			return
 		}
 
-		respawnMsg, _ := json.Marshal(map[string]interface{}{
-			"t":                         "respawn",
-			"id":                        victimID,
-			"pos":                       respawnPos,
-			"hp":                        respawnHP,
-			"armor":                     respawnArmor,
-			"credits":                   respawnCredits,
-			"team":                      team,
-			"pistolWeapon":              pistolWeapon,
-			"pistolClip":                pistolClip,
-			"pistolReserve":             pistolReserve,
-			"heavyWeapon":               heavyWeapon,
-			"heavyClip":                 heavyClip,
-			"heavyReserve":              heavyReserve,
-			"bombs":                     bombs,
-			"smokes":                    smokes,
-			"flashbangs":                flashbangs,
-			"flashTimeLeftMs":           int64(0),
-			"spawnProtectionTimeLeftMs": spawnProtectionTimeLeft,
-			"loadoutTimeLeftMs":         loadoutTimeLeft,
-			"activeWeapon":              activeWeapon,
-			"reloading":                 false,
-			"reloadTimeLeftMs":          int64(0),
-			"crouching":                 false,
-			"alive":                     true,
-		})
+		ps := playerState{
+			Pos:                       respawnPos,
+			Hp:                        respawnHP,
+			Armor:                     respawnArmor,
+			Credits:                   respawnCredits,
+			Team:                      team,
+			PistolWeapon:              pistolWeapon,
+			PistolClip:                pistolClip,
+			PistolReserve:             pistolReserve,
+			HeavyWeapon:               heavyWeapon,
+			HeavyClip:                 heavyClip,
+			HeavyReserve:              heavyReserve,
+			Bombs:                     bombs,
+			Smokes:                    smokes,
+			Flashbangs:                flashbangs,
+			FlashTimeLeftMS:           0,
+			SpawnProtectionTimeLeftMS: spawnProtectionTimeLeft,
+			LoadoutTimeLeftMS:         loadoutTimeLeft,
+			ActiveWeapon:              activeWeapon,
+			Reloading:                 false,
+			ReloadTimeLeftMS:          0,
+			Crouching:                 false,
+			Alive:                     true,
+		}
+		respawnMsg := encodeRespawnBinary(victimID, ps, nowMS)
 		g.broadcast(respawnMsg, 0)
 	}()
 }
@@ -3704,6 +3729,8 @@ func (g *Game) respawnPlayerLocked(idx int, nowMS int64) {
 	spawn := teamSpawns[rand.Intn(len(teamSpawns))]
 	g.players.pos[idx] = spawn
 	g.players.crouching[idx] = false
+	g.players.velY[idx] = 0
+	g.players.onGround[idx] = true
 	g.players.hp[idx] = maxHP
 	g.players.alive[idx] = true
 	g.players.flashEndsAt[idx] = 0
@@ -4003,7 +4030,21 @@ func (g *Game) broadcastRoundState(nowMS int64) {
 		g.mu.RUnlock()
 		return
 	}
-	msg, _ := json.Marshal(g.buildPlayerStateMessageLocked("round", nowMS))
+	// Round messages always use full snapshot (reliable, resets baselines).
+	g.snapshotSeq = (g.snapshotSeq + 1) & 0xFFFF
+	seq := g.snapshotSeq
+	msg := g.encodeStateBinary(msgServerRound, nowMS, seq)
+
+	// Also store in snapshot buffer so clients can ack it as a baseline.
+	currentStates := make(map[int][]byte, len(g.players.ids))
+	for i, id := range g.players.ids {
+		ps := g.buildPlayerStateLocked(i, nowMS)
+		data := make([]byte, playerStateDataSize)
+		quantizePlayerBlock(data, ps)
+		currentStates[id] = data
+	}
+	g.snapshotBuf.store(seq, currentStates)
+
 	g.mu.RUnlock()
 	g.broadcast(msg, 0)
 }
@@ -4023,6 +4064,7 @@ func (g *Game) tick(nowMS int64) {
 		}
 	}
 	if g.state == StatePlaying {
+		g.processInputsLocked(nowMS)
 		modeNorm := normalizeMode(g.mode)
 		if modeNorm == ModeDeathmatch || modeNorm == ModeCTF {
 			tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
@@ -4096,6 +4138,290 @@ func (g *Game) tick(nowMS int64) {
 	}
 }
 
+func (g *Game) handleBinaryMessage(playerID int, sendCh chan []byte, buf []byte) {
+	if len(buf) == 0 {
+		return
+	}
+
+	switch buf[0] {
+	case msgClientInput:
+		if !g.isPlaying() {
+			return
+		}
+		cmd, snapshotAck, ok := decodeBinaryInput(buf)
+		if !ok {
+			return
+		}
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if ok && g.players.inMatch[idx] {
+			// Buffer input for processing in the next tick.
+			g.players.inputQueue[idx] = append(g.players.inputQueue[idx], cmd)
+			// Set yaw/pitch immediately so lag comp and bot targeting see current aim.
+			g.players.yaw[idx] = cmd.Yaw
+			g.players.pitch[idx] = cmd.Pitch
+			// Track last acked snapshot for delta compression.
+			if snapshotAck != 0 {
+				g.players.lastAckedSnapshotSeq[idx] = snapshotAck
+			}
+		}
+		g.mu.Unlock()
+
+	case msgClientShoot:
+		if !g.isPlaying() {
+			return
+		}
+		nowMS := time.Now().UnixMilli()
+		sh, ok := decodeBinaryShoot(buf, nowMS)
+		if !ok {
+			return
+		}
+		dir := normalizeVec(sh.Dir)
+		shotTime := clampShotTime(sh.ShotTime, nowMS)
+		aiming := sh.Aiming
+		alternate := sh.Alternate
+
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if !ok || !g.players.inMatch[idx] || !g.players.alive[idx] || g.hasSpawnProtectionLocked(idx, nowMS) || nowMS < g.buyEndsAt || g.isIntermissionLocked(nowMS) {
+			g.mu.Unlock()
+			return
+		}
+		weapon := g.normalizeActiveWeaponLocked(idx, sh.Weapon)
+		g.players.activeWeapon[idx] = weapon
+		if !isCombatWeapon(weapon) {
+			g.mu.Unlock()
+			return
+		}
+		alternate = alternate && weapon == WeaponKnife
+		if g.isReloadingLocked(idx, nowMS) {
+			g.mu.Unlock()
+			return
+		}
+		config := effectiveWeaponConfig(weapon, alternate)
+		if nowMS < g.players.nextAttackAt[idx] {
+			g.mu.Unlock()
+			return
+		}
+		if config.UsesAmmo && !g.spendAmmoLocked(idx, weapon, 1) {
+			g.mu.Unlock()
+			return
+		}
+		bloom := g.registerShotBloomLocked(idx, weapon, nowMS)
+		moving := isMovingAtTime(&g.players.history[idx], shotTime)
+		g.registerShotRecoilLocked(idx, weapon, nowMS, aiming, moving)
+		dir = applyShotSpread(dir, config, aiming, g.players.crouching[idx], moving, bloom, shotTime+int64(playerID)*97+nowMS)
+		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
+		shooterPos := positionAtTime(&g.players.history[idx], shotTime)
+		g.mu.Unlock()
+
+		shotMsg := encodeShotBinary(playerID, shooterPos, dir, weapon, alternate)
+		g.broadcast(shotMsg, 0)
+
+		hit := g.findHitTargetLocked(playerID, shooterPos, dir, shotTime, config.Range)
+		if hit == nil {
+			return
+		}
+
+		damage := damageForConfig(config, hit.zone)
+		appliedHit := false
+		killed := false
+		victimID := hit.id
+
+		g.mu.Lock()
+		if hit.isHostage {
+			if hit.index >= 0 && hit.index < len(g.hostages) && g.hostages[hit.index].Alive {
+				g.hostages[hit.index].Alive = false
+				g.hostages[hit.index].FollowerID = 0
+				shooterIdx, ok := g.players.indexOf(playerID)
+				if ok {
+					g.players.credits[shooterIdx] -= hostageDeathPenalty
+					if g.players.credits[shooterIdx] < 0 {
+						g.players.credits[shooterIdx] = 0
+					}
+					update := g.applyEconomyUpdateLocked(shooterIdx, true, "penalty", "hostage", "Hostage Killed Penalty", "", -hostageDeathPenalty, nowMS)
+					g.mu.Unlock()
+					killMsg := encodeKillBinary(playerID, 0xFF, weapon)
+					g.broadcast(killMsg, 0)
+					g.sendToPlayer(playerID, &update)
+					return
+				}
+			}
+			g.mu.Unlock()
+			return
+		}
+
+		victimHP := 0
+		victimArmor := 0
+		absorbedDamage := 0
+		var shooterUpdate *economyUpdate
+
+		victimIdx, ok := g.players.indexOf(victimID)
+		shooterIdx, shooterOK := g.players.indexOf(playerID)
+		if ok && shooterOK && g.players.alive[victimIdx] && g.canPlayersDamageAtLocked(shooterIdx, victimIdx, shotTime) {
+			appliedHit = true
+			victimHP, victimArmor, absorbedDamage = applyDamage(g.players.hp[victimIdx], g.players.armor[victimIdx], damage)
+			g.players.hp[victimIdx] = victimHP
+			g.players.armor[victimIdx] = victimArmor
+
+			if victimHP <= 0 {
+				g.players.alive[victimIdx] = false
+				g.players.deaths[victimIdx]++
+				g.dropCarrierLocked(victimID, nowMS)
+				g.stripLoadoutOnDeathLocked(victimIdx)
+				killed = true
+				g.players.kills[shooterIdx]++
+				g.awardDeathmatchKillAmmoLocked(shooterIdx, weapon)
+				rewardAmount := g.addCreditsLocked(shooterIdx, killRewardForWeapon(weapon))
+				if rewardAmount != 0 {
+					update := g.applyEconomyUpdateLocked(shooterIdx, true, "reward", string(weapon), "Elimination reward", "", rewardAmount, nowMS)
+					shooterUpdate = &update
+				}
+				if normalizeMode(g.mode) == ModeDeathmatch {
+					g.scheduleRespawn(victimID, g.currentRound)
+				}
+			}
+		}
+		g.mu.Unlock()
+
+		if !appliedHit {
+			return
+		}
+
+		hitMsg := encodeHitBinary(playerID, victimID, damage, hit.zone, weapon, victimHP, victimArmor, absorbedDamage)
+		g.broadcast(hitMsg, 0)
+		if shooterUpdate != nil {
+			g.sendToPlayer(playerID, shooterUpdate)
+		}
+
+		if killed {
+			killMsg := encodeKillBinary(playerID, victimID, weapon)
+			g.broadcast(killMsg, 0)
+		}
+
+	case msgClientThrow:
+		if !g.isPlaying() {
+			return
+		}
+		th, ok := decodeBinaryThrow(buf)
+		if !ok {
+			return
+		}
+		dir := normalizeVec(th.Dir)
+		nowMS := time.Now().UnixMilli()
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if !ok {
+			g.mu.Unlock()
+			return
+		}
+		weapon := g.normalizeActiveWeaponLocked(idx, th.Weapon)
+		var update economyUpdate
+		switch {
+		case !g.players.inMatch[idx]:
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Join the next match first", 0, nowMS)
+		case !g.players.alive[idx]:
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Only alive players can throw utility", 0, nowMS)
+		case g.hasSpawnProtectionLocked(idx, nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Spawn protection is still active", 0, nowMS)
+		case g.isIntermissionLocked(nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Round is over", 0, nowMS)
+		case nowMS < g.buyEndsAt:
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Buy time is still active", 0, nowMS)
+		case !isUtilityWeaponID(weapon):
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Selected item is not throwable", 0, nowMS)
+		case g.isReloadingLocked(idx, nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Cannot throw while reloading", 0, nowMS)
+		case nowMS < g.players.nextAttackAt[idx]:
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Utility is not ready yet", 0, nowMS)
+		case !g.spendUtilityLocked(idx, weapon):
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "No utility remaining", 0, nowMS)
+		default:
+			g.players.activeWeapon[idx] = weapon
+			g.players.nextAttackAt[idx] = nowMS + utilityThrowIntervalMS
+			g.spawnProjectileLocked(playerID, weapon, g.players.pos[idx], dir, nowMS)
+			g.players.activeWeapon[idx] = g.normalizeActiveWeaponLocked(idx, weapon)
+			update = g.applyEconomyUpdateLocked(idx, true, "throw", string(weapon), string(weapon), "", 0, nowMS)
+		}
+		g.mu.Unlock()
+		queueJSON(sendCh, update)
+
+	case msgClientReload:
+		nowMS := time.Now().UnixMilli()
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if !ok {
+			g.mu.Unlock()
+			return
+		}
+		weapon := g.normalizeActiveWeaponLocked(idx, g.players.activeWeapon[idx])
+		var update economyUpdate
+		switch {
+		case g.state != StatePlaying:
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Match has not started", 0, nowMS)
+		case g.isIntermissionLocked(nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Round is over", 0, nowMS)
+		case !g.players.inMatch[idx]:
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Join the next match first", 0, nowMS)
+		case !g.players.alive[idx]:
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Only alive players can reload", 0, nowMS)
+		case !(isPistolWeapon(weapon) || isHeavyWeapon(weapon)):
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Current item cannot reload", 0, nowMS)
+		case g.isReloadingLocked(idx, nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Already reloading", 0, nowMS)
+		case !g.startReloadLocked(idx, weapon, nowMS):
+			update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Magazine is already full", 0, nowMS)
+			if g.currentReserveLocked(idx, weapon) == 0 {
+				update = g.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "No reserve ammo", 0, nowMS)
+			}
+		default:
+			update = g.applyEconomyUpdateLocked(idx, true, "reload", string(weapon), "", "", 0, nowMS)
+		}
+		g.mu.Unlock()
+		queueJSON(sendCh, update)
+
+	case msgClientSwitch:
+		w, ok := decodeBinarySwitch(buf)
+		if !ok {
+			return
+		}
+		nowMS := time.Now().UnixMilli()
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if ok && g.players.inMatch[idx] && !g.isReloadingLocked(idx, nowMS) {
+			g.players.activeWeapon[idx] = g.normalizeActiveWeaponLocked(idx, w)
+		}
+		g.mu.Unlock()
+
+	case msgClientBuy:
+		item, ok := decodeBinaryBuy(buf)
+		if !ok {
+			return
+		}
+		nowMS := time.Now().UnixMilli()
+		g.mu.Lock()
+		idx, ok := g.players.indexOf(playerID)
+		if !ok {
+			g.mu.Unlock()
+			return
+		}
+		update := g.applyPurchaseLocked(idx, string(item), nowMS)
+		g.mu.Unlock()
+		queueJSON(sendCh, update)
+
+	case msgClientPing:
+		clientTime, ok := decodeBinaryPing(buf)
+		if !ok {
+			return
+		}
+		pongMsg := encodePongBinary(clientTime, time.Now().UnixMilli())
+		select {
+		case sendCh <- pongMsg:
+		default:
+		}
+	}
+}
+
 func handleWS(w http.ResponseWriter, r *http.Request) {
 	lobbyID := strings.TrimSpace(r.URL.Query().Get("lobby"))
 	lobby, ok := lobbyManager.getLobby(lobbyID)
@@ -4131,6 +4457,12 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			break
+		}
+
+		// Binary messages have first byte != '{' (0x7B)
+		if len(msgBytes) > 0 && msgBytes[0] != '{' {
+			game.handleBinaryMessage(playerID, sendCh, msgBytes)
+			continue
 		}
 
 		var msg map[string]json.RawMessage
@@ -4216,15 +4548,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch t {
-		case "ping":
-			var clientTime int64
-			json.Unmarshal(msg["clientTime"], &clientTime)
-			queueJSON(sendCh, map[string]interface{}{
-				"t":          "pong",
-				"clientTime": clientTime,
-				"serverTime": time.Now().UnixMilli(),
-			})
-
 		case "chat":
 			var text string
 			json.Unmarshal(msg["text"], &text)
@@ -4241,300 +4564,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			if left {
 				game.broadcastLobby()
 			}
-
-		case "input":
-			if !game.isPlaying() {
-				continue
-			}
-
-			nowMS := time.Now().UnixMilli()
-			var inp inputMessage
-			json.Unmarshal(msgBytes, &inp)
-
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if ok && game.players.inMatch[idx] {
-				game.applyInputLocked(idx, inp.Pos, inp.Yaw, inp.Pitch, inp.Crouching, nowMS)
-			}
-			game.mu.Unlock()
-
-		case "shoot":
-			if !game.isPlaying() {
-				continue
-			}
-
-			var sh shootMessage
-			json.Unmarshal(msgBytes, &sh)
-			dir := normalizeVec(sh.Dir)
-			requestedShotTime := sh.ShotTime
-			requestedWeapon := sh.Weapon
-			aiming := sh.Aiming
-			alternate := sh.Alternate
-
-			nowMS := time.Now().UnixMilli()
-			shotTime := clampShotTime(requestedShotTime, nowMS)
-
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if !ok || !game.players.inMatch[idx] || !game.players.alive[idx] || game.hasSpawnProtectionLocked(idx, nowMS) || nowMS < game.buyEndsAt || game.isIntermissionLocked(nowMS) {
-				game.mu.Unlock()
-				continue
-			}
-
-			weapon := game.normalizeActiveWeaponLocked(idx, requestedWeapon)
-			game.players.activeWeapon[idx] = weapon
-			if !isCombatWeapon(weapon) {
-				game.mu.Unlock()
-				continue
-			}
-			alternate = alternate && weapon == WeaponKnife
-			if game.isReloadingLocked(idx, nowMS) {
-				game.mu.Unlock()
-				continue
-			}
-			config := effectiveWeaponConfig(weapon, alternate)
-			if nowMS < game.players.nextAttackAt[idx] {
-				game.mu.Unlock()
-				continue
-			}
-			if config.UsesAmmo && !game.spendAmmoLocked(idx, weapon, 1) {
-				game.mu.Unlock()
-				continue
-			}
-			bloom := game.registerShotBloomLocked(idx, weapon, nowMS)
-			moving := isMovingAtTime(&game.players.history[idx], shotTime)
-			// Track recoil state (client applies recoil to camera; server tracks for bloom/reset sync)
-			game.registerShotRecoilLocked(idx, weapon, nowMS, aiming, moving)
-			dir = applyShotSpread(dir, config, aiming, game.players.crouching[idx], moving, bloom, shotTime+int64(playerID)*97+nowMS)
-			game.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
-			shooterPos := positionAtTime(&game.players.history[idx], shotTime)
-			game.mu.Unlock()
-
-			shotMsg, _ := json.Marshal(map[string]interface{}{
-				"t":         "shot",
-				"id":        playerID,
-				"pos":       shooterPos,
-				"dir":       dir,
-				"weapon":    weapon,
-				"alternate": alternate,
-			})
-			game.broadcast(shotMsg, 0)
-
-			hit := game.findHitTargetLocked(playerID, shooterPos, dir, shotTime, config.Range)
-			if hit == nil {
-				continue
-			}
-
-			damage := damageForConfig(config, hit.zone)
-			appliedHit := false
-			killed := false
-			victimID := hit.id
-
-			game.mu.Lock()
-			if hit.isHostage {
-				if hit.index >= 0 && hit.index < len(game.hostages) && game.hostages[hit.index].Alive {
-					game.hostages[hit.index].Alive = false
-					game.hostages[hit.index].FollowerID = 0
-
-					// Apply penalty
-					shooterIdx, ok := game.players.indexOf(playerID)
-					if ok {
-						game.players.credits[shooterIdx] -= hostageDeathPenalty
-						if game.players.credits[shooterIdx] < 0 {
-							game.players.credits[shooterIdx] = 0
-						}
-						update := game.applyEconomyUpdateLocked(shooterIdx, true, "penalty", "hostage", "Hostage Killed Penalty", "", -hostageDeathPenalty, nowMS)
-						game.mu.Unlock()
-
-						// Broadcast hostage kill event roughly
-						killMsg, _ := json.Marshal(map[string]interface{}{
-							"t":      "kill",
-							"killer": playerID,
-							"victim": -1, // representing hostage
-							"weapon": weapon,
-						})
-						game.broadcast(killMsg, 0)
-						game.sendToPlayer(playerID, &update)
-						continue
-					}
-				}
-				game.mu.Unlock()
-				continue
-			}
-
-			victimHP := 0
-			victimArmor := 0
-			absorbedDamage := 0
-			var shooterUpdate *economyUpdate
-
-			victimIdx, ok := game.players.indexOf(victimID)
-			shooterIdx, shooterOK := game.players.indexOf(playerID)
-			if ok && shooterOK && game.players.alive[victimIdx] && game.canPlayersDamageAtLocked(shooterIdx, victimIdx, shotTime) {
-				appliedHit = true
-				victimHP, victimArmor, absorbedDamage = applyDamage(game.players.hp[victimIdx], game.players.armor[victimIdx], damage)
-				game.players.hp[victimIdx] = victimHP
-				game.players.armor[victimIdx] = victimArmor
-
-				if victimHP <= 0 {
-					game.players.alive[victimIdx] = false
-					game.players.deaths[victimIdx]++
-					game.dropCarrierLocked(victimID, nowMS)
-					game.stripLoadoutOnDeathLocked(victimIdx)
-					killed = true
-					game.players.kills[shooterIdx]++
-					game.awardDeathmatchKillAmmoLocked(shooterIdx, weapon)
-					rewardAmount := game.addCreditsLocked(shooterIdx, killRewardForWeapon(weapon))
-					if rewardAmount != 0 {
-						update := game.applyEconomyUpdateLocked(shooterIdx, true, "reward", string(weapon), "Elimination reward", "", rewardAmount, nowMS)
-						shooterUpdate = &update
-					}
-					if normalizeMode(game.mode) == ModeDeathmatch {
-						game.scheduleRespawn(victimID, game.currentRound)
-					}
-				}
-			}
-			game.mu.Unlock()
-
-			if !appliedHit {
-				continue
-			}
-
-			hitMsg, _ := json.Marshal(map[string]interface{}{
-				"t":        "hit",
-				"from":     playerID,
-				"to":       victimID,
-				"dmg":      damage,
-				"zone":     hit.zone,
-				"weapon":   weapon,
-				"hp":       victimHP,
-				"armor":    victimArmor,
-				"absorbed": absorbedDamage,
-			})
-			game.broadcast(hitMsg, 0)
-			if shooterUpdate != nil {
-				game.sendToPlayer(playerID, shooterUpdate)
-			}
-
-			if !killed {
-				continue
-			}
-
-			killMsg, _ := json.Marshal(map[string]interface{}{
-				"t":      "kill",
-				"killer": playerID,
-				"victim": victimID,
-				"weapon": weapon,
-			})
-			game.broadcast(killMsg, 0)
-
-		case "buy":
-			var item string
-			json.Unmarshal(msg["item"], &item)
-			nowMS := time.Now().UnixMilli()
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if !ok {
-				game.mu.Unlock()
-				continue
-			}
-			update := game.applyPurchaseLocked(idx, item, nowMS)
-			game.mu.Unlock()
-			queueJSON(sendCh, update)
-
-		case "reload":
-			nowMS := time.Now().UnixMilli()
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if !ok {
-				game.mu.Unlock()
-				continue
-			}
-			weapon := game.normalizeActiveWeaponLocked(idx, game.players.activeWeapon[idx])
-			var update economyUpdate
-			switch {
-			case game.state != StatePlaying:
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Match has not started", 0, nowMS)
-			case game.isIntermissionLocked(nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Round is over", 0, nowMS)
-			case !game.players.inMatch[idx]:
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Join the next match first", 0, nowMS)
-			case !game.players.alive[idx]:
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Only alive players can reload", 0, nowMS)
-			case !(isPistolWeapon(weapon) || isHeavyWeapon(weapon)):
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Current item cannot reload", 0, nowMS)
-			case game.isReloadingLocked(idx, nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Already reloading", 0, nowMS)
-			case !game.startReloadLocked(idx, weapon, nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Magazine is already full", 0, nowMS)
-				if game.currentReserveLocked(idx, weapon) == 0 {
-					update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "No reserve ammo", 0, nowMS)
-				}
-			default:
-				update = game.applyEconomyUpdateLocked(idx, true, "reload", string(weapon), "", "", 0, nowMS)
-			}
-			game.mu.Unlock()
-			queueJSON(sendCh, update)
-
-		case "throw":
-			if !game.isPlaying() {
-				continue
-			}
-
-			var dir Vec3
-			var requestedWeapon WeaponID
-			json.Unmarshal(msg["dir"], &dir)
-			json.Unmarshal(msg["weapon"], &requestedWeapon)
-			dir = normalizeVec(dir)
-
-			nowMS := time.Now().UnixMilli()
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if !ok {
-				game.mu.Unlock()
-				continue
-			}
-
-			weapon := game.normalizeActiveWeaponLocked(idx, requestedWeapon)
-			var update economyUpdate
-			switch {
-			case !game.players.inMatch[idx]:
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Join the next match first", 0, nowMS)
-			case !game.players.alive[idx]:
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Only alive players can throw utility", 0, nowMS)
-			case game.hasSpawnProtectionLocked(idx, nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Spawn protection is still active", 0, nowMS)
-			case game.isIntermissionLocked(nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Round is over", 0, nowMS)
-			case nowMS < game.buyEndsAt:
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Buy time is still active", 0, nowMS)
-			case !isUtilityWeaponID(weapon):
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Selected item is not throwable", 0, nowMS)
-			case game.isReloadingLocked(idx, nowMS):
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Cannot throw while reloading", 0, nowMS)
-			case nowMS < game.players.nextAttackAt[idx]:
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Utility is not ready yet", 0, nowMS)
-			case !game.spendUtilityLocked(idx, weapon):
-				update = game.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "No utility remaining", 0, nowMS)
-			default:
-				game.players.activeWeapon[idx] = weapon
-				game.players.nextAttackAt[idx] = nowMS + utilityThrowIntervalMS
-				game.spawnProjectileLocked(playerID, weapon, game.players.pos[idx], dir, nowMS)
-				game.players.activeWeapon[idx] = game.normalizeActiveWeaponLocked(idx, weapon)
-				update = game.applyEconomyUpdateLocked(idx, true, "throw", string(weapon), string(weapon), "", 0, nowMS)
-			}
-			game.mu.Unlock()
-			queueJSON(sendCh, update)
-
-		case "switch":
-			var requestedWeapon WeaponID
-			json.Unmarshal(msg["weapon"], &requestedWeapon)
-			nowMS := time.Now().UnixMilli()
-			game.mu.Lock()
-			idx, ok := game.players.indexOf(playerID)
-			if ok && game.players.inMatch[idx] && !game.isReloadingLocked(idx, nowMS) {
-				game.players.activeWeapon[idx] = game.normalizeActiveWeaponLocked(idx, requestedWeapon)
-			}
-			game.mu.Unlock()
 
 		case "mode":
 			var requestedMode GameMode

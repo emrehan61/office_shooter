@@ -4,7 +4,7 @@ import { getMaterial, getAOMaterial, createBoxMesh, createFloorMaterial, createP
 // Office-themed world definition: open software studio with meeting pods and workstations.
 // Material IDs: 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 13=glass, 14=wood, 15=screen, 16=plant
 
-let mapArena = 30;
+export let mapArena = 30;
 let mapWallHeight = 5;
 let mapWallThick = 0.3;
 let mapWalls = [];

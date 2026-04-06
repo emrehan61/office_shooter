@@ -44,6 +44,17 @@ func assignPlayerTeam(g *Game, id int, team TeamID) int {
 	return idx
 }
 
+func readQueuedBinary(t *testing.T, sendCh chan []byte) []byte {
+	t.Helper()
+	select {
+	case raw := <-sendCh:
+		return raw
+	default:
+		t.Fatal("expected queued binary message")
+		return nil
+	}
+}
+
 func readQueuedMessage(t *testing.T, sendCh chan []byte) map[string]any {
 	t.Helper()
 
@@ -201,9 +212,17 @@ func TestStateTickIncludesServerTime(t *testing.T) {
 	nowMS := int64(1234)
 	g.stateTick(nowMS)
 
-	msg := readQueuedMessage(t, host.sendCh)
-	if got, ok := msg["serverTime"].(float64); !ok || int64(got) != nowMS {
-		t.Fatalf("expected serverTime %d, got %#v", nowMS, msg["serverTime"])
+	raw := readQueuedBinary(t, host.sendCh)
+	if len(raw) < 7 {
+		t.Fatalf("expected at least 7 bytes, got %d", len(raw))
+	}
+	if raw[0] != msgServerState {
+		t.Fatalf("expected message type 0x%02x, got 0x%02x", msgServerState, raw[0])
+	}
+	// Header: [type:1] [snapshotSeq:2] [serverTime:4] ...
+	serverTime := int64(le.Uint32(raw[3:7]))
+	if serverTime != nowMS {
+		t.Fatalf("expected serverTime %d, got %d", nowMS, serverTime)
 	}
 }
 

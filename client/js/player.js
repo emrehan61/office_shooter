@@ -19,7 +19,7 @@ import { TEAM_NONE, normalizeTeam } from './teams.js';
 const BASE_SPEED = 10;
 const BASE_JUMP_VEL = 7;
 const GRAVITY = -20;
-const PLAYER_RADIUS = 0.4;
+export const PLAYER_RADIUS = 0.4;
 export const STAND_EYE_HEIGHT = 1.7;
 export const CROUCH_EYE_HEIGHT = 1.15;
 
@@ -97,7 +97,7 @@ export function resetCombatState(player) {
 export function applyAuthoritativeState(player, state) {
     if (!state) return;
 
-    if (state.pos) player.pos = [...state.pos];
+    if (state.pos) { player.pos[0] = state.pos[0]; player.pos[1] = state.pos[1]; player.pos[2] = state.pos[2]; }
     if (typeof state.hp === 'number') player.hp = clamp(state.hp, 0, MAX_HP);
     if (typeof state.armor === 'number') player.armor = clamp(state.armor, 0, MAX_ARMOR);
     if (typeof state.credits === 'number') player.credits = Math.max(0, state.credits);
