@@ -12,7 +12,17 @@ let mapFloorInsets = [];
 let mapBoxes = [];
 let mapSpawnPoints = [];
 let mapHealthRestorePoints = [];
+let mapSky = normalizeSkyConfig();
 let shotBlockers = [];
+
+export function normalizeSkyConfig(sky = {}) {
+    const enabled = sky?.enabled === true;
+    return {
+        enabled,
+        preset: enabled ? (sky?.preset || 'clear_day') : 'clear_day',
+        sunMode: enabled ? (sky?.sunMode || 'fixed') : 'fixed',
+    };
+}
 
 export function getSpawnPoints() {
     return mapSpawnPoints;
@@ -20,6 +30,16 @@ export function getSpawnPoints() {
 
 export function getHealthRestorePoints() {
     return mapHealthRestorePoints;
+}
+
+export function getSkyConfig() {
+    return mapSky;
+}
+
+export function shouldBuildCeiling(opts = {}) {
+    const hideCeiling = opts.hideCeiling === true;
+    const skyEnabled = opts.skyEnabled ?? mapSky.enabled;
+    return !hideCeiling && !skyEnabled;
 }
 
 export function loadMap(data) {
@@ -31,6 +51,7 @@ export function loadMap(data) {
     mapBoxes = data.boxes || [];
     mapSpawnPoints = data.spawnPoints || [];
     mapHealthRestorePoints = data.healthRestorePoints || [];
+    mapSky = normalizeSkyConfig(data.sky);
     rebuildShotBlockers();
 }
 
@@ -371,7 +392,6 @@ function computeWorldLighting(meshes) {
 }
 
 export function buildWorldGeometry(opts = {}) {
-    const hideCeiling = opts.hideCeiling === true;
     const skipFloorAO = opts.skipFloorAO === true;
     const meshes = [];
     // Editor skips AO: generateFloorAO is O(512² × geometry) and was freezing every rebuild while dragging.
@@ -380,7 +400,7 @@ export function buildWorldGeometry(opts = {}) {
     // Floor with baked AO (or flat material when skipFloorAO)
     meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 1, 0, floorAO));
     // Ceiling (no AO) — omitted in map editor so orbit view isn’t covered by the roof
-    if (!hideCeiling) {
+    if (shouldBuildCeiling(opts)) {
         meshes.push(createFloorMesh(-mapArena, -mapArena, mapArena, mapArena, 2, mapWallHeight, null));
     }
 

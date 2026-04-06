@@ -51,6 +51,106 @@ const aoMaterialCache = new Map();
 const normalMapCache = new Map();
 let envMap = null;
 
+const INDOOR_FOG_COLOR = 0x1a1e28;
+const OUTDOOR_CLEAR_COLOR = 0x87b8e8;
+const INDOOR_DIRLIGHT_POS = [6, 16, 4];
+const DEFAULT_SUN_DIRECTION = new THREE.Vector3(0.72, 0.58, -0.36).normalize();
+
+export function normalizeRendererSkyConfig(sky = {}) {
+    const enabled = sky?.enabled === true;
+    return {
+        enabled,
+        preset: enabled ? (sky?.preset || 'clear_day') : 'clear_day',
+        sunMode: enabled ? (sky?.sunMode || 'fixed') : 'fixed',
+    };
+}
+
+export function resolveAtmosphereForSky(sky = {}) {
+    const config = normalizeRendererSkyConfig(sky);
+    if (!config.enabled) {
+        return {
+            enabled: false,
+            clearColor: INDOOR_FOG_COLOR,
+            fogColor: INDOOR_FOG_COLOR,
+            fogDensity: 0.025,
+            ambientIntensity: 0.8,
+            hemisphereSky: 0xd8e4f0,
+            hemisphereGround: 0x383840,
+            hemisphereIntensity: 0.5,
+            dirLightColor: 0xf0f0ff,
+            dirLightIntensity: 0.55,
+            sunDirection: DEFAULT_SUN_DIRECTION.toArray(),
+            skyTop: 0x7fb8ff,
+            skyHorizon: 0xcde8ff,
+            groundColor: 0xe8dcc2,
+            sunColor: 0xfff4d6,
+            sunHaloColor: 0xffe2ae,
+            sunSize: 0.022,
+            sunHalo: 0.12,
+        };
+    }
+
+    return {
+        enabled: true,
+        clearColor: OUTDOOR_CLEAR_COLOR,
+        fogColor: 0xbcd8ef,
+        fogDensity: 0.012,
+        ambientIntensity: 1.0,
+        hemisphereSky: 0xe7f3ff,
+        hemisphereGround: 0x7f8c6d,
+        hemisphereIntensity: 0.85,
+        dirLightColor: 0xfff2d6,
+        dirLightIntensity: 1.05,
+        sunDirection: DEFAULT_SUN_DIRECTION.toArray(),
+        skyTop: 0x63a9f5,
+        skyHorizon: 0xd8efff,
+        groundColor: 0xf7e3c8,
+        sunColor: 0xfff7d7,
+        sunHaloColor: 0xffd89a,
+        sunSize: 0.028,
+        sunHalo: 0.16,
+    };
+}
+
+const SkyVertexShader = /* glsl */`
+    varying vec3 vWorldPosition;
+
+    void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const SkyFragmentShader = /* glsl */`
+    varying vec3 vWorldPosition;
+
+    uniform vec3 skyTop;
+    uniform vec3 skyHorizon;
+    uniform vec3 groundColor;
+    uniform vec3 sunDirection;
+    uniform vec3 sunColor;
+    uniform vec3 sunHaloColor;
+    uniform float sunSize;
+    uniform float sunHalo;
+
+    void main() {
+        vec3 viewDir = normalize(vWorldPosition);
+        float up = clamp(viewDir.y * 0.5 + 0.5, 0.0, 1.0);
+        float horizonBlend = smoothstep(0.0, 0.5, up);
+        vec3 base = mix(skyHorizon, skyTop, horizonBlend);
+        float groundMix = smoothstep(-0.18, 0.08, viewDir.y);
+        base = mix(groundColor, base, groundMix);
+
+        float sunDot = max(dot(viewDir, normalize(sunDirection)), 0.0);
+        float sunDisc = smoothstep(1.0 - sunSize, 1.0 - sunSize * 0.25, sunDot);
+        float halo = pow(sunDot, max(2.0, 1.0 / max(0.0001, sunHalo)));
+        vec3 color = base + sunHaloColor * halo * 0.35 + sunColor * sunDisc;
+
+        gl_FragColor = vec4(color, 1.0);
+    }
+`;
+
 // ─── Procedural normal maps ───
 
 function generateProceduralNormalMap(type) {
@@ -464,6 +564,75 @@ export function createBoxMesh(cx, cy, cz, hx, hy, hz, matID) {
     return mesh;
 }
 
+function createSkyDome() {
+    const geometry = new THREE.SphereGeometry(80, 32, 24);
+    const material = new THREE.ShaderMaterial({
+        vertexShader: SkyVertexShader,
+        fragmentShader: SkyFragmentShader,
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+        uniforms: {
+            skyTop: { value: new THREE.Color(0x63a9f5) },
+            skyHorizon: { value: new THREE.Color(0xd8efff) },
+            groundColor: { value: new THREE.Color(0xf7e3c8) },
+            sunDirection: { value: DEFAULT_SUN_DIRECTION.clone() },
+            sunColor: { value: new THREE.Color(0xfff7d7) },
+            sunHaloColor: { value: new THREE.Color(0xffd89a) },
+            sunSize: { value: 0.028 },
+            sunHalo: { value: 0.16 },
+        },
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = -100;
+    return mesh;
+}
+
+export function applySkyConfig(r, sky = {}) {
+    const atmosphere = resolveAtmosphereForSky(sky);
+    const fogColor = new THREE.Color(atmosphere.fogColor);
+    const clearColor = new THREE.Color(atmosphere.clearColor);
+
+    r.renderer.setClearColor(clearColor, 1);
+    if (r.scene.fog) {
+        r.scene.fog.color.copy(fogColor);
+        r.scene.fog.density = atmosphere.fogDensity;
+    } else {
+        r.scene.fog = new THREE.FogExp2(fogColor, atmosphere.fogDensity);
+    }
+    r.scene.background = atmosphere.enabled ? clearColor.clone() : null;
+
+    r.ambientLight.intensity = r.editorMode ? atmosphere.ambientIntensity * 0.78 : atmosphere.ambientIntensity;
+    r.hemiLight.color.setHex(atmosphere.hemisphereSky);
+    r.hemiLight.groundColor.setHex(atmosphere.hemisphereGround);
+    r.hemiLight.intensity = r.editorMode ? atmosphere.hemisphereIntensity * 0.8 : atmosphere.hemisphereIntensity;
+    r.dirLight.color.setHex(atmosphere.dirLightColor);
+    r.dirLight.intensity = r.editorMode ? atmosphere.dirLightIntensity * 0.75 : atmosphere.dirLightIntensity;
+
+    const sunDirection = new THREE.Vector3(...atmosphere.sunDirection).normalize();
+    if (atmosphere.enabled) {
+        r.dirLight.position.copy(sunDirection).multiplyScalar(28);
+    } else {
+        r.dirLight.position.set(...INDOOR_DIRLIGHT_POS);
+    }
+
+    r.skyGroup.visible = atmosphere.enabled;
+    if (atmosphere.enabled) {
+        const uniforms = r.skyDome.material.uniforms;
+        uniforms.skyTop.value.setHex(atmosphere.skyTop);
+        uniforms.skyHorizon.value.setHex(atmosphere.skyHorizon);
+        uniforms.groundColor.value.setHex(atmosphere.groundColor);
+        uniforms.sunDirection.value.copy(sunDirection);
+        uniforms.sunColor.value.setHex(atmosphere.sunColor);
+        uniforms.sunHaloColor.value.setHex(atmosphere.sunHaloColor);
+        uniforms.sunSize.value = atmosphere.sunSize;
+        uniforms.sunHalo.value = atmosphere.sunHalo;
+    }
+
+    r.activeSky = normalizeRendererSkyConfig(sky);
+}
+
 // ─── Renderer + post-processing pipeline ───
 
 export function createRenderer(canvas, options = {}) {
@@ -479,14 +648,20 @@ export function createRenderer(canvas, options = {}) {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = editorMode ? 1.0 : 1.3;
-    renderer.setClearColor(0x1a1e28, 1);
+    renderer.setClearColor(INDOOR_FOG_COLOR, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, editorMode ? 1 : 2));
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x1a1e28, 0.025);
+    scene.fog = new THREE.FogExp2(INDOOR_FOG_COLOR, 0.025);
 
     envMap = generateEnvMap(renderer);
     scene.environment = envMap;
+
+    const skyGroup = new THREE.Group();
+    skyGroup.name = 'sky';
+    scene.add(skyGroup);
+    const skyDome = createSkyDome();
+    skyGroup.add(skyDome);
 
     // Lighting — baked lightmaps provide spatial variation from ceiling panels.
     // Real-time lights are kept low so baked light dominates.
@@ -498,7 +673,7 @@ export function createRenderer(canvas, options = {}) {
 
     // Angled directional for edge definition on surfaces + shadow casting
     const dirLight = new THREE.DirectionalLight(0xf0f0ff, editorMode ? 0.5 : 0.55);
-    dirLight.position.set(6, 16, 4);
+    dirLight.position.set(...INDOOR_DIRLIGHT_POS);
     dirLight.castShadow = !editorMode;
     if (dirLight.castShadow) {
         dirLight.shadow.mapSize.width = 1024;
@@ -590,13 +765,18 @@ export function createRenderer(canvas, options = {}) {
         composer.addPass(fxaaPass);
     }
 
-    return {
+    const api = {
         renderer,
         scene,
         camera,
+        skyGroup,
+        skyDome,
         worldGroup,
         dynamicGroup,
         weaponGroup,
+        ambientLight,
+        hemiLight,
+        dirLight,
         gl: renderer.getContext(),
         composer,
         ssrPass,
@@ -607,6 +787,8 @@ export function createRenderer(canvas, options = {}) {
         dynamicVertPool,
         weaponVertPool,
     };
+    applySkyConfig(api, { enabled: false });
+    return api;
 }
 
 export function uploadWorldGeo(r, worldMeshes) {
@@ -655,6 +837,9 @@ export function resizeRenderer(r, width, height) {
 export function updateCamera(r, position, yaw, pitch, fov) {
     const cam = r.camera;
     cam.position.set(position[0], position[1], position[2]);
+    if (r.skyGroup) {
+        r.skyGroup.position.copy(cam.position);
+    }
     cam.rotation.order = 'YXZ';
     cam.rotation.y = yaw;
     cam.rotation.x = pitch;

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { createRenderer, uploadWorldGeo, render, resizeRenderer, clearDynamic, vertsToGroup } from './renderer.js';
-import { buildWorldGeometry, loadMap, rayAABBIntersection } from './world.js';
+import { applySkyConfig, createRenderer, uploadWorldGeo, render, resizeRenderer, clearDynamic, vertsToGroup } from './renderer.js';
+import { buildWorldGeometry, getSkyConfig, loadMap, normalizeSkyConfig, rayAABBIntersection } from './world.js';
 
 // ── Material palette ───────────────────────────────────────────────
 const MATERIALS = [
@@ -99,6 +99,7 @@ let mapData = {
     boxes: [],
     spawnPoints: [],
     healthRestorePoints: [],
+    sky: normalizeSkyConfig(),
 };
 
 let selectedType = null; // 'wall' | 'box' | 'floorInset' | 'spawn' | 'healthRestorePoint'
@@ -126,6 +127,7 @@ function normalizeMapData(data = {}) {
         boxes: data.boxes || [],
         spawnPoints: data.spawnPoints || [],
         healthRestorePoints: (data.healthRestorePoints || []).map(normalizeHealthRestorePoint),
+        sky: normalizeSkyConfig(data.sky),
     };
 }
 
@@ -943,6 +945,7 @@ function setActiveTool(tool) {
 // ── Rebuild and upload world geometry ──────────────────────────────
 function rebuildWorld() {
     loadMap(mapData);
+    applySkyConfig(renderer, getSkyConfig());
     const geo = buildWorldGeometry({ hideCeiling: true, skipFloorAO: true });
     uploadWorldGeo(renderer, geo);
     dirty = false;
@@ -966,6 +969,9 @@ function frame() {
     ];
     const cam = renderer.camera;
     cam.position.set(eye[0], eye[1], eye[2]);
+    if (renderer.skyGroup) {
+        renderer.skyGroup.position.copy(cam.position);
+    }
     cam.lookAt(orbit.target[0], orbit.target[1], orbit.target[2]);
     cam.fov = orbit.fov * (180 / Math.PI);
     cam.near = orbit.near;
@@ -1588,11 +1594,37 @@ document.querySelectorAll('.tool-btn').forEach((btn) => {
 // ── Top bar ────────────────────────────────────────────────────────
 const nameInput = document.getElementById('map-name');
 const arenaInput = document.getElementById('arena-size');
+const skyEnabledInput = document.getElementById('sky-enabled');
+const skyPresetInput = document.getElementById('sky-preset');
 const statusEl = document.getElementById('status-text');
+
+function syncSkyControls() {
+    skyEnabledInput.checked = mapData.sky?.enabled === true;
+    skyPresetInput.value = mapData.sky?.preset || 'clear_day';
+    skyPresetInput.disabled = !skyEnabledInput.checked;
+}
 
 nameInput.addEventListener('input', () => { mapData.name = nameInput.value; });
 arenaInput.addEventListener('change', () => {
     mapData.arena = parseInt(arenaInput.value, 10) || 30;
+    dirty = true;
+});
+skyEnabledInput.addEventListener('change', () => {
+    mapData.sky = normalizeSkyConfig({
+        ...mapData.sky,
+        enabled: skyEnabledInput.checked,
+        preset: skyPresetInput.value,
+    });
+    syncSkyControls();
+    dirty = true;
+});
+skyPresetInput.addEventListener('change', () => {
+    mapData.sky = normalizeSkyConfig({
+        ...mapData.sky,
+        enabled: skyEnabledInput.checked,
+        preset: skyPresetInput.value,
+    });
+    syncSkyControls();
     dirty = true;
 });
 
@@ -1618,8 +1650,10 @@ document.getElementById('btn-new').addEventListener('click', () => {
         boxes: [],
         spawnPoints: [],
         healthRestorePoints: [],
+        sky: normalizeSkyConfig(),
     };
     nameInput.value = mapData.name;
+    syncSkyControls();
     nextGroupId = 1;
     selectedType = null;
     selectedIndex = -1;
@@ -1641,6 +1675,7 @@ fileInput.addEventListener('change', () => {
             mapData = normalizeMapData({ ...data, name: data.name || 'Imported' });
             nameInput.value = mapData.name;
             arenaInput.value = mapData.arena;
+            syncSkyControls();
             syncNextGroupId();
             selectedType = null;
             selectedIndex = -1;
@@ -1677,6 +1712,7 @@ async function init() {
             mapData = normalizeMapData({ ...data, name: data.name || 'Office Studio' });
             nameInput.value = mapData.name;
             arenaInput.value = mapData.arena;
+            syncSkyControls();
             syncNextGroupId();
             setStatus('Loaded: office_studio.json');
         }
@@ -1685,6 +1721,7 @@ async function init() {
     }
 
     dirty = true;
+    syncSkyControls();
     requestAnimationFrame(frame);
 }
 

@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { getHealthRestorePoints, traceShotImpact, loadMap } from './world.js';
+import { getHealthRestorePoints, getSkyConfig, shouldBuildCeiling, traceShotImpact, loadMap } from './world.js';
 
 const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
+const outdoorMapData = JSON.parse(readFileSync(new URL('../maps/de_dust2.json', import.meta.url), 'utf8'));
 loadMap(mapData);
 
 test('traceShotImpact hits blocking world geometry', () => {
@@ -42,4 +43,16 @@ test('loadMap preserves health restore points', () => {
     assert.ok(points.length > 0);
     assert.equal(points[0].healAmount, 35);
     assert.equal(points[0].cooldownSec, 12);
+});
+
+test('indoor maps keep the ceiling and outdoor maps skip it', () => {
+    loadMap(mapData);
+    assert.equal(shouldBuildCeiling(), true);
+    assert.equal(getSkyConfig().enabled, false);
+
+    loadMap(outdoorMapData);
+    assert.equal(shouldBuildCeiling(), false);
+    assert.equal(getSkyConfig().enabled, true);
+
+    loadMap(mapData);
 });

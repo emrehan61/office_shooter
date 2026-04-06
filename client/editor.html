@@ -18,6 +18,12 @@
         <span class="topbar-title">MAP EDITOR</span>
         <label>Name <input type="text" id="map-name" value="Untitled" maxlength="40"></label>
         <label>Arena <input type="number" id="arena-size" value="30" min="5" max="100" step="1"></label>
+        <label><input type="checkbox" id="sky-enabled"> Open Sky</label>
+        <label>Sky Preset
+            <select id="sky-preset">
+                <option value="clear_day">Clear Day</option>
+            </select>
+        </label>
         <button id="btn-new">New</button>
         <button id="btn-import">Import</button>
         <button id="btn-export">Export</button>

@@ -3,6 +3,11 @@
   "arena": 45,
   "wallHeight": 5,
   "wallThick": 0.4,
+  "sky": {
+    "enabled": true,
+    "preset": "clear_day",
+    "sunMode": "fixed"
+  },
   "walls": [
     { "x1": -45, "z1": -45, "x2": 45, "z2": -45, "matID": 23 },
     { "x1": 45, "z1": -45, "x2": 45, "z2": 45, "matID": 23 },

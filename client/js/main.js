@@ -1,7 +1,7 @@
-import { createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, updateVertPool } from './renderer.js';
+import { applySkyConfig, createRenderer, uploadWorldGeo, render, resizeRenderer, updateCamera as updateRendererCamera, clearDynamic, clearWeapon, updateVertPool } from './renderer.js';
 import { DEFAULT_FOV, approachCameraFov, createCamera, updateCamera } from './camera.js';
 import { init, consumeMouse, isKeyDown, isMouseDown, isRightMouseDown, isLocked, setPointerLockEnabled } from './input.js';
-import { buildWorldGeometry, traceShotImpact, loadMap } from './world.js';
+import { buildWorldGeometry, getSkyConfig, traceShotImpact, loadMap } from './world.js';
 import {
     applyAuthoritativeState,
     canMove,
@@ -232,6 +232,7 @@ async function loadMapByName(name) {
     if (!resp.ok) return false;
     const data = await resp.json();
     loadMap(data);
+    applySkyConfig(renderer, getSkyConfig());
 
     // Show loading screen and yield a frame so the browser paints it
     // before the synchronous buildWorldGeometry() blocks the main thread.
