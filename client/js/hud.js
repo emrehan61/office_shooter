@@ -1,26 +1,25 @@
 import {
     BUY_MENU_SECTIONS,
     GRENADE_MAX,
-    MACHINE_GUN_AMMO_MAX,
     MAX_ARMOR,
-    PISTOL_AMMO_MAX,
     SHOP_ITEMS,
     UTILITY_BOMB,
     UTILITY_FLASHBANG,
     UTILITY_SMOKE,
     WEAPON_DEFS,
     WEAPON_KNIFE,
-    WEAPON_MACHINE_GUN,
-    WEAPON_PISTOL,
+    isHeavyWeapon,
+    isPistolWeapon,
     isUtilityWeapon,
+    weaponAllowedForTeam,
 } from './economy.js';
 import { MODE_DEATHMATCH, MODE_CTF } from './modes.js';
 import { canOpenBuyMenu, getUtilityCount, getWeaponAmmoState } from './player.js';
 import { TEAM_BLUE, TEAM_GREEN, getTeamLabel, normalizeTeam } from './teams.js';
 
 const LOADOUT_SLOT_DEFS = [
-    { id: WEAPON_MACHINE_GUN, key: '1', label: 'Machine Gun', defaultMeta: 'BUY' },
-    { id: WEAPON_PISTOL, key: '2', label: 'Pistol', defaultMeta: 'BUY' },
+    { id: 'heavy', key: '1', label: 'Heavy', defaultMeta: 'EMPTY' },
+    { id: 'pistol', key: '2', label: 'Pistol', defaultMeta: 'DEFAULT' },
     { id: WEAPON_KNIFE, key: '3', label: 'Knife', defaultMeta: 'ALWAYS' },
     { id: 'utility', key: '4', label: 'Utility', defaultMeta: 'EMPTY' },
 ];
@@ -63,7 +62,17 @@ export function createHUD() {
         hitMarker: document.getElementById('hit-marker'),
         objectiveMarkers,
         hitMarkerTimer: 0,
+        selectedShopSectionId: BUY_MENU_SECTIONS[0]?.id || '',
+        selectedShopItemId: BUY_MENU_SECTIONS[0]?.itemIds?.[0] || '',
         shopItems: [],
+        shopSectionButtons: [],
+        shopSections: [],
+        shopDetailNameEl: null,
+        shopDetailMetaEl: null,
+        shopDetailPriceEl: null,
+        shopDetailStatusEl: null,
+        shopDetailStatsEl: null,
+        shopDetailSlotEl: null,
         loadoutSlots: [],
         economyToastTimer: 0,
     };
@@ -72,7 +81,41 @@ export function createHUD() {
     renderLoadoutBar(hud);
     if (typeof document !== 'undefined') {
         hud.shopItems = Array.from(document.querySelectorAll('[data-shop-item]'));
+        hud.shopSectionButtons = Array.from(document.querySelectorAll('[data-shop-section-button]'));
+        hud.shopSections = Array.from(document.querySelectorAll('[data-shop-section]'));
+        hud.shopDetailNameEl = document.getElementById('shop-detail-name');
+        hud.shopDetailMetaEl = document.getElementById('shop-detail-meta');
+        hud.shopDetailPriceEl = document.getElementById('shop-detail-price');
+        hud.shopDetailStatusEl = document.getElementById('shop-detail-status');
+        hud.shopDetailStatsEl = document.getElementById('shop-detail-stats');
+        hud.shopDetailSlotEl = document.getElementById('shop-detail-slot');
         hud.loadoutSlots = Array.from(document.querySelectorAll('[data-loadout-slot]'));
+        hud.shopPanel?.addEventListener('mouseover', (event) => {
+            if (!(event.target instanceof Element)) return;
+            const button = event.target.closest('[data-shop-item]');
+            if (button?.dataset.shopItem) {
+                hud.selectedShopItemId = button.dataset.shopItem;
+                hud.selectedShopSectionId = getSectionForItem(button.dataset.shopItem);
+            }
+        });
+        hud.shopPanel?.addEventListener('focusin', (event) => {
+            if (!(event.target instanceof Element)) return;
+            const button = event.target.closest('[data-shop-item]');
+            if (button?.dataset.shopItem) {
+                hud.selectedShopItemId = button.dataset.shopItem;
+                hud.selectedShopSectionId = getSectionForItem(button.dataset.shopItem);
+            }
+        });
+        hud.shopPanel?.addEventListener('click', (event) => {
+            if (!(event.target instanceof Element)) return;
+            const sectionButton = event.target.closest('[data-shop-section-button]');
+            if (sectionButton?.dataset.shopSectionButton) {
+                hud.selectedShopSectionId = sectionButton.dataset.shopSectionButton;
+                if (!BUY_MENU_SECTIONS.find((section) => section.id === hud.selectedShopSectionId)?.itemIds?.includes(hud.selectedShopItemId)) {
+                    hud.selectedShopItemId = BUY_MENU_SECTIONS.find((section) => section.id === hud.selectedShopSectionId)?.itemIds?.[0] || '';
+                }
+            }
+        });
     }
 
     return hud;
@@ -219,7 +262,8 @@ const WEAPON_ICONS = {
 export function addKill(hud, killer, victim, weapon) {
     const el = document.createElement('div');
     el.className = 'kill-entry';
-    const icon = WEAPON_ICONS[weapon] || WEAPON_ICONS.knife;
+    const iconKey = WEAPON_DEFS[weapon]?.renderAs || weapon;
+    const icon = WEAPON_ICONS[iconKey] || WEAPON_ICONS.knife;
     el.innerHTML = `<span class="kill-name">${escapeHtml(killer)}</span>${icon}<span class="kill-name">${escapeHtml(victim)}</span>`;
     if (hud.killFeed) {
         hud.killFeed.prepend(el);
@@ -389,25 +433,27 @@ export function getRoundResultDisplay(match = {}) {
     };
 }
 
-export function getShopItemState(player, itemId) {
+export function getShopItemState(player, itemId, team = player.team) {
+    const def = WEAPON_DEFS[itemId];
+    if (def && (isPistolWeapon(itemId) || isHeavyWeapon(itemId))) {
+        if (!weaponAllowedForTeam(itemId, team)) {
+            return { label: 'Wrong side', canBuy: false };
+        }
+        if (player.pistolWeapon === itemId || player.heavyWeapon === itemId) {
+            return { label: 'Equipped', canBuy: false };
+        }
+        if (isPistolWeapon(itemId)) {
+            return { label: player.pistolWeapon ? 'Replace' : 'Buy', canBuy: true };
+        }
+        return { label: player.heavyWeapon ? 'Replace' : 'Buy', canBuy: true };
+    }
+
     switch (itemId) {
-        case 'buy-machinegun':
-            return { label: player.hasMachineGun ? 'Owned' : 'Weapon', canBuy: !player.hasMachineGun };
-        case 'machinegun-ammo':
-            if (!player.hasMachineGun) return { label: 'Need MG', canBuy: false };
-            if ((getWeaponAmmoState(player, WEAPON_MACHINE_GUN)?.reserve || 0) >= MACHINE_GUN_AMMO_MAX) return { label: 'Full', canBuy: false };
-            return { label: `${getWeaponAmmoState(player, WEAPON_MACHINE_GUN)?.reserve || 0}/${MACHINE_GUN_AMMO_MAX}`, canBuy: true };
-        case 'buy-pistol':
-            return { label: player.hasPistol ? 'Owned' : 'Weapon', canBuy: !player.hasPistol };
-        case 'pistol-ammo':
-            if (!player.hasPistol) return { label: 'Need Pistol', canBuy: false };
-            if ((getWeaponAmmoState(player, WEAPON_PISTOL)?.reserve || 0) >= PISTOL_AMMO_MAX) return { label: 'Full', canBuy: false };
-            return { label: `${getWeaponAmmoState(player, WEAPON_PISTOL)?.reserve || 0}/${PISTOL_AMMO_MAX}`, canBuy: true };
-        case 'bomb':
+        case UTILITY_BOMB:
             return { label: player.bombs >= GRENADE_MAX ? 'Stocked' : `${player.bombs}/${GRENADE_MAX}`, canBuy: player.bombs < GRENADE_MAX };
-        case 'smoke':
+        case UTILITY_SMOKE:
             return { label: player.smokes >= GRENADE_MAX ? 'Stocked' : `${player.smokes}/${GRENADE_MAX}`, canBuy: player.smokes < GRENADE_MAX };
-        case 'flashbang':
+        case UTILITY_FLASHBANG:
             return { label: player.flashbangs >= GRENADE_MAX ? 'Stocked' : `${player.flashbangs}/${GRENADE_MAX}`, canBuy: player.flashbangs < GRENADE_MAX };
         case 'armor':
             return { label: player.armor >= MAX_ARMOR ? 'Full' : `${player.armor}/${MAX_ARMOR}`, canBuy: player.armor < MAX_ARMOR };
@@ -428,19 +474,46 @@ function renderBuyMenu(hud) {
 
     const subtitle = document.createElement('div');
     subtitle.className = 'shop-subtitle';
-    subtitle.textContent = 'B opens the menu during buy time or your deathmatch loadout window. Esc closes it.';
+    subtitle.textContent = 'Heavy, pistol, knife, and three utility slots. B opens. Esc closes.';
     hud.shopPanel.appendChild(subtitle);
+
+    const shell = document.createElement('div');
+    shell.className = 'shop-shell';
+
+    const nav = document.createElement('aside');
+    nav.className = 'shop-rail';
+    for (const section of BUY_MENU_SECTIONS) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'shop-rail-button';
+        button.dataset.shopSectionButton = section.id;
+
+        const label = document.createElement('span');
+        label.className = 'shop-rail-label';
+        label.textContent = section.label;
+
+        const meta = document.createElement('span');
+        meta.className = 'shop-rail-meta';
+        meta.textContent = section.description;
+
+        button.append(label, meta);
+        nav.appendChild(button);
+    }
+
+    const catalog = document.createElement('div');
+    catalog.className = 'shop-catalog';
 
     for (const section of BUY_MENU_SECTIONS) {
         const sectionEl = document.createElement('section');
         sectionEl.className = 'shop-section';
+        sectionEl.dataset.shopSection = section.id;
 
         const heading = document.createElement('div');
         heading.className = 'shop-section-heading';
 
         const index = document.createElement('span');
         index.className = 'shop-section-index';
-        index.textContent = section.id;
+        index.textContent = section.label.slice(0, 1);
 
         const headingText = document.createElement('div');
 
@@ -489,8 +562,22 @@ function renderBuyMenu(hud) {
         }
 
         sectionEl.appendChild(itemsEl);
-        hud.shopPanel.appendChild(sectionEl);
+        catalog.appendChild(sectionEl);
     }
+
+    const detail = document.createElement('aside');
+    detail.className = 'shop-detail';
+    detail.innerHTML = `
+        <div class="shop-detail-slot" id="shop-detail-slot">SELECTED SLOT</div>
+        <div class="shop-detail-name" id="shop-detail-name">AK-47</div>
+        <div class="shop-detail-meta" id="shop-detail-meta">Rifle</div>
+        <div class="shop-detail-price" id="shop-detail-price">$2700</div>
+        <div class="shop-detail-status" id="shop-detail-status">Buy</div>
+        <div class="shop-detail-stats" id="shop-detail-stats"></div>
+    `;
+
+    shell.append(nav, catalog, detail);
+    hud.shopPanel.appendChild(shell);
 }
 
 function renderLoadoutBar(hud) {
@@ -541,6 +628,8 @@ function updateAmmoDisplay(hud, player) {
 function updateLoadoutBar(hud, player) {
     if (!hud.loadoutSlots?.length) return;
 
+    const heavyAmmo = player.heavyWeapon ? getWeaponAmmoState(player, player.heavyWeapon) : null;
+    const pistolAmmo = player.pistolWeapon ? getWeaponAmmoState(player, player.pistolWeapon) : null;
     const selectedUtilityLabel = isUtilityWeapon(player.activeWeapon)
         ? (WEAPON_DEFS[player.activeWeapon]?.label || 'Utility')
         : 'Utility';
@@ -553,23 +642,21 @@ function updateLoadoutBar(hud, player) {
 
         slotEl.classList.remove('is-active', 'is-owned', 'is-empty');
 
-        if (slotId === WEAPON_MACHINE_GUN) {
-            const ammo = getWeaponAmmoState(player, WEAPON_MACHINE_GUN);
-            const owned = !!player.hasMachineGun;
+        if (slotId === 'heavy') {
+            const owned = !!player.heavyWeapon;
             slotEl.classList.add(owned ? 'is-owned' : 'is-empty');
-            slotEl.classList.toggle('is-active', player.activeWeapon === WEAPON_MACHINE_GUN);
-            if (nameEl) nameEl.textContent = 'Machine Gun';
-            if (metaEl) metaEl.textContent = ammo ? `${ammo.clip}/${ammo.reserve}` : 'BUY';
+            slotEl.classList.toggle('is-active', owned && player.activeWeapon === player.heavyWeapon);
+            if (nameEl) nameEl.textContent = owned ? (WEAPON_DEFS[player.heavyWeapon]?.label || 'Heavy') : 'No Heavy';
+            if (metaEl) metaEl.textContent = heavyAmmo ? `${heavyAmmo.clip}/${heavyAmmo.reserve}` : 'EMPTY';
             continue;
         }
 
-        if (slotId === WEAPON_PISTOL) {
-            const ammo = getWeaponAmmoState(player, WEAPON_PISTOL);
-            const owned = !!player.hasPistol;
+        if (slotId === 'pistol') {
+            const owned = !!player.pistolWeapon;
             slotEl.classList.add(owned ? 'is-owned' : 'is-empty');
-            slotEl.classList.toggle('is-active', player.activeWeapon === WEAPON_PISTOL);
-            if (nameEl) nameEl.textContent = 'Pistol';
-            if (metaEl) metaEl.textContent = ammo ? `${ammo.clip}/${ammo.reserve}` : 'BUY';
+            slotEl.classList.toggle('is-active', owned && player.activeWeapon === player.pistolWeapon);
+            if (nameEl) nameEl.textContent = owned ? (WEAPON_DEFS[player.pistolWeapon]?.label || 'Pistol') : 'No Pistol';
+            if (metaEl) metaEl.textContent = pistolAmmo ? `${pistolAmmo.clip}/${pistolAmmo.reserve}` : 'DEFAULT';
             continue;
         }
 
@@ -671,23 +758,153 @@ function updateFlashbangOverlay(hud, flashTimeLeftMs) {
     hud.flashbangScreen.style.opacity = String(0.18 + phase * 0.82);
 }
 
+function getSectionForItem(itemId) {
+    return BUY_MENU_SECTIONS.find((section) => section.itemIds.includes(itemId))?.id || BUY_MENU_SECTIONS[0]?.id || '';
+}
+
+function getDefaultItemForSection(sectionId) {
+    return BUY_MENU_SECTIONS.find((section) => section.id === sectionId)?.itemIds?.[0] || '';
+}
+
+function ensureShopSelection(hud) {
+    if (!hud.selectedShopSectionId || !BUY_MENU_SECTIONS.some((section) => section.id === hud.selectedShopSectionId)) {
+        hud.selectedShopSectionId = BUY_MENU_SECTIONS[0]?.id || '';
+    }
+    const selectedSection = BUY_MENU_SECTIONS.find((section) => section.id === hud.selectedShopSectionId);
+    if (!hud.selectedShopItemId || !selectedSection?.itemIds.includes(hud.selectedShopItemId)) {
+        hud.selectedShopItemId = selectedSection?.itemIds?.[0] || '';
+    }
+}
+
+function getShopSlotLabel(itemId) {
+    if (itemId === 'armor') return 'Gear';
+    if (isPistolWeapon(itemId)) return 'Pistol Slot';
+    if (isHeavyWeapon(itemId)) return 'Heavy Slot';
+    if (isUtilityWeapon(itemId)) return 'Utility Slot';
+    return 'Equipment';
+}
+
+function getShopMeta(itemId) {
+    const def = WEAPON_DEFS[itemId];
+    if (!def) {
+        return itemId === 'armor' ? 'Kevlar armor' : 'Utility';
+    }
+    const parts = [];
+    if (def.side && def.side !== 'both') {
+        parts.push(def.side.toUpperCase());
+    }
+    parts.push(def.category.replace(/-/g, ' '));
+    return parts.join(' • ').toUpperCase();
+}
+
+function formatStat(value) {
+    if (typeof value === 'number') {
+        return Number.isInteger(value) ? String(value) : value.toFixed(2);
+    }
+    return String(value);
+}
+
+function getShopDetailStats(itemId) {
+    if (itemId === 'armor') {
+        return [
+            ['Protection', '100 armor'],
+            ['Slot', 'Gear'],
+            ['Notes', 'No helmet split'],
+        ];
+    }
+
+    const def = WEAPON_DEFS[itemId];
+    if (!def) return [];
+
+    if (isUtilityWeapon(itemId)) {
+        return [
+            ['Category', def.label],
+            ['Carry Limit', GRENADE_MAX],
+            ['Use', def.effect || def.secondaryMode || 'Throwable'],
+        ];
+    }
+
+    return [
+        ['Damage', def.baseDamage],
+        ['Mag', def.magSize],
+        ['Reserve', def.reserveMax],
+        ['Fire', `${def.fireIntervalMs}ms`],
+        ['Reward', `$${def.killReward}`],
+        ['Move', def.moveSpeed],
+    ];
+}
+
+function updateShopDetail(hud, player, freeLoadout) {
+    const item = SHOP_ITEMS.find((entry) => entry.id === hud.selectedShopItemId) || SHOP_ITEMS[0];
+    if (!item) return;
+
+    const state = getShopItemState(player, item.id, player.team);
+    const def = WEAPON_DEFS[item.id];
+    const affordable = freeLoadout || player.credits >= item.cost;
+    const statusLabel = !state.canBuy
+        ? state.label
+        : (freeLoadout ? `${state.label} • FREE` : (affordable ? `${state.label} • READY` : 'Too expensive'));
+
+    if (hud.shopDetailSlotEl) hud.shopDetailSlotEl.textContent = getShopSlotLabel(item.id);
+    if (hud.shopDetailNameEl) hud.shopDetailNameEl.textContent = item.label;
+    if (hud.shopDetailMetaEl) hud.shopDetailMetaEl.textContent = getShopMeta(item.id);
+    if (hud.shopDetailPriceEl) hud.shopDetailPriceEl.textContent = freeLoadout ? 'FREE' : `$${item.cost}`;
+    if (hud.shopDetailStatusEl) hud.shopDetailStatusEl.textContent = statusLabel;
+    if (hud.shopDetailStatsEl) {
+        hud.shopDetailStatsEl.replaceChildren();
+        for (const [label, value] of getShopDetailStats(item.id)) {
+            const row = document.createElement('div');
+            row.className = 'shop-detail-stat';
+
+            const statLabel = document.createElement('span');
+            statLabel.className = 'shop-detail-stat-label';
+            statLabel.textContent = label;
+
+            const statValue = document.createElement('span');
+            statValue.className = 'shop-detail-stat-value';
+            statValue.textContent = formatStat(value);
+
+            row.append(statLabel, statValue);
+            hud.shopDetailStatsEl.appendChild(row);
+        }
+        if (def?.zoomLevels?.length) {
+            const zoomRow = document.createElement('div');
+            zoomRow.className = 'shop-detail-stat';
+            zoomRow.innerHTML = `<span class="shop-detail-stat-label">Zoom</span><span class="shop-detail-stat-value">${def.zoomLevels.length}x level</span>`;
+            hud.shopDetailStatsEl.appendChild(zoomRow);
+        }
+    }
+}
+
 function updateShop(hud, player, match, buyMenuOpen) {
     if (!hud.shopPanel) return;
 
     const freeLoadout = match.mode === MODE_DEATHMATCH && (player.loadoutTimeLeftMs || 0) > 0;
     const buyPhase = canOpenBuyMenu(player, match);
+    ensureShopSelection(hud);
 
     hud.shopPanel.style.display = buyPhase && buyMenuOpen ? 'grid' : 'none';
+
+    for (const button of hud.shopSectionButtons || []) {
+        const sectionId = button.dataset.shopSectionButton;
+        button.classList.toggle('is-active', sectionId === hud.selectedShopSectionId);
+    }
+    for (const sectionEl of hud.shopSections || []) {
+        sectionEl.classList.toggle('is-active', sectionEl.dataset.shopSection === hud.selectedShopSectionId);
+    }
 
     for (const itemEl of hud.shopItems || []) {
         const item = SHOP_ITEMS.find((entry) => entry.id === itemEl.dataset.shopItem);
         if (!item) continue;
 
-        const state = getShopItemState(player, item.id);
+        const state = getShopItemState(player, item.id, player.team);
+        const affordable = freeLoadout || player.credits >= item.cost;
         itemEl.dataset.status = freeLoadout && state.canBuy ? `${state.label} • FREE` : state.label;
-        itemEl.classList.toggle('is-affordable', state.canBuy && (freeLoadout || player.credits >= item.cost));
-        itemEl.classList.toggle('is-expensive', !freeLoadout && player.credits < item.cost);
+        itemEl.classList.toggle('is-selected', item.id === hud.selectedShopItemId);
+        itemEl.classList.toggle('is-affordable', state.canBuy && affordable);
+        itemEl.classList.toggle('is-expensive', !freeLoadout && !affordable);
         itemEl.classList.toggle('is-disabled', !state.canBuy);
+        itemEl.classList.toggle('is-equipped', state.label === 'Equipped');
         itemEl.disabled = !buyPhase || !buyMenuOpen || !state.canBuy;
 
         const costEl = itemEl.querySelector('.shop-cost');
@@ -695,6 +912,8 @@ function updateShop(hud, player, match, buyMenuOpen) {
             costEl.textContent = freeLoadout ? 'FREE' : `$${item.cost}`;
         }
     }
+
+    updateShopDetail(hud, player, freeLoadout);
 }
 
 function formatClock(ms) {

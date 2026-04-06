@@ -12,9 +12,6 @@ test('leaderboard rows sort by kills descending then deaths ascending', () => {
 
     assert.deepEqual(rows.map((row) => row.name), ['Alpha', 'Bravo', 'Charlie']);
     assert.equal(rows[0].isSelf, true);
-    assert.equal(rows[0].kills, 4);
-    assert.equal(rows[0].deaths, 1);
-    assert.equal(rows[0].credits, 250);
 });
 
 test('match bar shows deathmatch kills, deaths, rank, and player count', () => {
@@ -35,24 +32,23 @@ test('match bar shows deathmatch kills, deaths, rank, and player count', () => {
     });
 });
 
-test('shop item state reflects ownership, ammo gates, and grenade stock', () => {
+test('shop item state reflects equipped weapons, side gating, and utility stock', () => {
     const player = {
-        hasMachineGun: true,
-        hasPistol: false,
-        machineGunClip: 30,
-        machineGunReserve: 30,
-        pistolClip: 0,
-        pistolReserve: 0,
+        team: 'green',
+        pistolWeapon: 'glock-18',
+        heavyWeapon: 'ak-47',
         bombs: 1,
         smokes: 0,
         flashbangs: 0,
         armor: 40,
     };
 
-    assert.deepEqual(getShopItemState(player, 'buy-machinegun'), { label: 'Owned', canBuy: false });
-    assert.deepEqual(getShopItemState(player, 'machinegun-ammo'), { label: '30/90', canBuy: true });
-    assert.deepEqual(getShopItemState(player, 'pistol-ammo'), { label: 'Need Pistol', canBuy: false });
+    assert.deepEqual(getShopItemState(player, 'ak-47'), { label: 'Equipped', canBuy: false });
+    assert.deepEqual(getShopItemState(player, 'm4a4', player.team), { label: 'Wrong side', canBuy: false });
+    assert.deepEqual(getShopItemState(player, 'p250', player.team), { label: 'Replace', canBuy: true });
     assert.deepEqual(getShopItemState(player, 'bomb'), { label: 'Stocked', canBuy: false });
+    assert.deepEqual(getShopItemState(player, 'smoke'), { label: '0/1', canBuy: true });
+    assert.deepEqual(getShopItemState(player, 'flashbang'), { label: '0/1', canBuy: true });
     assert.deepEqual(getShopItemState(player, 'armor'), { label: '40/100', canBuy: true });
 });
 

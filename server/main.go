@@ -27,15 +27,17 @@ const (
 	tickRate                    = 60
 	maxHP                       = 100
 	maxArmor                    = 100
+	maxCredits                  = 16000
 	standEyeHeight              = 1.7
 	crouchEyeHeight             = 1.15
 	grenadeMaxCount             = 1
-	startingCredits             = 300
+	startingCredits             = 800
 	totalRounds                 = 30
 	roundDurationMS             = 5 * 60 * 1000
 	buyPhaseDurationMS          = 10 * 1000
 	roundCooldownMS             = 5 * 1000
-	roundIncomeCredits          = 1000
+	roundWinCredits             = 3250
+	pistolRoundLossBonus        = 1900
 	respawnDelayMS              = 3 * 1000
 	deathmatchDurationMS        = 10 * 60 * 1000
 	deathmatchVoteMS            = 10 * 1000
@@ -46,25 +48,6 @@ const (
 	maxLagCompensationMS        = 250
 	hitscanRange                = 50.0
 	knifeRange                  = 2.6
-	machineGunCost              = 1800
-	machineGunMagSize           = 30
-	machineGunAmmoPack          = 30
-	machineGunAmmoPackCost      = 220
-	machineGunAmmoMax           = 90
-	pistolCost                  = 700
-	pistolMagSize               = 7
-	pistolAmmoPack              = 7
-	pistolAmmoPackCost          = 140
-	pistolAmmoMax               = 21
-	bombCost                    = 300
-	smokeCost                   = 250
-	flashbangCost               = 250
-	armorPlateCost              = 180
-	armorPlateAmount            = 25
-	headHitReward               = 35
-	bodyHitReward               = 20
-	killReward                  = 200
-	reloadDurationMS            = 1800
 	utilityThrowIntervalMS      = 800
 	projectileSpeed             = 16.0
 	projectileGravity           = -18.0
@@ -261,13 +244,13 @@ const (
 type WeaponID string
 
 const (
-	WeaponKnife      WeaponID = "knife"
-	WeaponPistol     WeaponID = "pistol"
-	WeaponMachineGun WeaponID = "machinegun"
-	WeaponBomb       WeaponID = "bomb"
-	WeaponSmoke      WeaponID = "smoke"
-	WeaponFlashbang  WeaponID = "flashbang"
+	WeaponKnife     WeaponID = "knife"
+	WeaponBomb      WeaponID = "bomb"
+	WeaponSmoke     WeaponID = "smoke"
+	WeaponFlashbang WeaponID = "flashbang"
 )
+
+var lossBonusSteps = [...]int{1400, 1900, 2400, 2900, 3400}
 
 type TeamID string
 
@@ -371,12 +354,12 @@ type playerStore struct {
 	armor               []int
 	credits             []int
 	team                []TeamID
-	hasPistol           []bool
-	hasMG               []bool
+	pistolWeapon        []WeaponID
+	heavyWeapon         []WeaponID
 	pistolClip          []int
 	pistolReserve       []int
-	mgClip              []int
-	mgReserve           []int
+	heavyClip           []int
+	heavyReserve        []int
 	bombs               []int
 	smokes              []int
 	flashbangs          []int
@@ -437,6 +420,8 @@ type Game struct {
 	pendingMatchEnd    bool
 	blueScore          int
 	greenScore         int
+	blueLossStreak     int
+	greenLossStreak    int
 	projectiles        []projectileState
 	effects            []areaEffectState
 	nextProjID         int
@@ -879,12 +864,12 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.armor = append(ps.armor, 0)
 	ps.credits = append(ps.credits, startingCredits)
 	ps.team = append(ps.team, TeamNone)
-	ps.hasPistol = append(ps.hasPistol, false)
-	ps.hasMG = append(ps.hasMG, false)
+	ps.pistolWeapon = append(ps.pistolWeapon, "")
+	ps.heavyWeapon = append(ps.heavyWeapon, "")
 	ps.pistolClip = append(ps.pistolClip, 0)
 	ps.pistolReserve = append(ps.pistolReserve, 0)
-	ps.mgClip = append(ps.mgClip, 0)
-	ps.mgReserve = append(ps.mgReserve, 0)
+	ps.heavyClip = append(ps.heavyClip, 0)
+	ps.heavyReserve = append(ps.heavyReserve, 0)
 	ps.bombs = append(ps.bombs, 0)
 	ps.smokes = append(ps.smokes, 0)
 	ps.flashbangs = append(ps.flashbangs, 0)
@@ -934,12 +919,12 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.armor[idx] = ps.armor[last]
 		ps.credits[idx] = ps.credits[last]
 		ps.team[idx] = ps.team[last]
-		ps.hasPistol[idx] = ps.hasPistol[last]
-		ps.hasMG[idx] = ps.hasMG[last]
+		ps.pistolWeapon[idx] = ps.pistolWeapon[last]
+		ps.heavyWeapon[idx] = ps.heavyWeapon[last]
 		ps.pistolClip[idx] = ps.pistolClip[last]
 		ps.pistolReserve[idx] = ps.pistolReserve[last]
-		ps.mgClip[idx] = ps.mgClip[last]
-		ps.mgReserve[idx] = ps.mgReserve[last]
+		ps.heavyClip[idx] = ps.heavyClip[last]
+		ps.heavyReserve[idx] = ps.heavyReserve[last]
 		ps.bombs[idx] = ps.bombs[last]
 		ps.smokes[idx] = ps.smokes[last]
 		ps.flashbangs[idx] = ps.flashbangs[last]
@@ -979,12 +964,12 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.armor = ps.armor[:last]
 	ps.credits = ps.credits[:last]
 	ps.team = ps.team[:last]
-	ps.hasPistol = ps.hasPistol[:last]
-	ps.hasMG = ps.hasMG[:last]
+	ps.pistolWeapon = ps.pistolWeapon[:last]
+	ps.heavyWeapon = ps.heavyWeapon[:last]
 	ps.pistolClip = ps.pistolClip[:last]
 	ps.pistolReserve = ps.pistolReserve[:last]
-	ps.mgClip = ps.mgClip[:last]
-	ps.mgReserve = ps.mgReserve[:last]
+	ps.heavyClip = ps.heavyClip[:last]
+	ps.heavyReserve = ps.heavyReserve[:last]
 	ps.bombs = ps.bombs[:last]
 	ps.smokes = ps.smokes[:last]
 	ps.flashbangs = ps.flashbangs[:last]
@@ -1179,12 +1164,12 @@ type playerState struct {
 	Alive                     bool     `json:"alive"`
 	InMatch                   bool     `json:"inMatch"`
 	IsBot                     bool     `json:"isBot"`
-	HasPistol                 bool     `json:"hasPistol"`
-	HasMachineGun             bool     `json:"hasMachineGun"`
+	PistolWeapon              WeaponID `json:"pistolWeapon"`
 	PistolClip                int      `json:"pistolClip"`
 	PistolReserve             int      `json:"pistolReserve"`
-	MachineGunClip            int      `json:"machineGunClip"`
-	MachineGunReserve         int      `json:"machineGunReserve"`
+	HeavyWeapon               WeaponID `json:"heavyWeapon"`
+	HeavyClip                 int      `json:"heavyClip"`
+	HeavyReserve              int      `json:"heavyReserve"`
 	Bombs                     int      `json:"bombs"`
 	Smokes                    int      `json:"smokes"`
 	Flashbangs                int      `json:"flashbangs"`
@@ -1219,12 +1204,12 @@ type economyUpdate struct {
 	Armor                     int      `json:"armor"`
 	Credits                   int      `json:"credits"`
 	Team                      TeamID   `json:"team"`
-	HasPistol                 bool     `json:"hasPistol"`
-	HasMachineGun             bool     `json:"hasMachineGun"`
+	PistolWeapon              WeaponID `json:"pistolWeapon"`
 	PistolClip                int      `json:"pistolClip"`
 	PistolReserve             int      `json:"pistolReserve"`
-	MachineGunClip            int      `json:"machineGunClip"`
-	MachineGunReserve         int      `json:"machineGunReserve"`
+	HeavyWeapon               WeaponID `json:"heavyWeapon"`
+	HeavyClip                 int      `json:"heavyClip"`
+	HeavyReserve              int      `json:"heavyReserve"`
 	Bombs                     int      `json:"bombs"`
 	Smokes                    int      `json:"smokes"`
 	Flashbangs                int      `json:"flashbangs"`
@@ -1262,24 +1247,124 @@ type weaponConfig struct {
 	PunchDecayLin       float64
 }
 
-// Machine gun 30-shot recoil table: [pitch, yaw] per bullet (server-authoritative).
-// Matches the client-side MG_SPRAY_PATTERN.
-var mgRecoilTable = [][2]float64{
-	{0.176, 0.000}, {0.160, 0.000}, {0.152, 0.000}, {0.144, 0.000},
-	{0.136, 0.000}, {0.128, 0.004}, {0.120, 0.004},
-	{0.104, 0.024}, {0.096, 0.028}, {0.088, 0.030}, {0.080, 0.030},
-	{0.072, 0.028}, {0.064, 0.024}, {0.056, 0.019},
-	{0.048, -0.027}, {0.040, -0.030}, {0.040, -0.032}, {0.032, -0.032},
-	{0.032, -0.030}, {0.024, -0.027}, {0.024, -0.022}, {0.016, -0.016},
-	{0.016, 0.019}, {0.016, 0.016}, {0.012, 0.013}, {0.012, 0.010},
-	{0.008, 0.006}, {0.008, 0.004}, {0.008, 0.000}, {0.008, 0.000},
+type weaponRecoilBase struct {
+	pitch float64
+	yaw   float64
 }
 
-// Pistol 7-shot recoil table: [pitch, yaw] per bullet.
-// Matches the client-side PISTOL_SPRAY_PATTERN.
-var pistolRecoilTable = [][2]float64{
-	{0.18, 0.000}, {0.16, 0.008}, {0.14, 0.012}, {0.12, 0.008},
-	{0.10, 0.005}, {0.09, -0.005}, {0.08, -0.008},
+var recoilCategoryBase = map[string]weaponRecoilBase{
+	"pistol":     {pitch: 0.088, yaw: 0.014},
+	"smg":        {pitch: 0.074, yaw: 0.018},
+	"rifle":      {pitch: 0.084, yaw: 0.016},
+	"sniper":     {pitch: 0.104, yaw: 0.008},
+	"shotgun":    {pitch: 0.096, yaw: 0.015},
+	"machinegun": {pitch: 0.081, yaw: 0.022},
+}
+
+var weaponRecoilTableCache sync.Map
+
+func clampFloat64(value, min, max float64) float64 {
+	return math.Min(max, math.Max(min, value))
+}
+
+func hashWeaponID(id WeaponID) uint32 {
+	hash := uint32(2166136261)
+	for i := 0; i < len(id); i++ {
+		hash ^= uint32(id[i])
+		hash *= 16777619
+	}
+	return hash
+}
+
+func recoilCategoryForEntry(entry WeaponCatalogEntry) string {
+	if _, ok := recoilCategoryBase[entry.Category]; ok {
+		return entry.Category
+	}
+	if entry.Slot == "pistol" {
+		return "pistol"
+	}
+	return "rifle"
+}
+
+func buildWeaponRecoilPattern(entry WeaponCatalogEntry) [][2]float64 {
+	category := recoilCategoryForEntry(entry)
+	base := recoilCategoryBase[category]
+	shotCountByCategory := map[string]int{
+		"pistol":     12,
+		"smg":        22,
+		"rifle":      24,
+		"sniper":     14,
+		"shotgun":    10,
+		"machinegun": 30,
+	}
+	shotCount := shotCountByCategory[category]
+	hash := hashWeaponID(WeaponID(entry.ID))
+	cadenceScale := clampFloat64(130.0/math.Max(55, float64(entry.FireIntervalMS)), 0.7, 2.2)
+	damageScale := clampFloat64(0.82+float64(entry.BaseDamage)/70.0, 0.82, 2.05)
+	magScale := clampFloat64(1.1-math.Min(float64(entry.MagSize), 80.0)/180.0, 0.68, 1.12)
+	zoomScale := 1.0
+	if len(entry.ZoomLevels) > 0 {
+		zoomScale = 0.9
+	}
+	specialScale := 1.0
+	switch entry.SecondaryMode {
+	case "revolver":
+		specialScale = 1.25
+	case "auto":
+		specialScale = 0.9
+	}
+	pitchScale := cadenceScale * damageScale * magScale * zoomScale * specialScale
+	yawScale := clampFloat64(0.85+float64((hash>>3)%11)/18.0, 0.8, 1.45)
+	driftSign := 1.0
+	if ((hash >> 9) & 1) == 0 {
+		driftSign = -1.0
+	}
+	driftBase := ((float64(hash%17) - 8.0) / 1200.0) * driftSign
+
+	pattern := make([][2]float64, 0, shotCount)
+	for i := 0; i < shotCount; i++ {
+		t := 0.0
+		if shotCount > 1 {
+			t = float64(i) / float64(shotCount-1)
+		}
+		spiral := math.Sin(float64(i+1)*0.82 + float64(hash)*0.0009)
+		weave := math.Cos(float64(i+1)*0.46 + float64(hash)*0.0017)
+		stairDir := 1.0
+		if (i/2)%2 != 0 {
+			stairDir = -1.0
+		}
+		stairDir *= driftSign
+
+		pitch := base.pitch * pitchScale * (0.6 + t*1.05)
+		if category == "machinegun" {
+			pitch = base.pitch * pitchScale * (0.6 + t*1.3)
+		}
+		yaw := base.yaw*yawScale*((spiral*0.55)+(stairDir*(0.28+t*0.48))+(weave*0.12)) + driftBase*(1+t*4)
+
+		switch category {
+		case "sniper":
+			pitch *= 0.85 + t*0.55
+			yaw *= 0.65
+		case "shotgun":
+			pitch *= 1.08
+			yaw *= 0.5
+		case "pistol":
+			pitch *= 1.05 + t*0.15
+			yaw *= 0.75
+		}
+
+		pattern = append(pattern, [2]float64{pitch, yaw})
+	}
+	return pattern
+}
+
+func recoilTableForEntry(id WeaponID, entry WeaponCatalogEntry) [][2]float64 {
+	if cached, ok := weaponRecoilTableCache.Load(id); ok {
+		return cached.([][2]float64)
+	}
+	table := buildWeaponRecoilPattern(entry)
+	weaponRecoilTableCache.Store(id, table)
+	return table
 }
 
 func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
@@ -1438,12 +1523,12 @@ func (g *Game) buildPlayerStateLocked(idx int, nowMS int64) playerState {
 		Alive:                     g.players.alive[idx],
 		InMatch:                   g.players.inMatch[idx],
 		IsBot:                     g.players.isBot[idx],
-		HasPistol:                 g.players.hasPistol[idx],
-		HasMachineGun:             g.players.hasMG[idx],
+		PistolWeapon:              g.players.pistolWeapon[idx],
 		PistolClip:                g.players.pistolClip[idx],
 		PistolReserve:             g.players.pistolReserve[idx],
-		MachineGunClip:            g.players.mgClip[idx],
-		MachineGunReserve:         g.players.mgReserve[idx],
+		HeavyWeapon:               g.players.heavyWeapon[idx],
+		HeavyClip:                 g.players.heavyClip[idx],
+		HeavyReserve:              g.players.heavyReserve[idx],
 		Bombs:                     g.players.bombs[idx],
 		Smokes:                    g.players.smokes[idx],
 		Flashbangs:                g.players.flashbangs[idx],
@@ -1720,11 +1805,83 @@ func (tm *tickMessages) addDirect(id int, payload any) {
 	tm.directs[id] = append(tm.directs[id], msg)
 }
 
-func rewardForHitZone(zone HitZone) int {
-	if zone == HitZoneHead {
-		return headHitReward
+func clampCredits(value int) int {
+	if value < 0 {
+		return 0
 	}
-	return bodyHitReward
+	if value > maxCredits {
+		return maxCredits
+	}
+	return value
+}
+
+func (g *Game) addCreditsLocked(idx int, amount int) int {
+	if idx < 0 || idx >= len(g.players.credits) || amount == 0 {
+		return 0
+	}
+	before := g.players.credits[idx]
+	g.players.credits[idx] = clampCredits(before + amount)
+	return g.players.credits[idx] - before
+}
+
+func killRewardForWeapon(id WeaponID) int {
+	if entry, ok := weaponCatalogEntryByID(id); ok {
+		return entry.KillReward
+	}
+	switch id {
+	case WeaponKnife:
+		return 1500
+	case WeaponBomb, WeaponSmoke, WeaponFlashbang:
+		return 300
+	default:
+		return 300
+	}
+}
+
+func lossBonusForRound(currentRound, streak int) int {
+	if currentRound <= 1 {
+		return pistolRoundLossBonus
+	}
+	if streak < 1 {
+		streak = 1
+	}
+	index := streak - 1
+	if index >= len(lossBonusSteps) {
+		index = len(lossBonusSteps) - 1
+	}
+	return lossBonusSteps[index]
+}
+
+func (g *Game) grantTeamCreditsLocked(team TeamID, amount int) {
+	if amount == 0 {
+		return
+	}
+	for i := range g.players.ids {
+		if !g.players.inMatch[i] || normalizeTeam(g.players.team[i]) != normalizeTeam(team) {
+			continue
+		}
+		g.addCreditsLocked(i, amount)
+	}
+}
+
+func (g *Game) awardRoundEconomyLocked(winner TeamID) {
+	switch normalizeTeam(winner) {
+	case TeamBlue:
+		g.blueLossStreak = 0
+		g.greenLossStreak++
+		g.grantTeamCreditsLocked(TeamBlue, roundWinCredits)
+		g.grantTeamCreditsLocked(TeamGreen, lossBonusForRound(g.currentRound, g.greenLossStreak))
+	case TeamGreen:
+		g.greenLossStreak = 0
+		g.blueLossStreak++
+		g.grantTeamCreditsLocked(TeamGreen, roundWinCredits)
+		g.grantTeamCreditsLocked(TeamBlue, lossBonusForRound(g.currentRound, g.blueLossStreak))
+	default:
+		g.blueLossStreak++
+		g.greenLossStreak++
+		g.grantTeamCreditsLocked(TeamBlue, lossBonusForRound(g.currentRound, g.blueLossStreak))
+		g.grantTeamCreditsLocked(TeamGreen, lossBonusForRound(g.currentRound, g.greenLossStreak))
+	}
 }
 
 func applyDamage(hp, armor, damage int) (nextHP, nextArmor, absorbed int) {
@@ -2207,46 +2364,7 @@ func (g *Game) spawnPointsForTeamLocked(team TeamID) []Vec3 {
 }
 
 func weaponConfigByID(id WeaponID) weaponConfig {
-	switch id {
-	case WeaponPistol:
-		return weaponConfig{
-			ID:                  WeaponPistol,
-			Label:               "Pistol",
-			Range:               hitscanRange,
-			FireIntervalMS:      340,
-			BodyDamage:          34,
-			HeadDamage:          68,
-			UsesAmmo:            true,
-			HipSpread:           0.004,
-			AimSpread:           0.001,
-			BloomPerShot:        0.002,
-			MaxBloom:            0.008,
-			BloomDecayMS:        0.000008,
-			RecoilTable:         pistolRecoilTable,
-			RecoveryThresholdMS: 280,
-			PunchDecayExp:       4.0,
-			PunchDecayLin:       0.6,
-		}
-	case WeaponMachineGun:
-		return weaponConfig{
-			ID:                  WeaponMachineGun,
-			Label:               "Machine Gun",
-			Range:               hitscanRange,
-			FireIntervalMS:      100,
-			BodyDamage:          18,
-			HeadDamage:          32,
-			UsesAmmo:            true,
-			HipSpread:           0.006,
-			AimSpread:           0.002,
-			BloomPerShot:        0.001,
-			MaxBloom:            0.006,
-			BloomDecayMS:        0.000008,
-			RecoilTable:         mgRecoilTable,
-			RecoveryThresholdMS: 180,
-			PunchDecayExp:       3.5,
-			PunchDecayLin:       0.5,
-		}
-	default:
+	if id == WeaponKnife {
 		return weaponConfig{
 			ID:                  WeaponKnife,
 			Label:               "Knife",
@@ -2265,6 +2383,104 @@ func weaponConfigByID(id WeaponID) weaponConfig {
 			PunchDecayExp:       6.0,
 			PunchDecayLin:       1.0,
 		}
+	}
+	if isUtilityWeaponID(id) {
+		return weaponConfig{
+			ID:                  id,
+			Label:               weaponLabel(id),
+			Range:               hitscanRange,
+			FireIntervalMS:      utilityThrowIntervalMS,
+			BodyDamage:          0,
+			HeadDamage:          0,
+			UsesAmmo:            false,
+			HipSpread:           0,
+			AimSpread:           0,
+			BloomPerShot:        0,
+			MaxBloom:            0,
+			BloomDecayMS:        0,
+			RecoilTable:         nil,
+			RecoveryThresholdMS: 0,
+			PunchDecayExp:       2.0,
+			PunchDecayLin:       0.4,
+		}
+	}
+	entry, ok := weaponCatalogEntryByID(id)
+	if !ok {
+		return weaponConfigByID(WeaponKnife)
+	}
+	recoilTable := recoilTableForEntry(id, entry)
+	hipSpread := 0.006
+	aimSpread := 0.003
+	bloomPerShot := 0.001
+	maxBloom := 0.008
+	recovery := int64(180)
+	punchExp := 3.5
+	punchLin := 0.5
+	switch entry.Category {
+	case "pistol":
+		hipSpread = 0.006
+		aimSpread = 0.006
+		bloomPerShot = 0.002
+		maxBloom = 0.01
+		recovery = 240
+		punchExp = 4.0
+		punchLin = 0.6
+	case "sniper":
+		hipSpread = 0.025
+		aimSpread = 0.0008
+		bloomPerShot = 0.003
+		maxBloom = 0.02
+		recovery = 360
+	case "shotgun":
+		hipSpread = 0.018
+		aimSpread = 0.018
+		bloomPerShot = 0.0025
+		maxBloom = 0.02
+		recovery = 220
+	case "smg":
+		hipSpread = 0.008
+		aimSpread = 0.008
+		bloomPerShot = 0.0014
+		maxBloom = 0.012
+	case "machinegun":
+		hipSpread = 0.01
+		aimSpread = 0.01
+		bloomPerShot = 0.0012
+		maxBloom = 0.012
+	default:
+		hipSpread = 0.006
+		if len(entry.ZoomLevels) > 0 {
+			aimSpread = 0.002
+		} else {
+			aimSpread = 0.006
+		}
+	}
+	bodyDamage := entry.BaseDamage
+	if entry.Category == "shotgun" {
+		pellets := entry.Pellets
+		if pellets < 1 {
+			pellets = 1
+		}
+		bodyDamage *= pellets
+	}
+	headDamage := int(math.Round(float64(bodyDamage) * 4))
+	return weaponConfig{
+		ID:                  id,
+		Label:               entry.Label,
+		Range:               hitscanRange,
+		FireIntervalMS:      int64(entry.FireIntervalMS),
+		BodyDamage:          bodyDamage,
+		HeadDamage:          headDamage,
+		UsesAmmo:            entry.MagSize > 0,
+		HipSpread:           hipSpread,
+		AimSpread:           aimSpread,
+		BloomPerShot:        bloomPerShot,
+		MaxBloom:            maxBloom,
+		BloomDecayMS:        0.000008,
+		RecoilTable:         recoilTable,
+		RecoveryThresholdMS: recovery,
+		PunchDecayExp:       punchExp,
+		PunchDecayLin:       punchLin,
 	}
 }
 
@@ -2501,50 +2717,30 @@ func deterministicSpreadOffset(seed int64) float64 {
 	return rng.Float64()*2 - 1
 }
 
-func normalizeWeaponChoice(hasPistol, hasMG bool, bombs, smokes, flashbangs int, requested WeaponID) WeaponID {
+func (g *Game) normalizeActiveWeaponLocked(idx int, requested WeaponID) WeaponID {
 	switch requested {
-	case WeaponMachineGun:
-		if hasMG {
-			return requested
-		}
-	case WeaponPistol:
-		if hasPistol {
-			return requested
-		}
 	case WeaponBomb:
-		if bombs > 0 {
+		if g.players.bombs[idx] > 0 {
 			return requested
 		}
 	case WeaponSmoke:
-		if smokes > 0 {
+		if g.players.smokes[idx] > 0 {
 			return requested
 		}
 	case WeaponFlashbang:
-		if flashbangs > 0 {
+		if g.players.flashbangs[idx] > 0 {
+			return requested
+		}
+	default:
+		if requested != "" && (g.players.pistolWeapon[idx] == requested || g.players.heavyWeapon[idx] == requested) {
 			return requested
 		}
 	}
 	return WeaponKnife
 }
 
-func (g *Game) normalizeActiveWeaponLocked(idx int, requested WeaponID) WeaponID {
-	return normalizeWeaponChoice(
-		g.players.hasPistol[idx],
-		g.players.hasMG[idx],
-		g.players.bombs[idx],
-		g.players.smokes[idx],
-		g.players.flashbangs[idx],
-		requested,
-	)
-}
-
 func isCombatWeapon(id WeaponID) bool {
-	switch id {
-	case WeaponKnife, WeaponPistol, WeaponMachineGun:
-		return true
-	default:
-		return false
-	}
+	return id == WeaponKnife || isPistolWeapon(id) || isHeavyWeapon(id)
 }
 
 func isUtilityWeaponID(id WeaponID) bool {
@@ -2557,32 +2753,31 @@ func isUtilityWeaponID(id WeaponID) bool {
 }
 
 func weaponClipSize(id WeaponID) int {
-	switch id {
-	case WeaponMachineGun:
-		return machineGunMagSize
-	case WeaponPistol:
-		return pistolMagSize
-	default:
-		return 0
+	if entry, ok := weaponCatalogEntryByID(id); ok {
+		return entry.MagSize
 	}
+	return 0
 }
 
 func weaponReserveAmmoMax(id WeaponID) int {
-	switch id {
-	case WeaponMachineGun:
-		return machineGunAmmoMax
-	case WeaponPistol:
-		return pistolAmmoMax
-	default:
-		return 0
+	if entry, ok := weaponCatalogEntryByID(id); ok {
+		return entry.ReserveMax
 	}
+	return 0
+}
+
+func weaponReloadMS(id WeaponID) int64 {
+	if entry, ok := weaponCatalogEntryByID(id); ok {
+		return int64(entry.ReloadMS)
+	}
+	return 0
 }
 
 func (g *Game) currentAmmoLocked(idx int, weapon WeaponID) int {
-	switch weapon {
-	case WeaponMachineGun:
-		return g.players.mgClip[idx]
-	case WeaponPistol:
+	switch {
+	case g.players.heavyWeapon[idx] == weapon:
+		return g.players.heavyClip[idx]
+	case g.players.pistolWeapon[idx] == weapon:
 		return g.players.pistolClip[idx]
 	default:
 		return 0
@@ -2590,10 +2785,10 @@ func (g *Game) currentAmmoLocked(idx int, weapon WeaponID) int {
 }
 
 func (g *Game) currentReserveLocked(idx int, weapon WeaponID) int {
-	switch weapon {
-	case WeaponMachineGun:
-		return g.players.mgReserve[idx]
-	case WeaponPistol:
+	switch {
+	case g.players.heavyWeapon[idx] == weapon:
+		return g.players.heavyReserve[idx]
+	case g.players.pistolWeapon[idx] == weapon:
 		return g.players.pistolReserve[idx]
 	default:
 		return 0
@@ -2618,11 +2813,11 @@ func (g *Game) currentUtilityCountLocked(idx int, weapon WeaponID) int {
 }
 
 func (g *Game) setWeaponAmmoLocked(idx int, weapon WeaponID, clip, reserve int) {
-	switch weapon {
-	case WeaponMachineGun:
-		g.players.mgClip[idx] = clip
-		g.players.mgReserve[idx] = reserve
-	case WeaponPistol:
+	switch {
+	case g.players.heavyWeapon[idx] == weapon:
+		g.players.heavyClip[idx] = clip
+		g.players.heavyReserve[idx] = reserve
+	case g.players.pistolWeapon[idx] == weapon:
 		g.players.pistolClip[idx] = clip
 		g.players.pistolReserve[idx] = reserve
 	}
@@ -2656,43 +2851,34 @@ func (g *Game) awardDeathmatchKillAmmoLocked(idx int, weapon WeaponID) bool {
 	if normalizeMode(g.mode) != ModeDeathmatch {
 		return false
 	}
-	switch weapon {
-	case WeaponPistol, WeaponMachineGun:
+	switch {
+	case g.players.pistolWeapon[idx] == weapon, g.players.heavyWeapon[idx] == weapon:
 		return g.addAmmoLocked(idx, weapon, deathmatchKillAmmoReward)
-	default:
-		return false
 	}
+	return false
 }
 
 func (g *Game) stripLoadoutOnDeathLocked(idx int) {
-	g.players.hasPistol[idx] = true
-	g.players.hasMG[idx] = false
-	g.players.pistolClip[idx] = pistolMagSize
+	defaultPistol := defaultPistolForTeam(g.players.team[idx])
+	g.players.pistolWeapon[idx] = defaultPistol
+	g.players.heavyWeapon[idx] = ""
+	g.players.pistolClip[idx] = weaponClipSize(defaultPistol)
 	g.players.pistolReserve[idx] = 0
-	g.players.mgClip[idx] = 0
-	g.players.mgReserve[idx] = 0
+	g.players.heavyClip[idx] = 0
+	g.players.heavyReserve[idx] = 0
 	g.players.bombs[idx] = 0
 	g.players.smokes[idx] = 0
 	g.players.flashbangs[idx] = 0
-	g.players.activeWeapon[idx] = WeaponPistol
+	g.players.activeWeapon[idx] = defaultPistol
 	g.players.nextAttackAt[idx] = 0
 	g.players.shotBloom[idx] = 0
-	g.players.bloomWeapon[idx] = WeaponPistol
+	g.players.bloomWeapon[idx] = defaultPistol
 	g.players.lastShotAt[idx] = 0
 	g.players.recoilPitch[idx] = 0
 	g.players.recoilYaw[idx] = 0
 	g.players.recoilShotIndex[idx] = 0
 	g.clearReloadLocked(idx)
 	g.clearDeathmatchSpawnStateLocked(idx)
-}
-
-func (g *Game) grantRoundIncomeLocked(amount int) {
-	if amount <= 0 {
-		return
-	}
-	for i := range g.players.ids {
-		g.players.credits[i] += amount
-	}
 }
 
 func (g *Game) reloadWeaponForRoundLocked(idx int, weapon WeaponID) {
@@ -2712,23 +2898,23 @@ func (g *Game) reloadWeaponForRoundLocked(idx int, weapon WeaponID) {
 }
 
 func (g *Game) reloadLoadoutForRoundLocked(idx int) {
-	if g.players.hasPistol[idx] {
-		g.reloadWeaponForRoundLocked(idx, WeaponPistol)
+	if g.players.pistolWeapon[idx] != "" {
+		g.reloadWeaponForRoundLocked(idx, g.players.pistolWeapon[idx])
 	}
-	if g.players.hasMG[idx] {
-		g.reloadWeaponForRoundLocked(idx, WeaponMachineGun)
+	if g.players.heavyWeapon[idx] != "" {
+		g.reloadWeaponForRoundLocked(idx, g.players.heavyWeapon[idx])
 	}
 }
 
 func (g *Game) spendAmmoLocked(idx int, weapon WeaponID, amount int) bool {
-	switch weapon {
-	case WeaponMachineGun:
-		if g.players.mgClip[idx] < amount {
+	switch {
+	case g.players.heavyWeapon[idx] == weapon:
+		if g.players.heavyClip[idx] < amount {
 			return false
 		}
-		g.players.mgClip[idx] -= amount
+		g.players.heavyClip[idx] -= amount
 		return true
-	case WeaponPistol:
+	case g.players.pistolWeapon[idx] == weapon:
 		if g.players.pistolClip[idx] < amount {
 			return false
 		}
@@ -2760,8 +2946,9 @@ func (g *Game) startReloadLocked(idx int, weapon WeaponID, nowMS int64) bool {
 	if g.isReloadingLocked(idx, nowMS) {
 		return false
 	}
+	reloadMS := weaponReloadMS(weapon)
 	clipSize := weaponClipSize(weapon)
-	if clipSize <= 0 {
+	if clipSize <= 0 || reloadMS <= 0 {
 		return false
 	}
 	clip := g.currentAmmoLocked(idx, weapon)
@@ -2770,7 +2957,7 @@ func (g *Game) startReloadLocked(idx int, weapon WeaponID, nowMS int64) bool {
 		return false
 	}
 	g.players.reloadWeapon[idx] = weapon
-	g.players.reloadEndsAt[idx] = nowMS + reloadDurationMS
+	g.players.reloadEndsAt[idx] = nowMS + reloadMS
 	return true
 }
 
@@ -2868,17 +3055,6 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 			"absorbed": absorbed,
 		})
 
-		if ownerOK && projectile.OwnerID != playerID {
-			rewardAmount := rewardForHitZone(HitZoneBody)
-			rewardLabel := "Explosion reward"
-			if nextHP <= 0 {
-				rewardAmount += killReward
-				rewardLabel = "Explosion elimination reward"
-			}
-			g.players.credits[ownerIdx] += rewardAmount
-			tm.addDirect(projectile.OwnerID, g.applyEconomyUpdateLocked(ownerIdx, true, "reward", string(WeaponBomb), rewardLabel, "", rewardAmount, nowMS))
-		}
-
 		if nextHP > 0 {
 			continue
 		}
@@ -2889,6 +3065,10 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 		g.stripLoadoutOnDeathLocked(idx)
 		if ownerOK && projectile.OwnerID != playerID {
 			g.players.kills[ownerIdx]++
+			rewardAmount := g.addCreditsLocked(ownerIdx, killRewardForWeapon(WeaponBomb))
+			if rewardAmount != 0 {
+				tm.addDirect(projectile.OwnerID, g.applyEconomyUpdateLocked(ownerIdx, true, "reward", string(WeaponBomb), "Explosion elimination reward", "", rewardAmount, nowMS))
+			}
 		}
 		if normalizeMode(g.mode) == ModeDeathmatch {
 			g.scheduleRespawn(playerID, g.currentRound)
@@ -3030,27 +3210,28 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			continue
 		}
 
-		g.players.activeWeapon[idx] = WeaponPistol
-		if g.currentAmmoLocked(idx, WeaponPistol) <= 0 {
-			if g.currentReserveLocked(idx, WeaponPistol) > 0 {
-				g.startReloadLocked(idx, WeaponPistol, nowMS)
+		botWeapon := g.players.pistolWeapon[idx]
+		g.players.activeWeapon[idx] = botWeapon
+		if g.currentAmmoLocked(idx, botWeapon) <= 0 {
+			if g.currentReserveLocked(idx, botWeapon) > 0 {
+				g.startReloadLocked(idx, botWeapon, nowMS)
 			}
 			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
 			continue
 		}
 
-		config := weaponConfigByID(WeaponPistol)
-		if !g.spendAmmoLocked(idx, WeaponPistol, 1) {
+		config := weaponConfigByID(botWeapon)
+		if !g.spendAmmoLocked(idx, botWeapon, 1) {
 			g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
 			continue
 		}
 
 		shotTime := nowMS
-		bloom := g.registerShotBloomLocked(idx, WeaponPistol, nowMS)
+		bloom := g.registerShotBloomLocked(idx, botWeapon, nowMS)
 		dir = applyBotAimProfile(dir, g.players.botShotCount[idx])
 		moving := isMovingAtTime(&g.players.history[idx], shotTime)
 		// Track recoil state for bots (used for bloom/reset sync)
-		g.registerShotRecoilLocked(idx, WeaponPistol, nowMS, false, moving)
+		g.registerShotRecoilLocked(idx, botWeapon, nowMS, false, moving)
 		dir = applyShotSpread(dir, config, false, g.players.crouching[idx], moving, bloom, shotTime+int64(botID)*97+nowMS)
 		g.players.nextAttackAt[idx] = nowMS + config.FireIntervalMS
 		g.players.botNextThink[idx] = nowMS + botThinkIntervalMS
@@ -3062,7 +3243,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			"id":        botID,
 			"pos":       shooterPos,
 			"dir":       dir,
-			"weapon":    WeaponPistol,
+			"weapon":    botWeapon,
 			"alternate": false,
 		})
 		tm.broadcasts = append(tm.broadcasts, shotMsg)
@@ -3078,20 +3259,18 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		g.players.hp[hit.index] = victimHP
 		g.players.armor[hit.index] = victimArmor
 
-		rewardAmount := rewardForHitZone(hit.zone)
 		if victimHP <= 0 {
 			g.players.alive[hit.index] = false
 			g.players.deaths[hit.index]++
 			g.dropCarrierLocked(victimID, nowMS)
 			g.stripLoadoutOnDeathLocked(hit.index)
 			g.players.kills[idx]++
-			g.awardDeathmatchKillAmmoLocked(idx, WeaponPistol)
-			rewardAmount += killReward
+			g.awardDeathmatchKillAmmoLocked(idx, botWeapon)
+			g.addCreditsLocked(idx, killRewardForWeapon(botWeapon))
 			if normalizeMode(g.mode) == ModeDeathmatch {
 				g.scheduleRespawn(victimID, g.currentRound)
 			}
 		}
-		g.players.credits[idx] += rewardAmount
 
 		hitMsg, _ := json.Marshal(map[string]interface{}{
 			"t":        "hit",
@@ -3099,7 +3278,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			"to":       victimID,
 			"dmg":      damage,
 			"zone":     hit.zone,
-			"weapon":   WeaponPistol,
+			"weapon":   botWeapon,
 			"hp":       victimHP,
 			"armor":    victimArmor,
 			"absorbed": absorbedDamage,
@@ -3114,7 +3293,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			"t":      "kill",
 			"killer": botID,
 			"victim": victimID,
-			"weapon": WeaponPistol,
+			"weapon": botWeapon,
 		})
 		tm.broadcasts = append(tm.broadcasts, killMsg)
 	}
@@ -3135,12 +3314,12 @@ func (g *Game) applyEconomyUpdateLocked(idx int, ok bool, kind, item, label, rea
 		Armor:                     g.players.armor[idx],
 		Credits:                   g.players.credits[idx],
 		Team:                      g.players.team[idx],
-		HasPistol:                 g.players.hasPistol[idx],
-		HasMachineGun:             g.players.hasMG[idx],
+		PistolWeapon:              g.players.pistolWeapon[idx],
 		PistolClip:                g.players.pistolClip[idx],
 		PistolReserve:             g.players.pistolReserve[idx],
-		MachineGunClip:            g.players.mgClip[idx],
-		MachineGunReserve:         g.players.mgReserve[idx],
+		HeavyWeapon:               g.players.heavyWeapon[idx],
+		HeavyClip:                 g.players.heavyClip[idx],
+		HeavyReserve:              g.players.heavyReserve[idx],
 		Bombs:                     g.players.bombs[idx],
 		Smokes:                    g.players.smokes[idx],
 		Flashbangs:                g.players.flashbangs[idx],
@@ -3168,103 +3347,57 @@ func (g *Game) applyPurchaseLocked(idx int, item string, nowMS int64) economyUpd
 		return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "", "Only alive players can buy", 0, nowMS)
 	}
 
+	if entry, ok := weaponCatalogEntryByID(WeaponID(item)); ok {
+		if !weaponAllowedForTeam(WeaponID(item), g.players.team[idx]) {
+			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, entry.Label, "Wrong side for this weapon", 0, nowMS)
+		}
+		if !freeLoadout && g.players.credits[idx] < entry.Price {
+			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, entry.Label, "Not enough credits", 0, nowMS)
+		}
+		if !freeLoadout {
+			g.players.credits[idx] -= entry.Price
+		}
+		weaponID := WeaponID(item)
+		if entry.Slot == "pistol" {
+			g.players.pistolWeapon[idx] = weaponID
+			g.players.pistolClip[idx] = entry.MagSize
+			g.players.pistolReserve[idx] = entry.ReserveMax
+		} else {
+			g.players.heavyWeapon[idx] = weaponID
+			g.players.heavyClip[idx] = entry.MagSize
+			g.players.heavyReserve[idx] = entry.ReserveMax
+		}
+		g.players.activeWeapon[idx] = weaponID
+		amount := 0
+		if !freeLoadout {
+			amount = -entry.Price
+		}
+		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, entry.Label, "", amount, nowMS)
+	}
+
 	switch item {
-	case "buy-machinegun":
-		if g.players.hasMG[idx] {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Machine Gun", "Machine gun already owned", 0, nowMS)
-		}
-		if !freeLoadout && g.players.credits[idx] < machineGunCost {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Machine Gun", "Not enough credits", 0, nowMS)
-		}
-		if !freeLoadout {
-			g.players.credits[idx] -= machineGunCost
-		}
-		g.players.hasMG[idx] = true
-		g.giveWeaponFullAmmoLocked(idx, WeaponMachineGun)
-		g.players.activeWeapon[idx] = WeaponMachineGun
-		amount := 0
-		if !freeLoadout {
-			amount = -machineGunCost
-		}
-		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "Machine Gun", "", amount, nowMS)
-	case "buy-pistol":
-		if g.players.hasPistol[idx] {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Pistol", "Pistol already owned", 0, nowMS)
-		}
-		if !freeLoadout && g.players.credits[idx] < pistolCost {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Pistol", "Not enough credits", 0, nowMS)
-		}
-		if !freeLoadout {
-			g.players.credits[idx] -= pistolCost
-		}
-		g.players.hasPistol[idx] = true
-		g.giveWeaponFullAmmoLocked(idx, WeaponPistol)
-		g.players.activeWeapon[idx] = WeaponPistol
-		amount := 0
-		if !freeLoadout {
-			amount = -pistolCost
-		}
-		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "Pistol", "", amount, nowMS)
-	case "machinegun-ammo":
-		if !g.players.hasMG[idx] {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "MG Ammo", "Buy the machine gun first", 0, nowMS)
-		}
-		if g.currentReserveLocked(idx, WeaponMachineGun) >= machineGunAmmoMax {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "MG Ammo", "Machine gun ammo already full", 0, nowMS)
-		}
-		if !freeLoadout && g.players.credits[idx] < machineGunAmmoPackCost {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "MG Ammo", "Not enough credits", 0, nowMS)
-		}
-		if !freeLoadout {
-			g.players.credits[idx] -= machineGunAmmoPackCost
-		}
-		g.addAmmoLocked(idx, WeaponMachineGun, machineGunAmmoPack)
-		amount := 0
-		if !freeLoadout {
-			amount = -machineGunAmmoPackCost
-		}
-		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "MG Ammo", "", amount, nowMS)
-	case "pistol-ammo":
-		if !g.players.hasPistol[idx] {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Pistol Ammo", "Buy the pistol first", 0, nowMS)
-		}
-		if g.currentReserveLocked(idx, WeaponPistol) >= pistolAmmoMax {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Pistol Ammo", "Pistol ammo already full", 0, nowMS)
-		}
-		if !freeLoadout && g.players.credits[idx] < pistolAmmoPackCost {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Pistol Ammo", "Not enough credits", 0, nowMS)
-		}
-		if !freeLoadout {
-			g.players.credits[idx] -= pistolAmmoPackCost
-		}
-		g.addAmmoLocked(idx, WeaponPistol, pistolAmmoPack)
-		amount := 0
-		if !freeLoadout {
-			amount = -pistolAmmoPackCost
-		}
-		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "Pistol Ammo", "", amount, nowMS)
 	case "bomb":
-		return g.purchaseUtilityLocked(idx, item, "Bomb", bombCost, &g.players.bombs[idx], freeLoadout, nowMS)
+		return g.purchaseUtilityLocked(idx, item, "HE Grenade", 300, &g.players.bombs[idx], freeLoadout, nowMS)
 	case "smoke":
-		return g.purchaseUtilityLocked(idx, item, "Smoke", smokeCost, &g.players.smokes[idx], freeLoadout, nowMS)
+		return g.purchaseUtilityLocked(idx, item, "Smoke Grenade", 300, &g.players.smokes[idx], freeLoadout, nowMS)
 	case "flashbang":
-		return g.purchaseUtilityLocked(idx, item, "Flashbang", flashbangCost, &g.players.flashbangs[idx], freeLoadout, nowMS)
+		return g.purchaseUtilityLocked(idx, item, "Flashbang", 200, &g.players.flashbangs[idx], freeLoadout, nowMS)
 	case "armor":
 		if g.players.armor[idx] >= maxArmor {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Armor Plate", "Armor already full", 0, nowMS)
+			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Kevlar", "Armor already full", 0, nowMS)
 		}
-		if !freeLoadout && g.players.credits[idx] < armorPlateCost {
-			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Armor Plate", "Not enough credits", 0, nowMS)
+		if !freeLoadout && g.players.credits[idx] < 650 {
+			return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "Kevlar", "Not enough credits", 0, nowMS)
 		}
 		if !freeLoadout {
-			g.players.credits[idx] -= armorPlateCost
+			g.players.credits[idx] -= 650
 		}
-		g.players.armor[idx] = minInt(maxArmor, g.players.armor[idx]+armorPlateAmount)
+		g.players.armor[idx] = maxArmor
 		amount := 0
 		if !freeLoadout {
-			amount = -armorPlateCost
+			amount = -650
 		}
-		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "Armor Plate", "", amount, nowMS)
+		return g.applyEconomyUpdateLocked(idx, true, "purchase", item, "Kevlar", "", amount, nowMS)
 	default:
 		return g.applyEconomyUpdateLocked(idx, false, "purchase", item, "", "Unknown buy item", 0, nowMS)
 	}
@@ -3315,12 +3448,13 @@ func writer(conn *websocket.Conn, sendCh <-chan []byte) {
 func (g *Game) resetPlayerForNewMatchLocked(idx int, nowMS int64) {
 	g.players.credits[idx] = startingCredits
 	g.players.armor[idx] = 0
-	g.players.hasPistol[idx] = true
-	g.players.hasMG[idx] = false
-	g.players.pistolClip[idx] = pistolMagSize
+	defaultPistol := defaultPistolForTeam(g.players.team[idx])
+	g.players.pistolWeapon[idx] = defaultPistol
+	g.players.heavyWeapon[idx] = ""
+	g.players.pistolClip[idx] = weaponClipSize(defaultPistol)
 	g.players.pistolReserve[idx] = 0
-	g.players.mgClip[idx] = 0
-	g.players.mgReserve[idx] = 0
+	g.players.heavyClip[idx] = 0
+	g.players.heavyReserve[idx] = 0
 	g.players.bombs[idx] = 0
 	g.players.smokes[idx] = 0
 	g.players.flashbangs[idx] = 0
@@ -3338,7 +3472,7 @@ func (g *Game) resetPlayerForNewMatchLocked(idx int, nowMS int64) {
 	g.clearReloadLocked(idx)
 	g.respawnPlayerLocked(idx, nowMS)
 	if normalizeMode(g.mode) != ModeDeathmatch {
-		g.players.activeWeapon[idx] = WeaponPistol
+		g.players.activeWeapon[idx] = defaultPistol
 	}
 }
 
@@ -3351,13 +3485,13 @@ func (g *Game) scheduleRespawn(victimID int, roundNumber int) {
 		respawnArmor := 0
 		respawnHP := 0
 		respawnPos := Vec3{}
-		hasPistol := false
-		hasMachineGun := false
+		pistolWeapon := WeaponKnife
+		heavyWeapon := WeaponKnife
 		team := TeamNone
 		pistolClip := 0
 		pistolReserve := 0
-		machineGunClip := 0
-		machineGunReserve := 0
+		heavyClip := 0
+		heavyReserve := 0
 		bombs := 0
 		smokes := 0
 		flashbangs := 0
@@ -3374,13 +3508,13 @@ func (g *Game) scheduleRespawn(victimID int, roundNumber int) {
 			respawnCredits = g.players.credits[idx]
 			respawnArmor = g.players.armor[idx]
 			respawnHP = g.players.hp[idx]
-			hasPistol = g.players.hasPistol[idx]
-			hasMachineGun = g.players.hasMG[idx]
+			pistolWeapon = g.players.pistolWeapon[idx]
+			heavyWeapon = g.players.heavyWeapon[idx]
 			team = g.players.team[idx]
 			pistolClip = g.players.pistolClip[idx]
 			pistolReserve = g.players.pistolReserve[idx]
-			machineGunClip = g.players.mgClip[idx]
-			machineGunReserve = g.players.mgReserve[idx]
+			heavyClip = g.players.heavyClip[idx]
+			heavyReserve = g.players.heavyReserve[idx]
 			bombs = g.players.bombs[idx]
 			smokes = g.players.smokes[idx]
 			flashbangs = g.players.flashbangs[idx]
@@ -3402,12 +3536,12 @@ func (g *Game) scheduleRespawn(victimID int, roundNumber int) {
 			"armor":                     respawnArmor,
 			"credits":                   respawnCredits,
 			"team":                      team,
-			"hasPistol":                 hasPistol,
-			"hasMachineGun":             hasMachineGun,
+			"pistolWeapon":              pistolWeapon,
 			"pistolClip":                pistolClip,
 			"pistolReserve":             pistolReserve,
-			"machineGunClip":            machineGunClip,
-			"machineGunReserve":         machineGunReserve,
+			"heavyWeapon":               heavyWeapon,
+			"heavyClip":                 heavyClip,
+			"heavyReserve":              heavyReserve,
 			"bombs":                     bombs,
 			"smokes":                    smokes,
 			"flashbangs":                flashbangs,
@@ -3428,11 +3562,23 @@ func (g *Game) respawnPlayerLocked(idx int, nowMS int64) {
 	teamSpawns := g.spawnPointsForTeamLocked(g.players.team[idx])
 	if normalizeMode(g.mode) == ModeDeathmatch {
 		teamSpawns = g.mapSpawns
-		g.players.hasPistol[idx] = true
-		g.players.hasMG[idx] = true
-		g.giveWeaponFullAmmoLocked(idx, WeaponPistol)
-		g.giveWeaponFullAmmoLocked(idx, WeaponMachineGun)
-		g.players.activeWeapon[idx] = WeaponMachineGun
+		if g.players.pistolWeapon[idx] == "" {
+			g.players.pistolWeapon[idx] = defaultPistolForTeam(g.players.team[idx])
+		}
+		g.giveWeaponFullAmmoLocked(idx, g.players.pistolWeapon[idx])
+		if g.players.heavyWeapon[idx] == "" {
+			if normalizeTeam(g.players.team[idx]) == TeamGreen {
+				g.players.heavyWeapon[idx] = WeaponID("ak-47")
+			} else {
+				g.players.heavyWeapon[idx] = WeaponID("m4a4")
+			}
+		}
+		if g.players.heavyWeapon[idx] != "" {
+			g.giveWeaponFullAmmoLocked(idx, g.players.heavyWeapon[idx])
+			g.players.activeWeapon[idx] = g.players.heavyWeapon[idx]
+		} else {
+			g.players.activeWeapon[idx] = g.players.pistolWeapon[idx]
+		}
 		g.players.spawnProtectedUntil[idx] = nowMS + deathmatchSpawnProtectionMS
 		g.players.loadoutEndsAt[idx] = nowMS + deathmatchLoadoutWindowMS
 	} else {
@@ -3460,6 +3606,8 @@ func (g *Game) respawnPlayerLocked(idx int, nowMS int64) {
 func (g *Game) startMatchLocked(nowMS int64) {
 	g.state = StatePlaying
 	g.currentRound = 1
+	g.blueLossStreak = 0
+	g.greenLossStreak = 0
 	if normalizeMode(g.mode) == ModeDeathmatch {
 		g.roundEndsAt = nowMS + deathmatchDurationMS
 		g.buyEndsAt = 0
@@ -3562,7 +3710,6 @@ func (g *Game) startNextRoundLocked(nowMS int64) {
 	g.projectiles = nil
 	g.effects = nil
 	g.nextProjID = 0
-	g.grantRoundIncomeLocked(roundIncomeCredits)
 	for i := range g.players.ids {
 		if g.players.inMatch[i] {
 			g.respawnPlayerLocked(i, nowMS)
@@ -3592,6 +3739,8 @@ func (g *Game) endMatchLocked() {
 	g.projectiles = nil
 	g.effects = nil
 	g.nextProjID = 0
+	g.blueLossStreak = 0
+	g.greenLossStreak = 0
 	g.deathmatchVoteEnds = 0
 	clear(g.deathmatchVotes)
 	for i := range g.players.ids {
@@ -3619,6 +3768,8 @@ func (g *Game) startDeathmatchVoteLocked(nowMS int64) {
 	g.projectiles = nil
 	g.effects = nil
 	g.nextProjID = 0
+	g.blueLossStreak = 0
+	g.greenLossStreak = 0
 	g.deathmatchVoteEnds = nowMS + deathmatchVoteMS
 	clear(g.deathmatchVotes)
 	g.removeAllBotsLocked()
@@ -3702,6 +3853,7 @@ func (g *Game) beginRoundCooldownLocked(team TeamID, nowMS int64) {
 	case TeamGreen:
 		g.greenScore++
 	}
+	g.awardRoundEconomyLocked(team)
 
 	g.intermissionEndsAt = nowMS + roundCooldownMS
 	g.roundWinner = normalizeTeam(team)
@@ -3915,12 +4067,12 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				welcome["credits"] = playerState.Credits
 				welcome["team"] = playerState.Team
 				welcome["crouching"] = playerState.Crouching
-				welcome["hasPistol"] = playerState.HasPistol
-				welcome["hasMachineGun"] = playerState.HasMachineGun
+				welcome["pistolWeapon"] = playerState.PistolWeapon
 				welcome["pistolClip"] = playerState.PistolClip
 				welcome["pistolReserve"] = playerState.PistolReserve
-				welcome["machineGunClip"] = playerState.MachineGunClip
-				welcome["machineGunReserve"] = playerState.MachineGunReserve
+				welcome["heavyWeapon"] = playerState.HeavyWeapon
+				welcome["heavyClip"] = playerState.HeavyClip
+				welcome["heavyReserve"] = playerState.HeavyReserve
 				welcome["bombs"] = playerState.Bombs
 				welcome["smokes"] = playerState.Smokes
 				welcome["flashbangs"] = playerState.Flashbangs
@@ -4099,12 +4251,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				game.players.hp[victimIdx] = victimHP
 				game.players.armor[victimIdx] = victimArmor
 
-				rewardAmount := rewardForHitZone(hit.zone)
-				rewardLabel := "Hit reward"
-				if hit.zone == HitZoneHead {
-					rewardLabel = "Headshot reward"
-				}
-
 				if victimHP <= 0 {
 					game.players.alive[victimIdx] = false
 					game.players.deaths[victimIdx]++
@@ -4113,16 +4259,15 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 					killed = true
 					game.players.kills[shooterIdx]++
 					game.awardDeathmatchKillAmmoLocked(shooterIdx, weapon)
-					rewardAmount += killReward
-					rewardLabel = "Elimination reward"
+					rewardAmount := game.addCreditsLocked(shooterIdx, killRewardForWeapon(weapon))
+					if rewardAmount != 0 {
+						update := game.applyEconomyUpdateLocked(shooterIdx, true, "reward", string(weapon), "Elimination reward", "", rewardAmount, nowMS)
+						shooterUpdate = &update
+					}
 					if normalizeMode(game.mode) == ModeDeathmatch {
 						game.scheduleRespawn(victimID, game.currentRound)
 					}
 				}
-
-				game.players.credits[shooterIdx] += rewardAmount
-				update := game.applyEconomyUpdateLocked(shooterIdx, true, "reward", string(weapon), rewardLabel, "", rewardAmount, nowMS)
-				shooterUpdate = &update
 			}
 			game.mu.Unlock()
 
@@ -4191,7 +4336,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Join the next match first", 0, nowMS)
 			case !game.players.alive[idx]:
 				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Only alive players can reload", 0, nowMS)
-			case weapon != WeaponPistol && weapon != WeaponMachineGun:
+			case !(isPistolWeapon(weapon) || isHeavyWeapon(weapon)):
 				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Current item cannot reload", 0, nowMS)
 			case game.isReloadingLocked(idx, nowMS):
 				update = game.applyEconomyUpdateLocked(idx, false, "reload", string(weapon), "", "Already reloading", 0, nowMS)
