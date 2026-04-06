@@ -98,11 +98,36 @@ let mapData = {
     floorInsets: [],
     boxes: [],
     spawnPoints: [],
+    healthRestorePoints: [],
 };
 
-let selectedType = null; // 'wall' | 'box' | 'floorInset' | 'spawn'
+let selectedType = null; // 'wall' | 'box' | 'floorInset' | 'spawn' | 'healthRestorePoint'
 let selectedIndex = -1;
 let dirty = true;
+
+function normalizeHealthRestorePoint(point = {}) {
+    return {
+        x: point.x ?? 0,
+        z: point.z ?? 0,
+        radius: point.radius ?? 1.5,
+        healAmount: point.healAmount ?? 35,
+        cooldownSec: point.cooldownSec ?? 12,
+    };
+}
+
+function normalizeMapData(data = {}) {
+    return {
+        name: data.name || 'Untitled',
+        arena: data.arena ?? 30,
+        wallHeight: data.wallHeight ?? 5,
+        wallThick: data.wallThick ?? 0.3,
+        walls: data.walls || [],
+        floorInsets: data.floorInsets || [],
+        boxes: data.boxes || [],
+        spawnPoints: data.spawnPoints || [],
+        healthRestorePoints: (data.healthRestorePoints || []).map(normalizeHealthRestorePoint),
+    };
+}
 
 // ── Undo stack ─────────────────────────────────────────────────────
 const UNDO_LIMIT = 50;
@@ -277,6 +302,37 @@ function buildSpawnVerts() {
     return verts;
 }
 
+function buildHealthRestoreVerts() {
+    const verts = [];
+    for (let i = 0; i < mapData.healthRestorePoints.length; i++) {
+        const point = mapData.healthRestorePoints[i];
+        const isSelected = selectedType === 'healthRestorePoint' && selectedIndex === i;
+        const mat = isSelected ? HIGHLIGHT_MAT : 21;
+        pushCross(verts, point.x, 0.02, point.z, Math.max(0.4, point.radius * 0.5), mat);
+        pushRing(verts, point.x, 0.03, point.z, Math.max(0.3, point.radius), 24, mat);
+        pushVLine(verts, point.x, 0.02, point.z, 0.7, mat);
+    }
+    return verts;
+}
+
+function pushRing(v, cx, y, cz, radius, segments, mat) {
+    for (let i = 0; i < segments; i++) {
+        const a0 = (i / segments) * Math.PI * 2;
+        const a1 = ((i + 1) / segments) * Math.PI * 2;
+        pushLine(
+            v,
+            cx + Math.cos(a0) * radius,
+            y,
+            cz + Math.sin(a0) * radius,
+            cx + Math.cos(a1) * radius,
+            y,
+            cz + Math.sin(a1) * radius,
+            0.05,
+            mat
+        );
+    }
+}
+
 function pushCross(v, cx, y, cz, size, mat) {
     const t = 0.08;
     pushLine(v, cx - size, y, cz, cx + size, y, cz, t, mat);
@@ -416,6 +472,15 @@ function getSelectedAABB() {
             [s[0] + 0.6, s[1], s[2] + 0.6],
         ];
     }
+    if (selectedType === 'healthRestorePoint') {
+        const point = mapData.healthRestorePoints[selectedIndex];
+        if (!point) return null;
+        const radius = Math.max(0.3, point.radius);
+        return [
+            [point.x - radius, 0, point.z - radius],
+            [point.x + radius, 0.8, point.z + radius],
+        ];
+    }
     return null;
 }
 
@@ -454,6 +519,15 @@ function getAllAABBs() {
             type: 'spawn', index: i,
             min: [s[0] - 0.6, 0, s[2] - 0.6],
             max: [s[0] + 0.6, s[1], s[2] + 0.6],
+        });
+    }
+    for (let i = 0; i < mapData.healthRestorePoints.length; i++) {
+        const point = mapData.healthRestorePoints[i];
+        const radius = Math.max(0.3, point.radius);
+        result.push({
+            type: 'healthRestorePoint', index: i,
+            min: [point.x - radius, 0, point.z - radius],
+            max: [point.x + radius, 0.8, point.z + radius],
         });
     }
     return result;
@@ -531,6 +605,10 @@ function getGizmoCenter() {
     if (selectedType === 'spawn') {
         const s = mapData.spawnPoints[selectedIndex];
         return [s[0], s[1] / 2, s[2]];
+    }
+    if (selectedType === 'healthRestorePoint') {
+        const point = mapData.healthRestorePoints[selectedIndex];
+        return [point.x, 0.35, point.z];
     }
     return null;
 }
@@ -752,6 +830,11 @@ function applyGizmoMove(axis, delta) {
         const s = mapData.spawnPoints[selectedIndex];
         const o = gizmoDragOriginObj;
         s[idx] = o[idx] + snapped;
+    } else if (selectedType === 'healthRestorePoint') {
+        const point = mapData.healthRestorePoints[selectedIndex];
+        const o = gizmoDragOriginObj;
+        if (idx === 0) point.x = o.x + snapped;
+        else if (idx === 2) point.z = o.z + snapped;
     }
 }
 
@@ -843,6 +926,7 @@ function snapshotSelectedObject() {
     }
     if (selectedType === 'floorInset') return { ...mapData.floorInsets[selectedIndex] };
     if (selectedType === 'spawn') return [...mapData.spawnPoints[selectedIndex]];
+    if (selectedType === 'healthRestorePoint') return { ...mapData.healthRestorePoints[selectedIndex] };
     return null;
 }
 
@@ -893,6 +977,7 @@ function frame() {
 
     const dynVerts = [];
     appendArr(dynVerts, buildSpawnVerts());
+    appendArr(dynVerts, buildHealthRestoreVerts());
     appendArr(dynVerts, buildSelectionVerts());
     if (ghostVerts.length > 0) appendArr(dynVerts, ghostVerts);
 
@@ -1166,6 +1251,9 @@ function moveSelected(dx, dz) {
     } else if (selectedType === 'spawn') {
         const s = mapData.spawnPoints[selectedIndex];
         s[0] += dx; s[2] += dz;
+    } else if (selectedType === 'healthRestorePoint') {
+        const point = mapData.healthRestorePoints[selectedIndex];
+        point.x += dx; point.z += dz;
     }
 }
 
@@ -1180,6 +1268,7 @@ function deleteSelected() {
     }
     else if (selectedType === 'floorInset') mapData.floorInsets.splice(selectedIndex, 1);
     else if (selectedType === 'spawn') mapData.spawnPoints.splice(selectedIndex, 1);
+    else if (selectedType === 'healthRestorePoint') mapData.healthRestorePoints.splice(selectedIndex, 1);
     selectedType = null;
     selectedIndex = -1;
     dirty = true;
@@ -1196,6 +1285,7 @@ function copySelected() {
     }
     else if (selectedType === 'floorInset') clipboard = { type: 'floorInset', data: { ...mapData.floorInsets[selectedIndex] } };
     else if (selectedType === 'spawn') clipboard = { type: 'spawn', data: [...mapData.spawnPoints[selectedIndex]] };
+    else if (selectedType === 'healthRestorePoint') clipboard = { type: 'healthRestorePoint', data: { ...mapData.healthRestorePoints[selectedIndex] } };
     setStatus('Copied');
 }
 
@@ -1227,6 +1317,11 @@ function pasteClipboard() {
         mapData.spawnPoints.push(d);
         selectedType = 'spawn';
         selectedIndex = mapData.spawnPoints.length - 1;
+    } else if (clipboard.type === 'healthRestorePoint') {
+        const d = { ...clipboard.data, x: clipboard.data.x + offset, z: clipboard.data.z + offset };
+        mapData.healthRestorePoints.push(normalizeHealthRestorePoint(d));
+        selectedType = 'healthRestorePoint';
+        selectedIndex = mapData.healthRestorePoints.length - 1;
     }
     dirty = true;
     updateProperties();
@@ -1340,6 +1435,10 @@ function addObject(type, x, z) {
         mapData.spawnPoints.push([x, 1.7, z]);
         selectedType = 'spawn';
         selectedIndex = mapData.spawnPoints.length - 1;
+    } else if (type === 'healthRestorePoint') {
+        mapData.healthRestorePoints.push(normalizeHealthRestorePoint({ x, z }));
+        selectedType = 'healthRestorePoint';
+        selectedIndex = mapData.healthRestorePoints.length - 1;
     }
     dirty = true;
     updateProperties();
@@ -1384,6 +1483,9 @@ function updateGhost(mx, my) {
         pushLine(ghostVerts, x + 2, 0.02, z - 2, x + 2, 0.02, z + 2, t, mat);
     } else if (dragType === 'spawn') {
         pushCross(ghostVerts, x, 0.02, z, 0.6, mat);
+    } else if (dragType === 'healthRestorePoint') {
+        pushCross(ghostVerts, x, 0.02, z, 0.75, mat);
+        pushRing(ghostVerts, x, 0.03, z, 1.5, 24, mat);
     }
 }
 
@@ -1428,6 +1530,13 @@ function updateProperties() {
         addPropNum('x', s[0], (v) => { s[0] = v; });
         addPropNum('y', s[1], (v) => { s[1] = v; });
         addPropNum('z', s[2], (v) => { s[2] = v; });
+    } else if (selectedType === 'healthRestorePoint') {
+        const point = mapData.healthRestorePoints[selectedIndex];
+        addPropNum('x', point.x, (v) => { point.x = v; });
+        addPropNum('z', point.z, (v) => { point.z = v; });
+        addPropNum('radius', point.radius, (v) => { point.radius = Math.max(0.1, v); }, 0.1);
+        addPropNum('healAmount', point.healAmount, (v) => { point.healAmount = Math.max(1, Math.round(v)); }, 1);
+        addPropNum('cooldownSec', point.cooldownSec, (v) => { point.cooldownSec = Math.max(0.1, v); }, 0.1);
     }
 }
 
@@ -1508,6 +1617,7 @@ document.getElementById('btn-new').addEventListener('click', () => {
         floorInsets: [],
         boxes: [],
         spawnPoints: [],
+        healthRestorePoints: [],
     };
     nameInput.value = mapData.name;
     nextGroupId = 1;
@@ -1528,16 +1638,7 @@ fileInput.addEventListener('change', () => {
     reader.onload = () => {
         try {
             const data = JSON.parse(reader.result);
-            mapData = {
-                name: data.name || 'Imported',
-                arena: data.arena ?? 30,
-                wallHeight: data.wallHeight ?? 5,
-                wallThick: data.wallThick ?? 0.3,
-                walls: data.walls || [],
-                floorInsets: data.floorInsets || [],
-                boxes: data.boxes || [],
-                spawnPoints: data.spawnPoints || [],
-            };
+            mapData = normalizeMapData({ ...data, name: data.name || 'Imported' });
             nameInput.value = mapData.name;
             arenaInput.value = mapData.arena;
             syncNextGroupId();
@@ -1573,16 +1674,7 @@ async function init() {
         const resp = await fetch('maps/office_studio.json');
         if (resp.ok) {
             const data = await resp.json();
-            mapData = {
-                name: data.name || 'Office Studio',
-                arena: data.arena ?? 30,
-                wallHeight: data.wallHeight ?? 5,
-                wallThick: data.wallThick ?? 0.3,
-                walls: data.walls || [],
-                floorInsets: data.floorInsets || [],
-                boxes: data.boxes || [],
-                spawnPoints: data.spawnPoints || [],
-            };
+            mapData = normalizeMapData({ ...data, name: data.name || 'Office Studio' });
             nameInput.value = mapData.name;
             arenaInput.value = mapData.arena;
             syncNextGroupId();

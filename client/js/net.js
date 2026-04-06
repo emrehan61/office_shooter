@@ -527,6 +527,17 @@ function applyMatchState(net, match) {
     net.match.blueCTFCaptures = match.blueCTFCaptures ?? net.match.blueCTFCaptures;
     net.match.greenCTFCaptures = match.greenCTFCaptures ?? net.match.greenCTFCaptures;
     net.match.rescueZones = match.rescueZones ?? net.match.rescueZones;
+    net.match.healthRestorePoints = Array.isArray(match.healthRestorePoints)
+        ? match.healthRestorePoints.map((point) => ({
+            x: point.x ?? 0,
+            z: point.z ?? 0,
+            radius: point.radius ?? 0,
+            healAmount: point.healAmount ?? 0,
+            cooldownSec: point.cooldownSec ?? 0,
+            cooldownTimeLeftMs: point.cooldownTimeLeftMs ?? 0,
+            active: point.active !== false,
+        }))
+        : (net.match.mode === 'deathmatch' ? net.match.healthRestorePoints : []);
     if (typeof match.deathmatchVoteTimeLeftMs === 'number') {
         net.match.deathmatchVoteEndsAtClientMs = Date.now() + Math.max(0, match.deathmatchVoteTimeLeftMs);
     } else if (match.deathmatchVoteActive === false) {
@@ -562,6 +573,7 @@ function createDefaultMatchState() {
         blueCTFCaptures: 0,
         greenCTFCaptures: 0,
         rescueZones: [],
+        healthRestorePoints: [],
     };
 }
 
@@ -604,6 +616,7 @@ function applyGameState(net, state) {
         net.match.deathmatchVoteActive = false;
         net.match.deathmatchVoteTimeLeftMs = 0;
         net.match.deathmatchVoteEndsAtClientMs = 0;
+        net.match.healthRestorePoints = [];
     }
 }
 

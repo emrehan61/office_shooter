@@ -133,6 +133,10 @@
     [25, 1.7, -25],
     [25, 1.7, 25]
   ],
+  "healthRestorePoints": [
+    { "x": -20, "z": 0, "radius": 1.5, "healAmount": 35, "cooldownSec": 12 },
+    { "x": 20, "z": 0, "radius": 1.5, "healAmount": 35, "cooldownSec": 12 }
+  ],
   "hostages": [
     { "x": 25, "z": -25 },
     { "x": 25, "z": 25 }

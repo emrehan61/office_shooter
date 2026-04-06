@@ -342,6 +342,33 @@ type areaEffectSnapshot struct {
 	TimeLeftMS int64   `json:"timeLeftMs"`
 }
 
+type healthRestorePointJSON struct {
+	X           float64 `json:"x"`
+	Z           float64 `json:"z"`
+	Radius      float64 `json:"radius"`
+	HealAmount  int     `json:"healAmount"`
+	CooldownSec float64 `json:"cooldownSec"`
+}
+
+type healthRestorePointState struct {
+	X               float64
+	Z               float64
+	Radius          float64
+	HealAmount      int
+	CooldownEndsAt  int64
+	CooldownMS      int64
+}
+
+type healthRestorePointSnapshot struct {
+	X                   float64 `json:"x"`
+	Z                   float64 `json:"z"`
+	Radius              float64 `json:"radius"`
+	HealAmount          int     `json:"healAmount"`
+	CooldownSec         float64 `json:"cooldownSec"`
+	CooldownTimeLeftMS  int64   `json:"cooldownTimeLeftMs"`
+	Active              bool    `json:"active"`
+}
+
 type playerStore struct {
 	ids                 []int
 	names               []string
@@ -436,6 +463,7 @@ type Game struct {
 	mapArenaSize       float64
 	mapWallHeight      float64
 	mapWallThickness   float64
+	mapHealthRestorePoints []healthRestorePointState
 	// Hostage rescue state
 	mapHostages    []hostageJSON
 	mapRescueZones []rescueZoneJSON
@@ -520,6 +548,7 @@ func newGame() *Game {
 		mapArenaSize:     arenaSize,
 		mapWallHeight:    5.0,
 		mapWallThickness: wallThick,
+		mapHealthRestorePoints: nil,
 	}
 
 	if result, err := loadMapFull(resolveClientDir(), defaultMapName); err == nil {
@@ -531,6 +560,7 @@ func newGame() *Game {
 		g.mapArenaSize = result.arena
 		g.mapWallHeight = result.wallHeight
 		g.mapWallThickness = result.wallThick
+		g.mapHealthRestorePoints = append([]healthRestorePointState(nil), result.healthRestorePoints...)
 		g.mapHostages = append([]hostageJSON(nil), result.hostages...)
 		g.mapRescueZones = append([]rescueZoneJSON(nil), result.rescueZones...)
 		g.mapFlagBases = append([]flagBaseJSON(nil), result.flagBases...)
@@ -692,6 +722,7 @@ type mapJSON struct {
 	SpawnPoints [][]float64      `json:"spawnPoints"`
 	BlueSpawns  [][]float64      `json:"blueSpawns"`
 	GreenSpawns [][]float64      `json:"greenSpawns"`
+	HealthRestorePoints []healthRestorePointJSON `json:"healthRestorePoints"`
 	Hostages    []hostageJSON    `json:"hostages"`
 	RescueZones []rescueZoneJSON `json:"rescueZones"`
 	FlagBases   []flagBaseJSON   `json:"flagBases"`
@@ -750,6 +781,7 @@ type mapLoadResult struct {
 	arena       float64
 	wallHeight  float64
 	wallThick   float64
+	healthRestorePoints []healthRestorePointState
 	hostages    []hostageJSON
 	rescueZones []rescueZoneJSON
 	flagBases   []flagBaseJSON
@@ -771,6 +803,32 @@ func parseSpawnList(raw [][]float64) []Vec3 {
 		}
 	}
 	return spawns
+}
+
+func parseHealthRestorePoints(raw []healthRestorePointJSON) []healthRestorePointState {
+	points := make([]healthRestorePointState, 0, len(raw))
+	for _, point := range raw {
+		radius := point.Radius
+		if radius <= 0 {
+			radius = 1.5
+		}
+		healAmount := point.HealAmount
+		if healAmount <= 0 {
+			healAmount = 35
+		}
+		cooldownSec := point.CooldownSec
+		if cooldownSec <= 0 {
+			cooldownSec = 12
+		}
+		points = append(points, healthRestorePointState{
+			X: point.X,
+			Z: point.Z,
+			Radius: radius,
+			HealAmount: healAmount,
+			CooldownMS: int64(math.Round(cooldownSec * 1000)),
+		})
+	}
+	return points
 }
 
 func loadMapFull(clientDir, name string) (mapLoadResult, error) {
@@ -818,6 +876,7 @@ func loadMapFull(clientDir, name string) (mapLoadResult, error) {
 		arena:       arena,
 		wallHeight:  wHeight,
 		wallThick:   wThick,
+		healthRestorePoints: parseHealthRestorePoints(m.HealthRestorePoints),
 		hostages:    m.Hostages,
 		rescueZones: m.RescueZones,
 		flagBases:   m.FlagBases,
@@ -1147,6 +1206,7 @@ type matchState struct {
 	BlueCTFCaptures      int               `json:"blueCTFCaptures,omitempty"`
 	GreenCTFCaptures     int               `json:"greenCTFCaptures,omitempty"`
 	RescueZones          []rescueZoneJSON  `json:"rescueZones,omitempty"`
+	HealthRestorePoints  []healthRestorePointSnapshot `json:"healthRestorePoints,omitempty"`
 }
 
 type playerState struct {
@@ -1420,6 +1480,26 @@ func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
 		rescueZones = g.mapRescueZones
 	}
 
+	var healthRestorePoints []healthRestorePointSnapshot
+	if normalizeMode(g.mode) == ModeDeathmatch && len(g.mapHealthRestorePoints) > 0 {
+		healthRestorePoints = make([]healthRestorePointSnapshot, 0, len(g.mapHealthRestorePoints))
+		for _, point := range g.mapHealthRestorePoints {
+			cooldownLeft := point.CooldownEndsAt - nowMS
+			if cooldownLeft < 0 {
+				cooldownLeft = 0
+			}
+			healthRestorePoints = append(healthRestorePoints, healthRestorePointSnapshot{
+				X:                  point.X,
+				Z:                  point.Z,
+				Radius:             point.Radius,
+				HealAmount:         point.HealAmount,
+				CooldownSec:        float64(point.CooldownMS) / 1000,
+				CooldownTimeLeftMS: cooldownLeft,
+				Active:             cooldownLeft == 0,
+			})
+		}
+	}
+
 	return matchState{
 		Mode:                 normalizeMode(g.mode),
 		Map:                  g.mapName,
@@ -1442,6 +1522,40 @@ func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
 		BlueCTFCaptures:      g.blueCTFCaptures,
 		GreenCTFCaptures:     g.greenCTFCaptures,
 		RescueZones:          rescueZones,
+		HealthRestorePoints:  healthRestorePoints,
+	}
+}
+
+func (g *Game) resetHealthRestorePointsLocked() {
+	for i := range g.mapHealthRestorePoints {
+		g.mapHealthRestorePoints[i].CooldownEndsAt = 0
+	}
+}
+
+func (g *Game) tickHealthRestorePointsLocked(nowMS int64) {
+	if normalizeMode(g.mode) != ModeDeathmatch || len(g.mapHealthRestorePoints) == 0 {
+		return
+	}
+
+	for pointIdx := range g.mapHealthRestorePoints {
+		point := &g.mapHealthRestorePoints[pointIdx]
+		if point.CooldownEndsAt > nowMS {
+			continue
+		}
+		radiusSq := point.Radius * point.Radius
+		for idx := range g.players.ids {
+			if !g.players.alive[idx] || !g.players.inMatch[idx] || g.players.hp[idx] >= maxHP {
+				continue
+			}
+			dx := g.players.pos[idx][0] - point.X
+			dz := g.players.pos[idx][2] - point.Z
+			if dx*dx+dz*dz > radiusSq {
+				continue
+			}
+			g.players.hp[idx] = min(maxHP, g.players.hp[idx]+point.HealAmount)
+			point.CooldownEndsAt = nowMS + point.CooldownMS
+			break
+		}
 	}
 }
 
@@ -1634,6 +1748,8 @@ func (g *Game) setMapLocked(name string) (bool, string) {
 	g.mapArenaSize = result.arena
 	g.mapWallHeight = result.wallHeight
 	g.mapWallThickness = result.wallThick
+	g.mapHealthRestorePoints = append([]healthRestorePointState(nil), result.healthRestorePoints...)
+	g.resetHealthRestorePointsLocked()
 
 	g.mapHostages = append([]hostageJSON(nil), result.hostages...)
 	g.mapRescueZones = append([]rescueZoneJSON(nil), result.rescueZones...)
@@ -3625,6 +3741,7 @@ func (g *Game) startMatchLocked(nowMS int64) {
 	g.nextProjID = 0
 	g.deathmatchVoteEnds = 0
 	clear(g.deathmatchVotes)
+	g.resetHealthRestorePointsLocked()
 	for i := range g.players.ids {
 		if g.players.inMatch[i] {
 			g.resetPlayerForNewMatchLocked(i, nowMS)
@@ -3710,6 +3827,7 @@ func (g *Game) startNextRoundLocked(nowMS int64) {
 	g.projectiles = nil
 	g.effects = nil
 	g.nextProjID = 0
+	g.resetHealthRestorePointsLocked()
 	for i := range g.players.ids {
 		if g.players.inMatch[i] {
 			g.respawnPlayerLocked(i, nowMS)
@@ -3742,6 +3860,7 @@ func (g *Game) endMatchLocked() {
 	g.blueLossStreak = 0
 	g.greenLossStreak = 0
 	g.deathmatchVoteEnds = 0
+	g.resetHealthRestorePointsLocked()
 	clear(g.deathmatchVotes)
 	for i := range g.players.ids {
 		g.players.inMatch[i] = false
@@ -3771,6 +3890,7 @@ func (g *Game) startDeathmatchVoteLocked(nowMS int64) {
 	g.blueLossStreak = 0
 	g.greenLossStreak = 0
 	g.deathmatchVoteEnds = nowMS + deathmatchVoteMS
+	g.resetHealthRestorePointsLocked()
 	clear(g.deathmatchVotes)
 	g.removeAllBotsLocked()
 	for i := range g.players.ids {
@@ -3863,6 +3983,7 @@ func (g *Game) beginRoundCooldownLocked(team TeamID, nowMS int64) {
 	g.projectiles = nil
 	g.effects = nil
 	g.nextProjID = 0
+	g.resetHealthRestorePointsLocked()
 	for i := range g.players.ids {
 		g.players.flashEndsAt[i] = 0
 		g.players.shotBloom[i] = 0
@@ -3906,6 +4027,9 @@ func (g *Game) tick(nowMS int64) {
 		if modeNorm == ModeDeathmatch || modeNorm == ModeCTF {
 			tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
 			g.tickFallbackBotsLocked(nowMS, tickEvents)
+			if modeNorm == ModeDeathmatch {
+				g.tickHealthRestorePointsLocked(nowMS)
+			}
 			if modeNorm == ModeCTF {
 				g.tickCTFLocked(nowMS, tickEvents)
 			}

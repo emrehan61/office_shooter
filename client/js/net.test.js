@@ -148,6 +148,43 @@ test('state snapshots refresh slot weapons, ammo, and scoreboard fields', async 
     }
 });
 
+test('match snapshots retain health restore point cooldown state', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const { net, ws } = await connectClient();
+        ws.emit({
+            t: 'state',
+            match: {
+                mode: 'deathmatch',
+                currentRound: 1,
+                totalRounds: 1,
+                roundTimeLeftMs: 1000,
+                buyTimeLeftMs: 0,
+                buyPhase: false,
+                healthRestorePoints: [
+                    { x: 10, z: -4, radius: 1.5, healAmount: 35, cooldownSec: 12, cooldownTimeLeftMs: 8000, active: false },
+                ],
+            },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100 },
+            },
+        });
+
+        assert.equal(net.match.healthRestorePoints.length, 1);
+        assert.deepEqual(net.match.healthRestorePoints[0], {
+            x: 10,
+            z: -4,
+            radius: 1.5,
+            healAmount: 35,
+            cooldownSec: 12,
+            cooldownTimeLeftMs: 8000,
+            active: false,
+        });
+    } finally {
+        restore();
+    }
+});
+
 test('connection closes before welcome and clears session state', async () => {
     const restore = installFakeWebSocket();
     try {
