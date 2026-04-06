@@ -24,13 +24,13 @@ import {
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, getCrosshairOffsetY, getViewPunch, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
 import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendLeaveMatch, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
-import { createAvatarPool, updateAvatarPool, hideAvatarPool } from './avatar.js';
+import { createAvatarPool, updateAvatarPool, hideAvatarPool, createObjectivesPool, updateObjectivesPool } from './avatar.js';
 import { buildHttpURL, buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch } from './math.js';
 import { WEAPON_DEFS, WEAPON_KNIFE, getWeaponSwitchByCode, isScopedWeapon, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
-import { MODE_DEATHMATCH, MODE_TEAM, getDeathmatchStartState, getModeLabel, normalizeMode } from './modes.js';
+import { MODE_CTF, MODE_DEATHMATCH, MODE_HOSTAGE, MODE_TEAM, getCTFStartState, getDeathmatchStartState, getHostageStartState, getModeLabel, normalizeMode } from './modes.js';
 import {
     createAnnouncer,
     createKillAnnouncerState,
@@ -77,6 +77,9 @@ const soundEngine = createSoundEngine();
 const activeTracers = [];
 const MAX_TRACERS = 32;
 const TRACER_LIFE_MS = 100;
+const objectiveScreenVec = new THREE.Vector3();
+const objectiveForwardVec = new THREE.Vector3();
+const objectiveTargetVec = new THREE.Vector3();
 
 window._cam = camera;
 init(canvas);
@@ -114,6 +117,7 @@ for (let i = 0; i < MAX_TRACERS; i++) {
 
 // Pre-allocated avatar mesh pool (GPU transforms instead of CPU vertex math)
 const avatarPool = createAvatarPool(renderer.scene);
+const objectivesPool = createObjectivesPool(renderer.scene);
 
 // Pre-allocated remote muzzle flash light pool (avoids per-frame PointLight allocation)
 const REMOTE_FLASH_POOL_SIZE = 6;
@@ -139,7 +143,7 @@ let currentMapName = 'office_studio';
 const loadingScreen = document.getElementById('loading-screen');
 
 async function loadMapByName(name) {
-    const resp = await fetch(`maps/${name}.json`);
+    const resp = await fetch(`maps/${name}.json?v=${Date.now()}`);
     if (!resp.ok) return false;
     const data = await resp.json();
     loadMap(data);
@@ -196,6 +200,8 @@ const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
 const modeTeamBtn = document.getElementById('mode-team-btn');
 const modeDeathmatchBtn = document.getElementById('mode-deathmatch-btn');
+const modeHostageBtn = document.getElementById('mode-hostage-btn');
+const modeCtfBtn = document.getElementById('mode-ctf-btn');
 const rejoinPrompt = document.getElementById('rejoin-prompt');
 const rejoinCopy = document.getElementById('rejoin-copy');
 const rejoinYesBtn = document.getElementById('rejoin-yes-btn');
@@ -223,9 +229,64 @@ function isLocalInMatch() {
 }
 
 function getLobbyStartState() {
-    return isDeathmatchMode()
-        ? getDeathmatchStartState(net.players)
-        : getTeamStartState(net.players);
+    const mode = normalizeMode(net.match.mode);
+    if (mode === MODE_DEATHMATCH) return getDeathmatchStartState(net.players);
+    if (mode === MODE_HOSTAGE) return getHostageStartState(net.players);
+    if (mode === MODE_CTF) return getCTFStartState(net.players);
+    return getTeamStartState(net.players);
+}
+
+function buildObjectiveMarkers() {
+    if (!isLocalInMatch() || !player.alive) return [];
+
+    const markers = [];
+    const carriedHostage = (net.match.hostages || []).find((h) => h.followerId === net.myId && h.alive && !h.rescued);
+    if (carriedHostage && Array.isArray(net.match.rescueZones) && net.match.rescueZones.length > 0) {
+        const zone = net.match.rescueZones.reduce((best, current) => {
+            if (!best) return current;
+            const bestDist = (best.cx - player.pos[0]) ** 2 + (best.cz - player.pos[2]) ** 2;
+            const currentDist = (current.cx - player.pos[0]) ** 2 + (current.cz - player.pos[2]) ** 2;
+            return currentDist < bestDist ? current : best;
+        }, null);
+        if (zone) {
+            markers.push(projectObjectiveMarker([zone.cx, 1.7, zone.cz], 'RESCUE HOSTAGE', '#64f0a0'));
+        }
+    }
+
+    const carriedFlag = (net.match.flags || []).find((f) => f.carrierId === net.myId);
+    if (carriedFlag) {
+        const ownBase = (net.match.flags || []).find((f) => f.team === player.team);
+        const home = ownBase?.homePos || ownBase?.pos;
+        if (Array.isArray(home)) {
+            markers.push(projectObjectiveMarker(home, 'CAPTURE FLAG', player.team === TEAM_BLUE ? '#7ab6ff' : '#7df2a2'));
+        }
+    }
+
+    return markers.filter(Boolean);
+}
+
+function projectObjectiveMarker(target, label, color) {
+    objectiveTargetVec.set(target[0], target[1], target[2]).sub(renderer.camera.position);
+    renderer.camera.getWorldDirection(objectiveForwardVec);
+
+    objectiveScreenVec.set(target[0], target[1], target[2]).project(renderer.camera);
+
+    const width = canvas.width;
+    const height = canvas.height;
+    const margin = 42;
+    let x = (objectiveScreenVec.x * 0.5 + 0.5) * width;
+    let y = (-objectiveScreenVec.y * 0.5 + 0.5) * height;
+
+    const behind = objectiveTargetVec.dot(objectiveForwardVec) <= 0;
+    if (behind) {
+        x = width * 0.5;
+        y = 90;
+    }
+
+    x = Math.max(margin, Math.min(width - margin, x));
+    y = Math.max(90, Math.min(height - margin, y));
+
+    return { visible: true, x, y, label, color };
 }
 
 function getServerAddress() {
@@ -517,15 +578,23 @@ function updateTeamControls() {
         modeDeathmatchBtn.classList.toggle('is-active', mode === MODE_DEATHMATCH);
         modeDeathmatchBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive;
     }
+    if (modeHostageBtn) {
+        modeHostageBtn.classList.toggle('is-active', mode === MODE_HOSTAGE);
+        modeHostageBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive;
+    }
+    if (modeCtfBtn) {
+        modeCtfBtn.classList.toggle('is-active', mode === MODE_CTF);
+        modeCtfBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive;
+    }
     if (teamSelect) {
-        teamSelect.style.display = mode === MODE_TEAM ? 'block' : 'none';
+        teamSelect.style.display = mode !== MODE_DEATHMATCH ? 'block' : 'none';
     }
 
     for (const entry of buttonDefs) {
         if (!entry.el) continue;
         entry.el.textContent = `${getTeamLabel(entry.team).toUpperCase()} TEAM (${entry.count})`;
         entry.el.classList.toggle('is-active', myTeam === entry.team);
-        entry.el.disabled = mode !== MODE_TEAM
+        entry.el.disabled = mode === MODE_DEATHMATCH
             || !net.connected
             || net.gameStarted
             || (!canSelectTeam(net.players, net.myId, entry.team) && myTeam !== entry.team);
@@ -540,6 +609,14 @@ function updateTeamControls() {
             teamHint.textContent = startState.ok
                 ? 'Free-for-all. Solo players get one bot. Match lasts 10:00.'
                 : `${startState.reason}.`;
+        } else if (mode === MODE_CTF) {
+            teamHint.textContent = startState.ok
+                ? 'Capture the Enemy Flag. Match lasts 10:00.'
+                : `${startState.reason}.`;
+        } else if (mode === MODE_HOSTAGE) {
+            teamHint.textContent = startState.ok
+                ? 'Blue rescues, Green defends. Map specific objective.'
+                : `${startState.reason}.`;
         } else if (net.gameStarted) {
             teamHint.textContent = 'Match already in progress.';
         } else if (startState.ok) {
@@ -550,7 +627,7 @@ function updateTeamControls() {
     }
 
     if (startBtn) {
-        startBtn.textContent = mode === MODE_DEATHMATCH ? 'Start Deathmatch' : 'Start Game';
+        startBtn.textContent = (mode === MODE_DEATHMATCH || mode === MODE_CTF) ? 'Start Match' : 'Start Game';
         startBtn.disabled = !net.connected || net.gameStarted || !!net.match.deathmatchVoteActive || !startState.ok;
         startBtn.title = startState.ok ? '' : startState.reason;
     }
@@ -1039,6 +1116,18 @@ if (modeDeathmatchBtn) {
     });
 }
 
+if (modeHostageBtn) {
+    modeHostageBtn.addEventListener('click', () => {
+        sendMode(net, MODE_HOSTAGE);
+    });
+}
+
+if (modeCtfBtn) {
+    modeCtfBtn.addEventListener('click', () => {
+        sendMode(net, MODE_CTF);
+    });
+}
+
 if (teamBlueBtn) {
     teamBlueBtn.addEventListener('click', () => {
         if (isDeathmatchMode()) return;
@@ -1493,6 +1582,7 @@ function frame(time) {
 
         // Update avatar mesh pool (GPU transforms — no per-vertex CPU math)
         updateAvatarPool(avatarPool, net.players, net.myId, renderServerTimeMs, sampleRemotePlayer);
+        updateObjectivesPool(objectivesPool, net.match);
 
         // Remote flash lights + footsteps (still need per-player iteration)
         for (const id in net.players) {
@@ -1596,6 +1686,7 @@ function frame(time) {
             )
         ),
         crosshairOffsetY: getCrosshairOffsetY(weapon),
+        objectiveMarkers: buildObjectiveMarkers(),
     });
 }
 

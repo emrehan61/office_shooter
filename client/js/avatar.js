@@ -361,6 +361,123 @@ export function hideAvatarPool(pool) {
     }
 }
 
+export function createObjectivesPool(parentGroup) {
+    const group = new THREE.Group();
+    parentGroup.add(group);
+    
+    const hostageGeo = new THREE.CapsuleGeometry(0.3, 0.8, 4, 8);
+    const hostageMat = getMaterial(11);
+    const hostages = [];
+    for(let i=0; i<4; i++) {
+        const m = new THREE.Mesh(hostageGeo, hostageMat);
+        m.visible = false;
+        group.add(m);
+        hostages.push(m);
+    }
+    
+    const flagBoxY = new THREE.BoxGeometry(0.2, 1.5, 0.2);
+    const flagBoxX = new THREE.BoxGeometry(0.8, 0.4, 0.1);
+    flagBoxX.translate(0.3, 0.5, 0); // flap
+    // In newer Three.js merging needs BufferGeometryUtils, but for simplicity let's just make groups
+    const blueMat = getMaterial(BLUE_PALETTE.primary);
+    const greenMat = getMaterial(GREEN_PALETTE.primary);
+    
+    const flags = [];
+    [blueMat, greenMat].forEach(mat => {
+        const fGroup = new THREE.Group();
+        const pole = new THREE.Mesh(flagBoxY, mat);
+        const flap = new THREE.Mesh(flagBoxX, mat);
+        fGroup.add(pole);
+        fGroup.add(flap);
+        fGroup.visible = false;
+        group.add(fGroup);
+        flags.push(fGroup);
+    });
+    
+    // Rescue zones
+    const zoneGeo = new THREE.CylinderGeometry(1, 1, 0.05, 32);
+    const zoneMat = new THREE.MeshBasicMaterial({ color: 0x28a050, transparent: true, opacity: 0.3, wireframe: true });
+    const rescueZones = [];
+    for(let i=0; i<4; i++) {
+        const m = new THREE.Mesh(zoneGeo, zoneMat);
+        m.visible = false;
+        group.add(m);
+        rescueZones.push(m);
+    }
+
+    const baseGeo = new THREE.TorusGeometry(1, 0.08, 12, 32);
+    const flagBases = [];
+    [blueMat, greenMat].forEach(mat => {
+        const m = new THREE.Mesh(baseGeo, mat);
+        m.rotation.x = Math.PI / 2;
+        m.visible = false;
+        group.add(m);
+        flagBases.push(m);
+    });
+    
+    return { group, hostages, flags, rescueZones, flagBases };
+}
+
+export function updateObjectivesPool(objs, match) {
+    if (!match) return;
+    
+    const hd = match.hostages || [];
+    for(let i=0; i<objs.hostages.length; i++) {
+        const m = objs.hostages[i];
+        if (i < hd.length && hd[i].alive && !hd[i].rescued && !hd[i].followerId) {
+            m.visible = true;
+            m.position.set(hd[i].pos[0], hd[i].pos[1] - 0.2, hd[i].pos[2]);
+        } else {
+            m.visible = false;
+        }
+    }
+    
+    const fd = match.flags || [];
+    for(let i=0; i<objs.flags.length; i++) {
+        objs.flags[i].visible = false;
+    }
+    for(let i=0; i<fd.length; i++) {
+        const f = fd[i];
+        if (f.carrierId) continue; // carried flags are invisible, wait, flag carriers are marked
+        
+        let m = null;
+        if (f.team === TEAM_BLUE) m = objs.flags[0];
+        if (f.team === TEAM_GREEN) m = objs.flags[1];
+        
+        if (m) {
+            m.visible = true;
+            m.position.set(f.pos[0], f.pos[1] - 0.6, f.pos[2]);
+        }
+    }
+
+    for(let i=0; i<objs.flagBases.length; i++) {
+        objs.flagBases[i].visible = false;
+    }
+    for(let i=0; i<fd.length; i++) {
+        const f = fd[i];
+        let m = null;
+        if (f.team === TEAM_BLUE) m = objs.flagBases[0];
+        if (f.team === TEAM_GREEN) m = objs.flagBases[1];
+        const home = f.homePos || f.pos;
+
+        if (m && Array.isArray(home)) {
+            m.visible = true;
+            m.position.set(home[0], 0.04, home[2]);
+        }
+    }
+    
+    const rz = match.rescueZones || [];
+    for(let i=0; i<objs.rescueZones.length; i++) {
+        if (i < rz.length) {
+            objs.rescueZones[i].visible = true;
+            objs.rescueZones[i].position.set(rz[i].cx, 0.05, rz[i].cz);
+            objs.rescueZones[i].scale.set(rz[i].radius, 1, rz[i].radius);
+        } else {
+            objs.rescueZones[i].visible = false;
+        }
+    }
+}
+
 // ─── Legacy vertex-based builder (kept for tests / editor) ───
 
 const BOX_CACHE = new Map();

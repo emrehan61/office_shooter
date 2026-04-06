@@ -36,6 +36,14 @@ const MATERIAL_DEFS = {
     20: { color: 0xff2618, roughness: 0.3, metalness: 0.0, emissive: 0xff2618, emissiveIntensity: 2.0 }, // emissive red
     21: { color: 0x1ae634, roughness: 0.3, metalness: 0.0, emissive: 0x1ae634, emissiveIntensity: 2.0 }, // emissive green
     22: { color: 0x3374ff, roughness: 0.3, metalness: 0.0, emissive: 0x3374ff, emissiveIntensity: 2.0 }, // emissive blue
+    23: { color: 0xdacb96, roughness: 0.9, metalness: 0.0 }, // sandstone wall (dust2)
+    24: { color: 0xc2b280, roughness: 1.0, metalness: 0.0 }, // sand floor (dust2)
+    25: { color: 0x8b6a4a, roughness: 0.8, metalness: 0.0 }, // crate wood
+    26: { color: 0x7a3028, roughness: 0.9, metalness: 0.0 }, // warehouse brick (assault)
+    27: { color: 0x808588, roughness: 0.8, metalness: 0.0 }, // concrete floor
+    28: { color: 0x2c4e61, roughness: 0.4, metalness: 0.6 }, // metal container
+    29: { color: 0xc0d8dc, roughness: 0.3, metalness: 0.0 }, // pool tile
+    30: { color: 0x30a0d0, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.75 }, // pool water
 };
 
 const materialCache = new Map();
@@ -143,6 +151,61 @@ function generateProceduralNormalMap(type) {
                     nx += (hash(x * 5.3, y * 5.7) - 0.5) * 0.04;
                     ny += (hash(x * 5.7 + 23, y * 5.3 + 47) - 0.5) * 0.04;
                 }
+            } else if (type === 'sandstone') {
+                // Large sandstone blocks with heavy grain
+                const blockX = x % 128;
+                const blockY = (y + (Math.floor(x / 128) % 2 === 0 ? 0 : 64)) % 64; // Staggered brick
+                if (blockX < 4) nx = -0.3;
+                else if (blockX > 124) nx = 0.3;
+                if (blockY < 4) ny = -0.3;
+                else if (blockY > 60) ny = 0.3;
+                // Sand grain
+                nx += (hash(x * 12.1, y * 13.3) - 0.5) * 0.2;
+                ny += (hash(x * 13.3, y * 12.1) - 0.5) * 0.2;
+            } else if (type === 'sand') {
+                // High-frequency sand grain noise + slight rolling dunes
+                nx = (hash(x * 15.0, y * 15.0) - 0.5) * 0.3;
+                ny = (hash(x * 14.1, y * 16.2) - 0.5) * 0.3;
+                nx += Math.sin(x * 0.02 + y * 0.03) * 0.1;
+            } else if (type === 'crate_wood') {
+                // Planks (vertical)
+                const plankX = x % 64;
+                if (plankX < 2) nx = -0.2;
+                else if (plankX > 62) nx = 0.2;
+                // Strong vertical grain
+                ny += (hash(x * 8.0, y * 0.5) - 0.5) * 0.3;
+                nx += (hash(x * 6.5, y * 0.5) - 0.5) * 0.1;
+            } else if (type === 'warehouse_brick') {
+                // Small standard bricks, staggered
+                const bx = x % 32;
+                const by = (y + (Math.floor(x / 32) % 2 === 0 ? 0 : 16)) % 16;
+                if (bx < 2) nx = -0.4;
+                else if (bx > 30) nx = 0.4;
+                if (by < 2) ny = -0.4;
+                else if (by > 14) ny = 0.4;
+                nx += (hash(x * 7.1, y * 8.2) - 0.5) * 0.15;
+                ny += (hash(x * 8.2, y * 7.1) - 0.5) * 0.15;
+            } else if (type === 'concrete') {
+                // Rough uneven surface
+                nx = (hash(x * 4.1, y * 4.3) - 0.5) * 0.15;
+                ny = (hash(x * 3.7 + 10, y * 5.1 + 20) - 0.5) * 0.15;
+                const blob = Math.sin(x * 0.05) * Math.cos(y * 0.04);
+                nx += blob * 0.05;
+            } else if (type === 'pool_tile') {
+                // Small square tiles (e.g., 16x16 pixels)
+                const tx = x % 16;
+                const ty = y % 16;
+                if (tx < 1) nx = -0.3;
+                else if (tx > 14) nx = 0.3;
+                if (ty < 1) ny = -0.3;
+                else if (ty > 14) ny = 0.3;
+                nx += (hash(x * 2.1, y * 2.1) - 0.5) * 0.04; // Very slight bumps
+                ny += (hash(x * 2.1, y * 2.1) - 0.5) * 0.04;
+            } else if (type === 'metal_container') {
+                // Corrugated metal (vertical waves)
+                nx = Math.sin(x * 0.4) * 0.4;
+                nx += (hash(x * 5.1, y * 5.1) - 0.5) * 0.05;
+                ny += (hash(x * 5.1, y * 5.1) - 0.5) * 0.05;
             }
 
             d[i]     = Math.round((nx * 0.5 + 0.5) * 255);
@@ -316,6 +379,27 @@ export function getMaterial(matID) {
     } else if (matID === 2) {
         mat.normalMap = generateProceduralNormalMap('ceiling');
         mat.normalScale = new THREE.Vector2(0.4, 0.4);
+    } else if (matID === 23) {
+        mat.normalMap = generateProceduralNormalMap('sandstone');
+        mat.normalScale = new THREE.Vector2(1.0, 1.0);
+    } else if (matID === 24) {
+        mat.normalMap = generateProceduralNormalMap('sand');
+        mat.normalScale = new THREE.Vector2(0.8, 0.8);
+    } else if (matID === 25) {
+        mat.normalMap = generateProceduralNormalMap('crate_wood');
+        mat.normalScale = new THREE.Vector2(0.9, 0.9);
+    } else if (matID === 26) {
+        mat.normalMap = generateProceduralNormalMap('warehouse_brick');
+        mat.normalScale = new THREE.Vector2(1.2, 1.2);
+    } else if (matID === 27) {
+        mat.normalMap = generateProceduralNormalMap('concrete');
+        mat.normalScale = new THREE.Vector2(0.6, 0.6);
+    } else if (matID === 28) {
+        mat.normalMap = generateProceduralNormalMap('metal_container');
+        mat.normalScale = new THREE.Vector2(1.0, 1.0);
+    } else if (matID === 29) {
+        mat.normalMap = generateProceduralNormalMap('pool_tile');
+        mat.normalScale = new THREE.Vector2(0.8, 0.8);
     }
 
     materialCache.set(matID, mat);
@@ -355,6 +439,15 @@ export function createFloorMaterial(matID, aoTexture) {
     } else if (matID === 14) {
         mat.normalMap = generateProceduralNormalMap('wood');
         mat.normalScale = new THREE.Vector2(0.7, 0.7);
+    } else if (matID === 24) {
+        mat.normalMap = generateProceduralNormalMap('sand');
+        mat.normalScale = new THREE.Vector2(0.8, 0.8);
+    } else if (matID === 27) {
+        mat.normalMap = generateProceduralNormalMap('concrete');
+        mat.normalScale = new THREE.Vector2(0.6, 0.6);
+    } else if (matID === 29) {
+        mat.normalMap = generateProceduralNormalMap('pool_tile');
+        mat.normalScale = new THREE.Vector2(0.8, 0.8);
     }
     return mat;
 }

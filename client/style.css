@@ -156,6 +156,40 @@ canvas { display: block; width: 100vw; height: 100vh; }
     z-index: 11;
     pointer-events: none;
 }
+
+.objective-marker {
+    --objective-marker-color: #ffffff;
+    position: fixed;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+    z-index: 12;
+    filter: drop-shadow(0 0 8px rgba(0, 0, 0, 0.55));
+}
+
+.objective-marker-arrow {
+    width: 0;
+    height: 0;
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 16px solid var(--objective-marker-color);
+}
+
+.objective-marker-label {
+    padding: 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--objective-marker-color) 40%, transparent);
+    border-radius: 999px;
+    background: rgba(8, 12, 18, 0.78);
+    color: var(--objective-marker-color);
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    white-space: nowrap;
+}
 .match-status {
     display: flex;
     align-items: center;

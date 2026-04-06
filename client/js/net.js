@@ -522,6 +522,11 @@ function applyMatchState(net, match) {
     net.match.greenAlive = match.greenAlive ?? net.match.greenAlive;
     net.match.deathmatchVoteActive = match.deathmatchVoteActive ?? net.match.deathmatchVoteActive;
     net.match.deathmatchVoteTimeLeftMs = match.deathmatchVoteTimeLeftMs ?? net.match.deathmatchVoteTimeLeftMs;
+    net.match.hostages = match.hostages ?? net.match.hostages;
+    net.match.flags = match.flags ?? net.match.flags;
+    net.match.blueCTFCaptures = match.blueCTFCaptures ?? net.match.blueCTFCaptures;
+    net.match.greenCTFCaptures = match.greenCTFCaptures ?? net.match.greenCTFCaptures;
+    net.match.rescueZones = match.rescueZones ?? net.match.rescueZones;
     if (typeof match.deathmatchVoteTimeLeftMs === 'number') {
         net.match.deathmatchVoteEndsAtClientMs = Date.now() + Math.max(0, match.deathmatchVoteTimeLeftMs);
     } else if (match.deathmatchVoteActive === false) {
@@ -552,6 +557,11 @@ function createDefaultMatchState() {
         deathmatchVoteActive: false,
         deathmatchVoteTimeLeftMs: 0,
         deathmatchVoteEndsAtClientMs: 0,
+        hostages: [],
+        flags: [],
+        blueCTFCaptures: 0,
+        greenCTFCaptures: 0,
+        rescueZones: [],
     };
 }
 

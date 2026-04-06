@@ -141,12 +141,16 @@ func closestPointOnSegment(px, pz, ax, az, bx, bz float64) (float64, float64) {
 	return ax + t*abx, az + t*abz
 }
 
-func collideWalls(pos *Vec3) {
+func (g *Game) collideWalls(pos *Vec3) {
 	px := pos[0]
 	pz := pos[2]
-	r := playerRadius + wallThick
+	thick := g.mapWallThickness
+	if thick == 0 {
+		thick = wallThick
+	}
+	r := playerRadius + thick
 
-	for _, w := range mapWalls {
+	for _, w := range g.mapWallsRuntime {
 		cx, cz := closestPointOnSegment(px, pz, w.x1, w.z1, w.x2, w.z2)
 		dx := px - cx
 		dz := pz - cz
@@ -155,6 +159,45 @@ func collideWalls(pos *Vec3) {
 			push := (r - dist) / dist
 			px += dx * push
 			pz += dz * push
+		}
+	}
+
+	playerFoot := pos[1] - standEyeHeight
+	playerTop := pos[1] + 0.1
+	for _, box := range g.mapBoxesRuntime {
+		bMinY := box.Cy - box.Hy
+		bMaxY := box.Cy + box.Hy
+		if playerTop < bMinY || playerFoot > bMaxY {
+			continue
+		}
+		bx0 := box.Cx - box.Hx
+		bx1 := box.Cx + box.Hx
+		bz0 := box.Cz - box.Hz
+		bz1 := box.Cz + box.Hz
+		cx := math.Max(bx0, math.Min(px, bx1))
+		cz := math.Max(bz0, math.Min(pz, bz1))
+		dx := px - cx
+		dz := pz - cz
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist < playerRadius && dist > 1e-8 {
+			push := (playerRadius - dist) / dist
+			px += dx * push
+			pz += dz * push
+		} else if dist < 1e-8 && px >= bx0 && px <= bx1 && pz >= bz0 && pz <= bz1 {
+			pushXn := px - bx0 + playerRadius
+			pushXp := bx1 - px + playerRadius
+			pushZn := pz - bz0 + playerRadius
+			pushZp := bz1 - pz + playerRadius
+			minPush := math.Min(math.Min(pushXn, pushXp), math.Min(pushZn, pushZp))
+			if minPush == pushXn {
+				px = bx0 - playerRadius
+			} else if minPush == pushXp {
+				px = bx1 + playerRadius
+			} else if minPush == pushZn {
+				pz = bz0 - playerRadius
+			} else {
+				pz = bz1 + playerRadius
+			}
 		}
 	}
 
@@ -174,6 +217,21 @@ type GameMode string
 const (
 	ModeTeam       GameMode = "team"
 	ModeDeathmatch GameMode = "deathmatch"
+	ModeHostage    GameMode = "hostage"
+	ModeCTF        GameMode = "ctf"
+)
+
+const (
+	hostagePickupRadius = 2.5
+	hostageFollowDist   = 1.5
+	flagPickupRadius    = 1.5
+	flagCaptureRadius   = 2.0
+	ctfCapturesToWin    = 3
+	flagAutoReturnSec   = 30
+	ctfDurationMS       = 10 * 60 * 1000
+	hostageDeathPenalty = 500
+	hostageFollowSpeed  = 4.5
+	hostageRescueReward = 1000
 )
 
 type HitZone string
@@ -330,6 +388,24 @@ type playerStore struct {
 	idToIndex           map[int]int
 }
 
+type hostageState struct {
+	ID         int
+	Pos        Vec3
+	FollowerID int // player carrying/leading this hostage, 0 = none
+	Rescued    bool
+	Alive      bool
+}
+
+type flagState struct {
+	Team      TeamID
+	Pos       Vec3
+	HomePos   Vec3
+	CarrierID int // player carrying this flag, 0 = none
+	Dropped   bool
+	DroppedAt int64
+	AtHome    bool
+}
+
 type Game struct {
 	mu                 sync.RWMutex
 	players            playerStore
@@ -353,13 +429,31 @@ type Game struct {
 	deathmatchVotes    map[int]bool
 	mapName            string
 	mapSpawns          []Vec3
+	mapBlueSpawns      []Vec3
+	mapGreenSpawns     []Vec3
+	mapWallsRuntime    []wallSegment
+	mapBoxesRuntime    []boxEntry
+	mapArenaSize       float64
+	mapWallHeight      float64
+	mapWallThickness   float64
+	// Hostage rescue state
+	mapHostages    []hostageJSON
+	mapRescueZones []rescueZoneJSON
+	hostages       []hostageState
+	nextHostageID  int
+	// CTF state
+	mapFlagBases     []flagBaseJSON
+	flags            [2]flagState // 0=blue flag, 1=green flag
+	blueCTFCaptures  int
+	greenCTFCaptures int
 }
 
 type hitCandidate struct {
-	index int
-	id    int
-	zone  HitZone
-	dist  float64
+	index     int
+	id        int
+	zone      HitZone
+	dist      float64
+	isHostage bool
 }
 
 type hitBox struct {
@@ -409,18 +503,40 @@ var defaultSpawns = []Vec3{
 	{0, standEyeHeight, 12},
 }
 
-const defaultMapName = "office_studio"
+const defaultMapName = "de_dust2"
 
 func newGame() *Game {
-	return &Game{
-		players:         newPlayerStore(),
-		nextID:          1,
-		mode:            ModeTeam,
-		state:           StateWaiting,
-		deathmatchVotes: make(map[int]bool),
-		mapName:         defaultMapName,
-		mapSpawns:       defaultSpawns,
+	g := &Game{
+		players:          newPlayerStore(),
+		nextID:           1,
+		mode:             ModeTeam,
+		state:            StateWaiting,
+		deathmatchVotes:  make(map[int]bool),
+		mapName:          defaultMapName,
+		mapSpawns:        defaultSpawns,
+		mapBlueSpawns:    []Vec3{{-25, standEyeHeight, -25}, {-25, standEyeHeight, 25}},
+		mapGreenSpawns:   []Vec3{{25, standEyeHeight, -25}, {25, standEyeHeight, 25}, {0, standEyeHeight, -12}, {0, standEyeHeight, 12}},
+		mapWallsRuntime:  mapWalls,
+		mapArenaSize:     arenaSize,
+		mapWallHeight:    5.0,
+		mapWallThickness: wallThick,
 	}
+
+	if result, err := loadMapFull(resolveClientDir(), defaultMapName); err == nil {
+		g.mapSpawns = result.spawns
+		g.mapBlueSpawns = append([]Vec3(nil), result.blueSpawns...)
+		g.mapGreenSpawns = append([]Vec3(nil), result.greenSpawns...)
+		g.mapWallsRuntime = result.walls
+		g.mapBoxesRuntime = result.boxes
+		g.mapArenaSize = result.arena
+		g.mapWallHeight = result.wallHeight
+		g.mapWallThickness = result.wallThick
+		g.mapHostages = append([]hostageJSON(nil), result.hostages...)
+		g.mapRescueZones = append([]rescueZoneJSON(nil), result.rescueZones...)
+		g.mapFlagBases = append([]flagBaseJSON(nil), result.flagBases...)
+	}
+
+	return g
 }
 
 func newLobbyManager() *LobbyManager {
@@ -567,29 +683,145 @@ func (l *Lobby) summary() lobbySummary {
 }
 
 type mapJSON struct {
-	SpawnPoints [][]float64 `json:"spawnPoints"`
+	Arena       float64          `json:"arena"`
+	WallHeight  float64          `json:"wallHeight"`
+	WallThick   float64          `json:"wallThick"`
+	Walls       []wallEntry      `json:"walls"`
+	FloorInsets []floorEntry     `json:"floorInsets"`
+	Boxes       []boxEntry       `json:"boxes"`
+	SpawnPoints [][]float64      `json:"spawnPoints"`
+	BlueSpawns  [][]float64      `json:"blueSpawns"`
+	GreenSpawns [][]float64      `json:"greenSpawns"`
+	Hostages    []hostageJSON    `json:"hostages"`
+	RescueZones []rescueZoneJSON `json:"rescueZones"`
+	FlagBases   []flagBaseJSON   `json:"flagBases"`
 }
 
-func loadMapSpawns(clientDir, name string) ([]Vec3, error) {
-	path := filepath.Join(clientDir, "maps", name+".json")
-	data, err := os.ReadFile(path)
+type hostageJSON struct {
+	X float64 `json:"x"`
+	Z float64 `json:"z"`
+}
+
+type rescueZoneJSON struct {
+	Cx     float64 `json:"cx"`
+	Cz     float64 `json:"cz"`
+	Radius float64 `json:"radius"`
+}
+
+type flagBaseJSON struct {
+	Team string  `json:"team"`
+	X    float64 `json:"x"`
+	Z    float64 `json:"z"`
+}
+
+type wallEntry struct {
+	X1     float64 `json:"x1"`
+	Z1     float64 `json:"z1"`
+	X2     float64 `json:"x2"`
+	Z2     float64 `json:"z2"`
+	MatID  int     `json:"matID"`
+	Height float64 `json:"height,omitempty"`
+}
+
+type floorEntry struct {
+	X1    float64 `json:"x1"`
+	Z1    float64 `json:"z1"`
+	X2    float64 `json:"x2"`
+	Z2    float64 `json:"z2"`
+	MatID int     `json:"matID"`
+}
+
+type boxEntry struct {
+	Cx    float64 `json:"cx"`
+	Cy    float64 `json:"cy"`
+	Cz    float64 `json:"cz"`
+	Hx    float64 `json:"hx"`
+	Hy    float64 `json:"hy"`
+	Hz    float64 `json:"hz"`
+	MatID int     `json:"matID"`
+}
+
+type mapLoadResult struct {
+	spawns      []Vec3
+	blueSpawns  []Vec3
+	greenSpawns []Vec3
+	walls       []wallSegment
+	boxes       []boxEntry
+	arena       float64
+	wallHeight  float64
+	wallThick   float64
+	hostages    []hostageJSON
+	rescueZones []rescueZoneJSON
+	flagBases   []flagBaseJSON
+}
+
+func loadMapGeometry(clientDir, name string) ([]Vec3, []wallSegment, []boxEntry, float64, float64, float64, error) {
+	result, err := loadMapFull(clientDir, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, 0, 0, 0, err
 	}
-	var m mapJSON
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	spawns := make([]Vec3, 0, len(m.SpawnPoints))
-	for _, sp := range m.SpawnPoints {
+	return result.spawns, result.walls, result.boxes, result.arena, result.wallHeight, result.wallThick, nil
+}
+
+func parseSpawnList(raw [][]float64) []Vec3 {
+	spawns := make([]Vec3, 0, len(raw))
+	for _, sp := range raw {
 		if len(sp) >= 3 {
 			spawns = append(spawns, Vec3{sp[0], sp[1], sp[2]})
 		}
 	}
-	if len(spawns) == 0 {
-		return nil, fmt.Errorf("no spawn points in map %s", name)
+	return spawns
+}
+
+func loadMapFull(clientDir, name string) (mapLoadResult, error) {
+	path := filepath.Join(clientDir, "maps", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return mapLoadResult{}, err
 	}
-	return spawns, nil
+	var m mapJSON
+	if err := json.Unmarshal(data, &m); err != nil {
+		return mapLoadResult{}, err
+	}
+
+	arena := m.Arena
+	if arena == 0 {
+		arena = 30
+	}
+	wHeight := m.WallHeight
+	if wHeight == 0 {
+		wHeight = 5
+	}
+	wThick := m.WallThick
+	if wThick == 0 {
+		wThick = 0.3
+	}
+
+	walls := make([]wallSegment, 0, len(m.Walls))
+	for _, w := range m.Walls {
+		walls = append(walls, wallSegment{x1: w.X1, z1: w.Z1, x2: w.X2, z2: w.Z2})
+	}
+
+	spawns := parseSpawnList(m.SpawnPoints)
+	if len(spawns) == 0 {
+		return mapLoadResult{}, fmt.Errorf("no spawn points in map %s", name)
+	}
+	blueSpawns := parseSpawnList(m.BlueSpawns)
+	greenSpawns := parseSpawnList(m.GreenSpawns)
+
+	return mapLoadResult{
+		spawns:      spawns,
+		blueSpawns:  blueSpawns,
+		greenSpawns: greenSpawns,
+		walls:       walls,
+		boxes:       m.Boxes,
+		arena:       arena,
+		wallHeight:  wHeight,
+		wallThick:   wThick,
+		hostages:    m.Hostages,
+		rescueZones: m.RescueZones,
+		flagBases:   m.FlagBases,
+	}, nil
 }
 
 func listMaps(clientDir string) []string {
@@ -876,23 +1108,45 @@ func (g *Game) broadcastLobby() {
 	}
 }
 
+type hostageSnapshot struct {
+	ID         int  `json:"id"`
+	Pos        Vec3 `json:"pos"`
+	FollowerID int  `json:"followerId"`
+	Rescued    bool `json:"rescued"`
+	Alive      bool `json:"alive"`
+}
+
+type flagSnapshot struct {
+	Team      TeamID `json:"team"`
+	Pos       Vec3   `json:"pos"`
+	HomePos   Vec3   `json:"homePos"`
+	CarrierID int    `json:"carrierId"`
+	Dropped   bool   `json:"dropped"`
+	AtHome    bool   `json:"atHome"`
+}
+
 type matchState struct {
-	Mode                 GameMode `json:"mode"`
-	Map                  string   `json:"map"`
-	CurrentRound         int      `json:"currentRound"`
-	TotalRounds          int      `json:"totalRounds"`
-	RoundTimeLeft        int64    `json:"roundTimeLeftMs"`
-	BuyTimeLeft          int64    `json:"buyTimeLeftMs"`
-	BuyPhase             bool     `json:"buyPhase"`
-	Intermission         bool     `json:"intermission"`
-	IntermissionTimeLeft int64    `json:"intermissionTimeLeftMs"`
-	RoundWinner          TeamID   `json:"roundWinner"`
-	BlueScore            int      `json:"blueScore"`
-	GreenScore           int      `json:"greenScore"`
-	BlueAlive            int      `json:"blueAlive"`
-	GreenAlive           int      `json:"greenAlive"`
-	DeathmatchVoteActive bool     `json:"deathmatchVoteActive"`
-	DeathmatchVoteTimeMS int64    `json:"deathmatchVoteTimeLeftMs"`
+	Mode                 GameMode          `json:"mode"`
+	Map                  string            `json:"map"`
+	CurrentRound         int               `json:"currentRound"`
+	TotalRounds          int               `json:"totalRounds"`
+	RoundTimeLeft        int64             `json:"roundTimeLeftMs"`
+	BuyTimeLeft          int64             `json:"buyTimeLeftMs"`
+	BuyPhase             bool              `json:"buyPhase"`
+	Intermission         bool              `json:"intermission"`
+	IntermissionTimeLeft int64             `json:"intermissionTimeLeftMs"`
+	RoundWinner          TeamID            `json:"roundWinner"`
+	BlueScore            int               `json:"blueScore"`
+	GreenScore           int               `json:"greenScore"`
+	BlueAlive            int               `json:"blueAlive"`
+	GreenAlive           int               `json:"greenAlive"`
+	DeathmatchVoteActive bool              `json:"deathmatchVoteActive"`
+	DeathmatchVoteTimeMS int64             `json:"deathmatchVoteTimeLeftMs"`
+	Hostages             []hostageSnapshot `json:"hostages,omitempty"`
+	Flags                []flagSnapshot    `json:"flags,omitempty"`
+	BlueCTFCaptures      int               `json:"blueCTFCaptures,omitempty"`
+	GreenCTFCaptures     int               `json:"greenCTFCaptures,omitempty"`
+	RescueZones          []rescueZoneJSON  `json:"rescueZones,omitempty"`
 }
 
 type playerState struct {
@@ -1134,6 +1388,38 @@ func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
 
 	blueAlive, greenAlive := g.aliveCountsLocked()
 
+	// Build hostage snapshots
+	var hostageSnaps []hostageSnapshot
+	if normalizeMode(g.mode) == ModeHostage && len(g.hostages) > 0 {
+		hostageSnaps = make([]hostageSnapshot, 0, len(g.hostages))
+		for _, h := range g.hostages {
+			hostageSnaps = append(hostageSnaps, hostageSnapshot{
+				ID: h.ID, Pos: h.Pos, FollowerID: h.FollowerID,
+				Rescued: h.Rescued, Alive: h.Alive,
+			})
+		}
+	}
+
+	// Build flag snapshots
+	var flagSnaps []flagSnapshot
+	if normalizeMode(g.mode) == ModeCTF {
+		flagSnaps = make([]flagSnapshot, 0, 2)
+		for _, f := range g.flags {
+			if f.Team == TeamNone {
+				continue
+			}
+			flagSnaps = append(flagSnaps, flagSnapshot{
+				Team: f.Team, Pos: f.Pos, HomePos: f.HomePos, CarrierID: f.CarrierID,
+				Dropped: f.Dropped, AtHome: f.AtHome,
+			})
+		}
+	}
+
+	var rescueZones []rescueZoneJSON
+	if normalizeMode(g.mode) == ModeHostage {
+		rescueZones = g.mapRescueZones
+	}
+
 	return matchState{
 		Mode:                 normalizeMode(g.mode),
 		Map:                  g.mapName,
@@ -1151,6 +1437,11 @@ func (g *Game) buildMatchStateLocked(nowMS int64) matchState {
 		GreenAlive:           greenAlive,
 		DeathmatchVoteActive: g.deathmatchVoteEnds > nowMS,
 		DeathmatchVoteTimeMS: deathmatchVoteTimeLeft,
+		Hostages:             hostageSnaps,
+		Flags:                flagSnaps,
+		BlueCTFCaptures:      g.blueCTFCaptures,
+		GreenCTFCaptures:     g.greenCTFCaptures,
+		RescueZones:          rescueZones,
 	}
 }
 
@@ -1302,10 +1593,16 @@ func (g *Game) stateTick(nowMS int64) {
 }
 
 func normalizeMode(mode GameMode) GameMode {
-	if mode == ModeDeathmatch {
+	switch mode {
+	case ModeDeathmatch, ModeHostage, ModeCTF:
 		return mode
 	}
 	return ModeTeam
+}
+
+func isTeamBased(mode GameMode) bool {
+	n := normalizeMode(mode)
+	return n == ModeTeam || n == ModeHostage || n == ModeCTF
 }
 
 func (g *Game) setModeLocked(mode GameMode, nowMS int64) bool {
@@ -1324,12 +1621,24 @@ func (g *Game) setMapLocked(name string) (bool, string) {
 	if name == g.mapName {
 		return true, ""
 	}
-	spawns, err := loadMapSpawns(resolveClientDir(), name)
+	result, err := loadMapFull(resolveClientDir(), name)
 	if err != nil {
 		return false, "Map not found: " + name
 	}
 	g.mapName = name
-	g.mapSpawns = spawns
+	g.mapSpawns = result.spawns
+	g.mapBlueSpawns = append([]Vec3(nil), result.blueSpawns...)
+	g.mapGreenSpawns = append([]Vec3(nil), result.greenSpawns...)
+	g.mapWallsRuntime = result.walls
+	g.mapBoxesRuntime = result.boxes
+	g.mapArenaSize = result.arena
+	g.mapWallHeight = result.wallHeight
+	g.mapWallThickness = result.wallThick
+
+	g.mapHostages = append([]hostageJSON(nil), result.hostages...)
+	g.mapRescueZones = append([]rescueZoneJSON(nil), result.rescueZones...)
+	g.mapFlagBases = append([]flagBaseJSON(nil), result.flagBases...)
+
 	return true, ""
 }
 
@@ -1751,7 +2060,7 @@ func (g *Game) preferredTeamLocked() TeamID {
 }
 
 func (g *Game) canAssignTeamLocked(idx int, desired TeamID) bool {
-	if normalizeMode(g.mode) != ModeTeam {
+	if !isTeamBased(g.mode) {
 		return false
 	}
 	desired = normalizeTeam(desired)
@@ -1815,7 +2124,7 @@ func (g *Game) addDeathmatchBotLocked(nowMS int64, inMatch bool) {
 }
 
 func (g *Game) syncFallbackBotLocked(nowMS int64) {
-	if normalizeMode(g.mode) != ModeTeam {
+	if !isTeamBased(g.mode) {
 		g.removeAllBotsLocked()
 		return
 	}
@@ -1944,8 +2253,8 @@ func isAccurateBotShot(shotIndex int64) bool {
 	return (shotIndex+1)%5 == 0
 }
 
-func clampBotAxis(v float64) float64 {
-	limit := projectileBounds - botBoundMargin
+func (g *Game) clampBotAxis(v float64) float64 {
+	limit := g.mapArenaSize - botBoundMargin
 	return math.Max(-limit, math.Min(limit, v))
 }
 
@@ -2011,12 +2320,12 @@ func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
 		}
 	}
 
-	next[0] = clampBotAxis(next[0])
-	next[2] = clampBotAxis(next[2])
+	next[0] = g.clampBotAxis(next[0])
+	next[2] = g.clampBotAxis(next[2])
 	next[1] = standEyeHeight
-	collideWalls(&next)
-	next[0] = math.Max(-arenaSize+0.5, math.Min(arenaSize-0.5, next[0]))
-	next[2] = math.Max(-arenaSize+0.5, math.Min(arenaSize-0.5, next[2]))
+	g.collideWalls(&next)
+	next[0] = math.Max(-g.mapArenaSize+0.5, math.Min(g.mapArenaSize-0.5, next[0]))
+	next[2] = math.Max(-g.mapArenaSize+0.5, math.Min(g.mapArenaSize-0.5, next[2]))
 	if next == pos {
 		return
 	}
@@ -2027,6 +2336,13 @@ func (g *Game) moveFallbackBotLocked(idx, targetIdx int, nowMS int64) {
 
 // Split map spawns by X sign: negative X → blue side, non-negative → green side
 func (g *Game) spawnPointsForTeamLocked(team TeamID) []Vec3 {
+	if normalizeTeam(team) == TeamBlue && len(g.mapBlueSpawns) > 0 {
+		return g.mapBlueSpawns
+	}
+	if normalizeTeam(team) == TeamGreen && len(g.mapGreenSpawns) > 0 {
+		return g.mapGreenSpawns
+	}
+
 	var blue, green []Vec3
 	for _, sp := range g.mapSpawns {
 		if sp[0] < 0 {
@@ -2745,6 +3061,7 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 
 		g.players.alive[idx] = false
 		g.players.deaths[idx]++
+		g.dropCarrierLocked(playerID, nowMS)
 		g.stripLoadoutOnDeathLocked(idx)
 		if ownerOK && projectile.OwnerID != playerID {
 			g.players.kills[ownerIdx]++
@@ -2945,6 +3262,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		if victimHP <= 0 {
 			g.players.alive[hit.index] = false
 			g.players.deaths[hit.index]++
+			g.dropCarrierLocked(victimID, nowMS)
 			g.stripLoadoutOnDeathLocked(hit.index)
 			g.players.kills[idx]++
 			g.awardDeathmatchKillAmmoLocked(idx, botWeapon)
@@ -3313,6 +3631,7 @@ func (g *Game) startMatchLocked(nowMS int64) {
 			continue
 		}
 		g.players.alive[i] = false
+		g.dropCarrierLocked(g.players.ids[i], nowMS)
 		g.players.flashEndsAt[i] = 0
 		g.clearDeathmatchSpawnStateLocked(i)
 		g.players.shotBloom[i] = 0
@@ -3323,6 +3642,61 @@ func (g *Game) startMatchLocked(nowMS int64) {
 		g.players.recoilShotIndex[i] = 0
 		g.players.nextAttackAt[i] = 0
 		g.clearReloadLocked(i)
+	}
+	g.resetObjectivesLocked(nowMS)
+}
+
+func (g *Game) resetObjectivesLocked(nowMS int64) {
+	g.blueCTFCaptures = 0
+	g.greenCTFCaptures = 0
+
+	blueBase := Vec3{0, 1.7, 0}
+	greenBase := Vec3{0, 1.7, 0}
+	if len(g.mapFlagBases) == 2 {
+		for _, b := range g.mapFlagBases {
+			if normalizeTeam(TeamID(b.Team)) == TeamBlue {
+				blueBase = Vec3{b.X, 1.7, b.Z}
+			} else if normalizeTeam(TeamID(b.Team)) == TeamGreen {
+				greenBase = Vec3{b.X, 1.7, b.Z}
+			}
+		}
+	} else {
+		// Fallback to spawn centroids
+		var blueSum, greenSum Vec3
+		var blueCount, greenCount int
+		for i := range g.players.ids {
+			if g.players.inMatch[i] && g.players.team[i] == TeamBlue {
+				blueSum[0] += g.players.pos[i][0]
+				blueSum[1] += g.players.pos[i][1]
+				blueSum[2] += g.players.pos[i][2]
+				blueCount++
+			} else if g.players.inMatch[i] && g.players.team[i] == TeamGreen {
+				greenSum[0] += g.players.pos[i][0]
+				greenSum[1] += g.players.pos[i][1]
+				greenSum[2] += g.players.pos[i][2]
+				greenCount++
+			}
+		}
+		if blueCount > 0 {
+			blueBase = Vec3{blueSum[0] / float64(blueCount), blueSum[1] / float64(blueCount), blueSum[2] / float64(blueCount)}
+		}
+		if greenCount > 0 {
+			greenBase = Vec3{greenSum[0] / float64(greenCount), greenSum[1] / float64(greenCount), greenSum[2] / float64(greenCount)}
+		}
+	}
+
+	g.flags[0] = flagState{Team: TeamBlue, Pos: blueBase, HomePos: blueBase, AtHome: true}
+	g.flags[1] = flagState{Team: TeamGreen, Pos: greenBase, HomePos: greenBase, AtHome: true}
+
+	g.hostages = nil
+	g.nextHostageID = 0
+	for _, hm := range g.mapHostages {
+		g.nextHostageID++
+		g.hostages = append(g.hostages, hostageState{
+			ID:    g.nextHostageID,
+			Pos:   Vec3{hm.X, 1.7, hm.Z},
+			Alive: true,
+		})
 	}
 }
 
@@ -3340,6 +3714,17 @@ func (g *Game) startNextRoundLocked(nowMS int64) {
 		if g.players.inMatch[i] {
 			g.respawnPlayerLocked(i, nowMS)
 		}
+	}
+
+	g.hostages = nil
+	g.nextHostageID = 0
+	for _, hm := range g.mapHostages {
+		g.nextHostageID++
+		g.hostages = append(g.hostages, hostageState{
+			ID:    g.nextHostageID,
+			Pos:   Vec3{hm.X, 1.7, hm.Z},
+			Alive: true,
+		})
 	}
 }
 
@@ -3517,10 +3902,14 @@ func (g *Game) tick(nowMS int64) {
 		}
 	}
 	if g.state == StatePlaying {
-		if normalizeMode(g.mode) == ModeDeathmatch {
+		modeNorm := normalizeMode(g.mode)
+		if modeNorm == ModeDeathmatch || modeNorm == ModeCTF {
 			tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
 			g.tickFallbackBotsLocked(nowMS, tickEvents)
-			if g.roundEndsAt > 0 && nowMS >= g.roundEndsAt {
+			if modeNorm == ModeCTF {
+				g.tickCTFLocked(nowMS, tickEvents)
+			}
+			if g.roundEndsAt > 0 && nowMS >= g.roundEndsAt || (modeNorm == ModeCTF && (g.blueCTFCaptures >= ctfCapturesToWin || g.greenCTFCaptures >= ctfCapturesToWin)) {
 				g.startDeathmatchVoteLocked(nowMS)
 				shouldBroadcastLobby = true
 			} else {
@@ -3541,11 +3930,18 @@ func (g *Game) tick(nowMS int64) {
 			default:
 				tickEvents = g.updateReloadsAndProjectilesLocked(nowMS)
 				g.tickFallbackBotsLocked(nowMS, tickEvents)
+				if modeNorm == ModeHostage {
+					g.tickHostageLocked(nowMS, tickEvents)
+				}
 				if winner := g.roundWinnerByEliminationLocked(); winner != TeamNone {
 					g.beginRoundCooldownLocked(winner, nowMS)
 					shouldBroadcastRound = true
 				} else if g.roundEndsAt > 0 && nowMS >= g.roundEndsAt {
-					g.beginRoundCooldownLocked(g.roundWinnerByTimeoutLocked(), nowMS)
+					winner := g.roundWinnerByTimeoutLocked()
+					if modeNorm == ModeHostage {
+						winner = TeamGreen // defenders win on timeout
+					}
+					g.beginRoundCooldownLocked(winner, nowMS)
 					shouldBroadcastRound = true
 				} else if g.state == StatePlaying {
 					shouldBroadcastState = true
@@ -3809,12 +4205,44 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			appliedHit := false
 			killed := false
 			victimID := hit.id
+
+			game.mu.Lock()
+			if hit.isHostage {
+				if hit.index >= 0 && hit.index < len(game.hostages) && game.hostages[hit.index].Alive {
+					game.hostages[hit.index].Alive = false
+					game.hostages[hit.index].FollowerID = 0
+
+					// Apply penalty
+					shooterIdx, ok := game.players.indexOf(playerID)
+					if ok {
+						game.players.credits[shooterIdx] -= hostageDeathPenalty
+						if game.players.credits[shooterIdx] < 0 {
+							game.players.credits[shooterIdx] = 0
+						}
+						update := game.applyEconomyUpdateLocked(shooterIdx, true, "penalty", "hostage", "Hostage Killed Penalty", "", -hostageDeathPenalty, nowMS)
+						game.mu.Unlock()
+
+						// Broadcast hostage kill event roughly
+						killMsg, _ := json.Marshal(map[string]interface{}{
+							"t":      "kill",
+							"killer": playerID,
+							"victim": -1, // representing hostage
+							"weapon": weapon,
+						})
+						game.broadcast(killMsg, 0)
+						game.sendToPlayer(playerID, &update)
+						continue
+					}
+				}
+				game.mu.Unlock()
+				continue
+			}
+
 			victimHP := 0
 			victimArmor := 0
 			absorbedDamage := 0
 			var shooterUpdate *economyUpdate
 
-			game.mu.Lock()
 			victimIdx, ok := game.players.indexOf(victimID)
 			shooterIdx, shooterOK := game.players.indexOf(playerID)
 			if ok && shooterOK && game.players.alive[victimIdx] && game.canPlayersDamageAtLocked(shooterIdx, victimIdx, shotTime) {
@@ -3826,6 +4254,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				if victimHP <= 0 {
 					game.players.alive[victimIdx] = false
 					game.players.deaths[victimIdx]++
+					game.dropCarrierLocked(victimID, nowMS)
 					game.stripLoadoutOnDeathLocked(victimIdx)
 					killed = true
 					game.players.kills[shooterIdx]++
@@ -4046,7 +4475,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 			case game.state != StateWaiting:
 				response["ok"] = false
 				response["reason"] = "Match already in progress"
-			case normalizeMode(game.mode) != ModeTeam:
+			case !isTeamBased(game.mode):
 				response["ok"] = false
 				response["reason"] = "Team selection is only available in team mode"
 			case normalizeTeam(requestedTeam) == TeamNone:
@@ -4159,6 +4588,26 @@ func (g *Game) findHitTargetLocked(shooterID int, origin, dir Vec3, shotTime int
 			id:    id,
 			zone:  zone,
 			dist:  dist,
+		}
+	}
+
+	if normalizeMode(g.mode) == ModeHostage {
+		for i, h := range g.hostages {
+			if !h.Alive || h.Rescued {
+				continue
+			}
+			zone, dist, ok := tracePlayerHit(origin, dir, h.Pos, false, maxRange)
+			if !ok || dist > bestDist {
+				continue
+			}
+			bestDist = dist
+			best = &hitCandidate{
+				index:     i,
+				id:        h.ID,
+				zone:      zone, // HitZone maps nicely
+				dist:      dist,
+				isHostage: true,
+			}
 		}
 	}
 
@@ -4488,10 +4937,15 @@ func main() {
 	port := serverPort()
 	clientDir := resolveClientDir()
 
-	// Load default map spawns from JSON at startup
-	if spawns, err := loadMapSpawns(clientDir, defaultMapName); err == nil {
+	// Load default map geometry from JSON at startup
+	if spawns, walls, boxes, arena, wHeight, wThick, err := loadMapGeometry(clientDir, defaultMapName); err == nil {
 		defaultSpawns = spawns
-		log.Printf("Loaded %d spawn points from %s", len(spawns), defaultMapName)
+		game.mapWallsRuntime = walls
+		game.mapBoxesRuntime = boxes
+		game.mapArenaSize = arena
+		game.mapWallHeight = wHeight
+		game.mapWallThickness = wThick
+		log.Printf("Loaded %d spawn points, %d walls, %d boxes from %s", len(spawns), len(walls), len(boxes), defaultMapName)
 	} else {
 		log.Printf("Using hardcoded spawns: %v", err)
 	}
@@ -4517,4 +4971,165 @@ func main() {
 	lanIP := getLANIP()
 	log.Printf("FPS server running on http://%s:%s (LAN) and http://localhost:%s", lanIP, port, port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+func (g *Game) tickHostageLocked(nowMS int64, tm *tickMessages) {
+	dt := 1.0 / float64(tickRate)
+	hostageRescued := false
+
+	for i := range g.hostages {
+		h := &g.hostages[i]
+		if !h.Alive || h.Rescued {
+			continue
+		}
+
+		if h.FollowerID == 0 {
+			// Check pickup
+			for j, pid := range g.players.ids {
+				if g.players.inMatch[j] && g.players.alive[j] && g.players.team[j] == TeamBlue {
+					if distanceVec3(h.Pos, g.players.pos[j]) <= hostagePickupRadius {
+						h.FollowerID = pid
+						break
+					}
+				}
+			}
+		} else {
+			// Follow
+			fIdx, ok := g.players.indexOf(h.FollowerID)
+			if !ok || !g.players.alive[fIdx] || !g.players.inMatch[fIdx] || g.players.team[fIdx] != TeamBlue {
+				h.FollowerID = 0
+			} else {
+				fPos := g.players.pos[fIdx]
+				dist := distanceVec3(h.Pos, fPos)
+				if dist > hostageFollowDist {
+					dir := normalizeVec(Vec3{fPos[0] - h.Pos[0], 0, fPos[2] - h.Pos[2]})
+					h.Pos[0] += dir[0] * hostageFollowSpeed * dt
+					h.Pos[2] += dir[2] * hostageFollowSpeed * dt
+				}
+
+				// Check rescue
+				for _, rz := range g.mapRescueZones {
+					if distanceVec3(h.Pos, Vec3{rz.Cx, h.Pos[1], rz.Cz}) <= rz.Radius {
+						h.Rescued = true
+						h.FollowerID = 0
+						g.players.credits[fIdx] += hostageRescueReward
+						tm.addDirect(g.players.ids[fIdx], g.applyEconomyUpdateLocked(fIdx, true, "reward", "rescue", "Hostage Rescue Reward", "", hostageRescueReward, nowMS))
+						hostageRescued = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if hostageRescued {
+		allRescued := true
+		for _, h := range g.hostages {
+			if h.Alive && !h.Rescued {
+				allRescued = false
+				break
+			}
+		}
+		if allRescued {
+			g.beginRoundCooldownLocked(TeamBlue, nowMS)
+		}
+	}
+}
+
+func (g *Game) tickCTFLocked(nowMS int64, tm *tickMessages) {
+	for i := range g.flags {
+		f := &g.flags[i]
+		if f.CarrierID == 0 {
+			if f.Dropped && nowMS >= f.DroppedAt+flagAutoReturnSec*1000 {
+				f.Dropped = false
+				f.AtHome = true
+				f.Pos = f.HomePos
+			}
+
+			// Check pickup/return
+			for j, pid := range g.players.ids {
+				if g.players.inMatch[j] && g.players.alive[j] {
+					fTeam := g.flags[i].Team
+					pTeam := g.players.team[j]
+					dist := distanceVec3(f.Pos, g.players.pos[j])
+					if dist <= flagPickupRadius {
+						if pTeam != fTeam {
+							// Pickup enemy flag
+							if f.CarrierID == 0 {
+								// make sure a player only carries one flag at a time
+								carrying := false
+								for k := range g.flags {
+									if g.flags[k].CarrierID == pid {
+										carrying = true
+									}
+								}
+								if !carrying {
+									f.CarrierID = pid
+									f.Dropped = false
+									f.AtHome = false
+								}
+							}
+						} else if f.Dropped {
+							// Return friendly flag
+							f.Dropped = false
+							f.AtHome = true
+							f.Pos = f.HomePos
+						}
+					}
+				}
+			}
+		} else {
+			// Update carrier pos
+			cIdx, ok := g.players.indexOf(f.CarrierID)
+			if !ok || !g.players.alive[cIdx] || !g.players.inMatch[cIdx] {
+				f.CarrierID = 0
+				f.Dropped = true
+				f.DroppedAt = nowMS
+			} else {
+				f.Pos = g.players.pos[cIdx]
+				pTeam := g.players.team[cIdx]
+
+				// Ensure they don't carry their own team's flag due to team swap
+				if pTeam == f.Team {
+					f.CarrierID = 0
+					f.Dropped = true
+					f.DroppedAt = nowMS
+					continue
+				}
+
+				// Check capture
+				homeFlagIdx := 0
+				if pTeam == TeamGreen {
+					homeFlagIdx = 1
+				}
+				homeFlag := &g.flags[homeFlagIdx]
+				if homeFlag.AtHome && distanceVec3(f.Pos, homeFlag.Pos) <= flagCaptureRadius {
+					f.CarrierID = 0
+					f.Dropped = false
+					f.AtHome = true
+					f.Pos = f.HomePos
+					if pTeam == TeamBlue {
+						g.blueCTFCaptures++
+					} else {
+						g.greenCTFCaptures++
+					}
+				}
+			}
+		}
+	}
+}
+
+func (g *Game) dropCarrierLocked(playerID int, nowMS int64) {
+	for i := range g.hostages {
+		if g.hostages[i].FollowerID == playerID {
+			g.hostages[i].FollowerID = 0
+		}
+	}
+	for i := range g.flags {
+		if g.flags[i].CarrierID == playerID {
+			g.flags[i].CarrierID = 0
+			g.flags[i].Dropped = true
+			g.flags[i].DroppedAt = nowMS
+		}
+	}
 }
