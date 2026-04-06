@@ -136,6 +136,8 @@ canvas { display: block; width: 100vw; height: 100vh; }
     text-shadow: 0 0 12px rgba(90, 160, 255, 0.35);
     z-index: 10;
     pointer-events: none;
+    display: flex;
+    gap: 16px;
 }
 
 #match-bar {

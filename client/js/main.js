@@ -21,9 +21,10 @@ import {
     spendWeaponAmmo,
     updatePlayer,
 } from './player.js';
+import { captureInput, onInputAck, reconcile, requestJump, resetPrediction } from './prediction.js';
 import { canFire, consumeRecoilDelta, createWeapon, fire, getCrosshairGap, getCrosshairOffsetY, getViewPunch, setWeaponReloadTime, setWeaponType, updateWeapon, weaponVerts } from './weapon.js';
 import { addKill, createHUD, showDamageFlash, showEconomyNotice, showHitMarker, updateHUD } from './hud.js';
-import { connect, createNet, estimateServerTime, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendLeaveMatch, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
+import { connect, createNet, estimateServerTime, getAdaptiveRenderDelay, sampleRemotePlayer, sendBuy, sendChat, sendInput, sendLeaveMatch, sendMap, sendMode, sendReload, sendRejoin, sendShoot, sendStart, sendSwitchWeapon, sendTeam, sendThrow } from './net.js';
 import { createAvatarPool, updateAvatarPool, hideAvatarPool, createObjectivesPool, updateObjectivesPool } from './avatar.js';
 import { buildHttpURL, buildWebSocketURL, getDefaultServerAddress } from './config.js';
 import { clamp, lookDirFromYawPitch } from './math.js';
@@ -44,7 +45,6 @@ import { createSoundEngine, updateSoundListener, soundGunshot, soundFootstep, so
 import * as THREE from 'three';
 
 const SEND_RATE = 1 / 60;
-const REMOTE_RENDER_DELAY_MS = 100;
 const DEATHMATCH_RESPAWN_DELAY_S = 3;
 const CHAT_HISTORY_LIMIT = 8;
 const CHAT_MESSAGE_LIFETIME_MS = 8000;
@@ -728,6 +728,7 @@ async function connectToLobby(lobby) {
             joinKey: lobby.joinKey || '',
         });
         resetMatchState(player);
+        resetPrediction();
         applyAuthoritativeState(player, msg);
         syncLocalWeaponState();
         camera.position = player.pos;
@@ -1112,6 +1113,7 @@ function syncLocalWeaponState() {
 
 function resetAfterDisconnect(message) {
     resetMatchState(player);
+    resetPrediction();
     player.team = TEAM_NONE;
     player.inMatch = true;
     player.isBot = false;
@@ -1466,7 +1468,10 @@ window.addEventListener('keydown', (e) => {
         return;
     }
 
-    if (e.code === 'Space' && canMove(player, net.match)) playerJump(player);
+    if (e.code === 'Space' && canMove(player, net.match)) {
+        requestJump();
+        playerJump(player); // local prediction — immediate visual response
+    }
     if (e.code === 'Tab' && localInMatch) e.preventDefault();
     if (e.code === 'KeyR' && localInMatch && player.alive) {
         e.preventDefault();
@@ -1558,6 +1563,7 @@ net.onRespawn = (msg) => {
     setBuyMenuOpen(false);
     setPauseMenuOpen(false);
     localImpactEffects.length = 0;
+    resetPrediction();
 };
 
 net.onRound = () => {
@@ -1612,6 +1618,14 @@ net.onSelfState = (state) => {
     applyAuthoritativeState(player, state);
     syncLocalWeaponState();
     updateRejoinPrompt();
+};
+
+net.onInputAck = (seq, velY, onGround) => {
+    onInputAck(seq, velY, onGround);
+};
+
+net.onReconcile = (serverPos) => {
+    reconcile(player, serverPos);
 };
 
 net.onEconomy = (msg) => {
@@ -1745,7 +1759,8 @@ function frame(time) {
 
         sendTimer -= dt;
         if (sendTimer <= 0 && net.connected) {
-            sendInput(net, player.pos, camera.yaw, camera.pitch, player.crouching);
+            const cmd = captureInput(player, keys, camera);
+            sendInput(net, cmd);
             sendTimer = SEND_RATE;
         }
     } else {
@@ -1811,7 +1826,7 @@ function frame(time) {
     }
 
     if (localInMatch) {
-        const renderServerTimeMs = estimateServerTime(net, Date.now()) - REMOTE_RENDER_DELAY_MS;
+        const renderServerTimeMs = estimateServerTime(net, Date.now()) - getAdaptiveRenderDelay(net);
         updateHealthRestoreVisuals(net.match, performance.now() * 0.001);
 
         // Update avatar mesh pool (GPU transforms — no per-vertex CPU math)

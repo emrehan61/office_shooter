@@ -1,4 +1,13 @@
 import { MODE_TEAM, normalizeMode } from './modes.js';
+import { decodeMessage, encodeInput, encodeShoot, encodeThrow, encodeReload, encodeSwitch, encodeBuy, encodePing, applyDeltaToPlayer } from './codec.js';
+import { createClockSync, startClockSync, stopClockSync, onPong as clockOnPong, getClockOffset, getLatency } from './clock.js';
+import { createJitterBuffer, onSnapshotArrival, getRenderDelayMs as jbGetRenderDelay, resetJitterBuffer, createSnapRing, pushSnapRing, sampleSnapRing } from './jitter.js';
+
+// Delta field group byte ranges — must match server deltaFieldGroups and codec.js DELTA_FIELD_GROUPS.
+const _DELTA_SIZES = [
+    [0, 2], [2, 4], [4, 6], [6, 8], [8, 10], [10, 11], [11, 12], [12, 14],
+    [14, 19], [19, 20], [20, 23], [23, 26], [26, 29], [29, 33], [33, 36], [36, 38],
+];
 
 export function createNet() {
     return {
@@ -15,7 +24,8 @@ export function createNet() {
         sessionToken: 0,
         latencyMs: null,
         serverClockOffsetMs: 0,
-        pingTimer: null,
+        clockSync: createClockSync(),
+        jitterBuffer: createJitterBuffer(),
         onHit: null,
         onKill: null,
         onRespawn: null,
@@ -32,6 +42,7 @@ export function createNet() {
         onRejoin: null,
         onStartDenied: null,
         onChat: null,
+        lastRecvSnapshotSeq: 0,
     };
 }
 
@@ -53,6 +64,7 @@ export function connect(net, url, name, lobby = null) {
 
     return new Promise((resolve, reject) => {
         const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
         net.ws = ws;
 
         let welcomed = false;
@@ -89,10 +101,15 @@ export function connect(net, url, name, lobby = null) {
             if (!isActiveSession(net, ws, token)) return;
 
             let msg;
-            try {
-                msg = JSON.parse(e.data);
-            } catch {
-                return;
+            if (e.data instanceof ArrayBuffer) {
+                msg = decodeMessage(e.data);
+                if (!msg) return;
+            } else {
+                try {
+                    msg = JSON.parse(e.data);
+                } catch {
+                    return;
+                }
             }
 
             handleMsg(net, msg);
@@ -194,12 +211,19 @@ function handleMsg(net, msg) {
             break;
 
         case 'round':
+            if (msg.snapshotSeq) net.lastRecvSnapshotSeq = msg.snapshotSeq;
             applySnapshot(net, msg, true);
             if (net.onRound) net.onRound(msg);
             break;
 
         case 'state':
+            if (msg.snapshotSeq) net.lastRecvSnapshotSeq = msg.snapshotSeq;
             applySnapshot(net, msg, false);
+            break;
+
+        case 'deltaState':
+            if (msg.snapshotSeq) net.lastRecvSnapshotSeq = msg.snapshotSeq;
+            applyDeltaSnapshot(net, msg);
             break;
 
         case 'hit':
@@ -254,6 +278,10 @@ function handleMsg(net, msg) {
             applyPong(net, msg);
             break;
 
+        case 'inputAck':
+            if (net.onInputAck) net.onInputAck(msg.lastProcessedSeq, msg.velY, msg.onGround);
+            break;
+
         case 'leave':
             delete net.players[normalizeId(msg.id)];
             break;
@@ -266,25 +294,48 @@ function handleMsg(net, msg) {
 
 function applySnapshot(net, msg, includeSelfTransform) {
     applyMatchState(net, msg.match);
-    net.projectiles = Array.isArray(msg.projectiles)
-        ? msg.projectiles
-            .filter((projectile) => projectile?.pos && projectile?.type)
-            .map((projectile) => ({
-                id: projectile.id ?? 0,
-                type: projectile.type,
-                pos: [...projectile.pos],
-            }))
-        : [];
-    net.effects = Array.isArray(msg.effects)
-        ? msg.effects
-            .filter((effect) => effect?.pos && effect?.type)
-            .map((effect) => ({
-                type: effect.type,
-                pos: [...effect.pos],
-                radius: effect.radius ?? 0,
-                timeLeftMs: effect.timeLeftMs ?? 0,
-            }))
-        : [];
+
+    // Reuse projectile objects in-place to avoid GC pressure.
+    const projArr = net.projectiles;
+    let pCount = 0;
+    if (Array.isArray(msg.projectiles)) {
+        for (let i = 0; i < msg.projectiles.length; i++) {
+            const p = msg.projectiles[i];
+            if (!p?.pos || !p?.type) continue;
+            let obj = projArr[pCount];
+            if (!obj) {
+                obj = { id: 0, type: '', pos: [0, 0, 0] };
+                projArr[pCount] = obj;
+            }
+            obj.id = p.id ?? 0;
+            obj.type = p.type;
+            obj.pos[0] = p.pos[0]; obj.pos[1] = p.pos[1]; obj.pos[2] = p.pos[2];
+            pCount++;
+        }
+    }
+    projArr.length = pCount;
+
+    // Reuse effect objects in-place.
+    const effArr = net.effects;
+    let eCount = 0;
+    if (Array.isArray(msg.effects)) {
+        for (let i = 0; i < msg.effects.length; i++) {
+            const e = msg.effects[i];
+            if (!e?.pos || !e?.type) continue;
+            let obj = effArr[eCount];
+            if (!obj) {
+                obj = { type: '', pos: [0, 0, 0], radius: 0, timeLeftMs: 0 };
+                effArr[eCount] = obj;
+            }
+            obj.type = e.type;
+            obj.pos[0] = e.pos[0]; obj.pos[1] = e.pos[1]; obj.pos[2] = e.pos[2];
+            obj.radius = e.radius ?? 0;
+            obj.timeLeftMs = e.timeLeftMs ?? 0;
+            eCount++;
+        }
+    }
+    effArr.length = eCount;
+
     const players = msg.players || {};
     const serverTimeMs = typeof msg.serverTime === 'number' ? msg.serverTime : null;
     syncSnapshotClock(net, serverTimeMs);
@@ -294,41 +345,156 @@ function applySnapshot(net, msg, includeSelfTransform) {
         const isSelf = Number(id) === net.myId;
         applyPlayerState(target, players[id], includeSelfTransform || !isSelf, serverTimeMs);
         if (isSelf) {
+            // Store the server-authoritative position for reconciliation.
+            const pd = players[id];
+            if (pd && pd.pos) {
+                if (!net.serverAuthPos) net.serverAuthPos = [0, 0, 0];
+                net.serverAuthPos[0] = pd.pos[0];
+                net.serverAuthPos[1] = pd.pos[1];
+                net.serverAuthPos[2] = pd.pos[2];
+            }
             notifySelfState(net, id, includeSelfTransform);
+            // Trigger reconciliation callback with server position.
+            if (net.onReconcile && net.serverAuthPos) {
+                net.onReconcile(net.serverAuthPos);
+            }
         }
     }
 }
 
-export function sendInput(net, pos, yaw, pitch, crouching = false) {
+function applyDeltaSnapshot(net, msg) {
+    applyMatchState(net, msg.match);
+
+    // Projectiles — same handling as full snapshot.
+    const projArr = net.projectiles;
+    let pCount = 0;
+    if (Array.isArray(msg.projectiles)) {
+        for (let i = 0; i < msg.projectiles.length; i++) {
+            const p = msg.projectiles[i];
+            if (!p?.pos || !p?.type) continue;
+            let obj = projArr[pCount];
+            if (!obj) {
+                obj = { id: 0, type: '', pos: [0, 0, 0] };
+                projArr[pCount] = obj;
+            }
+            obj.id = p.id ?? 0;
+            obj.type = p.type;
+            obj.pos[0] = p.pos[0]; obj.pos[1] = p.pos[1]; obj.pos[2] = p.pos[2];
+            pCount++;
+        }
+    }
+    projArr.length = pCount;
+
+    // Effects — same handling as full snapshot.
+    const effArr = net.effects;
+    let eCount = 0;
+    if (Array.isArray(msg.effects)) {
+        for (let i = 0; i < msg.effects.length; i++) {
+            const e = msg.effects[i];
+            if (!e?.pos || !e?.type) continue;
+            let obj = effArr[eCount];
+            if (!obj) {
+                obj = { type: '', pos: [0, 0, 0], radius: 0, timeLeftMs: 0 };
+                effArr[eCount] = obj;
+            }
+            obj.type = e.type;
+            obj.pos[0] = e.pos[0]; obj.pos[1] = e.pos[1]; obj.pos[2] = e.pos[2];
+            obj.radius = e.radius ?? 0;
+            obj.timeLeftMs = e.timeLeftMs ?? 0;
+            eCount++;
+        }
+    }
+    effArr.length = eCount;
+
+    const serverTimeMs = typeof msg.serverTime === 'number' ? msg.serverTime : null;
+    syncSnapshotClock(net, serverTimeMs);
+
+    // Remove players not in this snapshot.
+    for (const existingId in net.players) {
+        if (!msg.playerIds.has(Number(existingId))) {
+            delete net.players[existingId];
+        }
+    }
+
+    // Apply player deltas.
+    for (const [idStr, delta] of Object.entries(msg.playerDeltas)) {
+        const id = Number(idStr);
+        const target = ensurePlayer(net, id);
+        const isSelf = id === net.myId;
+
+        if (delta.full) {
+            // Full state — use normal apply path.
+            applyPlayerState(target, delta.state, !isSelf, serverTimeMs);
+            if (isSelf && delta.state.pos) {
+                if (!net.serverAuthPos) net.serverAuthPos = [0, 0, 0];
+                net.serverAuthPos[0] = delta.state.pos[0];
+                net.serverAuthPos[1] = delta.state.pos[1];
+                net.serverAuthPos[2] = delta.state.pos[2];
+            }
+        } else if (isSelf) {
+            // Self player delta: apply non-transform fields (mask out bits 0-4).
+            // Extract server position from delta for reconciliation.
+            const v = msg.dataView;
+            let dOff = delta.dataOffset;
+            const mask = delta.changedMask;
+            if (!net.serverAuthPos) net.serverAuthPos = [0, 0, 0];
+            // Read position fields from the delta if present.
+            for (let bit = 0; bit < 5; bit++) {
+                if (!(mask & (1 << bit))) continue;
+                const [start, end] = _DELTA_SIZES[bit];
+                const size = end - start;
+                switch (bit) {
+                    case 0: net.serverAuthPos[0] = v.getInt16(dOff, true) / 256; break;
+                    case 1: net.serverAuthPos[1] = v.getInt16(dOff, true) / 1024; break;
+                    case 2: net.serverAuthPos[2] = v.getInt16(dOff, true) / 256; break;
+                    // bits 3,4 (yaw/pitch) — skip for self, don't need
+                }
+                dOff += size;
+            }
+            // Apply only non-transform fields (bits 5-15) to the player state.
+            const nonTransformMask = mask & 0xFFE0;
+            if (nonTransformMask) {
+                // Compute byte offset for non-transform fields by skipping bits 0-4.
+                let skipOff = delta.dataOffset;
+                for (let bit = 0; bit < 5; bit++) {
+                    if (mask & (1 << bit)) {
+                        const [s, e] = _DELTA_SIZES[bit];
+                        skipOff += e - s;
+                    }
+                }
+                applyDeltaToPlayer(target, v, skipOff, nonTransformMask);
+            }
+        } else {
+            // Remote player delta — apply everything.
+            applyDeltaToPlayer(target, msg.dataView, delta.dataOffset, delta.changedMask);
+            // Update interpolation state if transforms changed.
+            if (delta.changedMask & 0x1F) {
+                applyTransformState(target, target.pos, target.yaw, target.pitch, target.crouching, serverTimeMs);
+            }
+        }
+
+        if (isSelf) {
+            notifySelfState(net, id);
+            if (net.onReconcile && net.serverAuthPos) {
+                net.onReconcile(net.serverAuthPos);
+            }
+        }
+    }
+}
+
+export function sendInput(net, cmd) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({
-        t: 'input',
-        pos: [pos[0], pos[1], pos[2]],
-        yaw,
-        pitch,
-        crouching: !!crouching,
-    }));
+    net.ws.send(encodeInput(cmd, net.lastRecvSnapshotSeq));
 }
 
 export function sendShoot(net, dir, weapon, aiming = false, alternate = false) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({
-        t: 'shoot',
-        dir: [dir[0], dir[1], dir[2]],
-        shotTime: Math.round(estimateServerTime(net, Date.now())),
-        weapon,
-        aiming: !!aiming,
-        alternate: !!alternate,
-    }));
+    net.ws.send(encodeShoot(dir, Math.round(estimateServerTime(net, Date.now())), weapon, aiming, alternate));
 }
 
 export function sendThrow(net, dir, weapon) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({
-        t: 'throw',
-        dir: [dir[0], dir[1], dir[2]],
-        weapon,
-    }));
+    net.ws.send(encodeThrow(dir, weapon));
 }
 
 export function sendStart(net) {
@@ -363,17 +529,17 @@ export function sendLeaveMatch(net) {
 
 export function sendBuy(net, item) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({ t: 'buy', item }));
+    net.ws.send(encodeBuy(item));
 }
 
 export function sendReload(net) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({ t: 'reload' }));
+    net.ws.send(encodeReload());
 }
 
 export function sendSwitchWeapon(net, weapon) {
     if (!canSend(net)) return;
-    net.ws.send(JSON.stringify({ t: 'switch', weapon }));
+    net.ws.send(encodeSwitch(weapon));
 }
 
 export function sendChat(net, text) {
@@ -386,22 +552,14 @@ function ensurePlayer(net, id) {
     if (!net.players[key]) {
         net.players[key] = {
             pos: [0, 1.7, 0],
-            prevPos: [0, 1.7, 0],
-            targetPos: [0, 1.7, 0],
             yaw: 0,
-            prevYaw: 0,
-            targetYaw: 0,
             pitch: 0,
-            prevPitch: 0,
-            targetPitch: 0,
             hp: 100,
             armor: 0,
             credits: 0,
             name: '???',
             alive: true,
             crouching: false,
-            prevCrouching: false,
-            targetCrouching: false,
             pistolWeapon: '',
             pistolClip: 0,
             pistolReserve: 0,
@@ -423,8 +581,7 @@ function ensurePlayer(net, id) {
             shotTime: 0,
             kills: 0,
             deaths: 0,
-            prevSnapshotServerTimeMs: 0,
-            targetSnapshotServerTimeMs: 0,
+            snapRing: createSnapRing(),
             renderSample: {
                 pos: [0, 1.7, 0],
                 yaw: 0,
@@ -497,7 +654,7 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
 
     if (!includeTransform) return;
 
-    const nextPos = state.pos ? cloneVec3(state.pos) : target.pos;
+    const nextPos = state.pos || target.pos;
     const nextYaw = typeof state.yaw === 'number' ? state.yaw : target.yaw;
     const nextPitch = typeof state.pitch === 'number' ? state.pitch : target.pitch;
     applyTransformState(target, nextPos, nextYaw, nextPitch, target.crouching, serverTimeMs);
@@ -633,6 +790,9 @@ function resetSession(net) {
     net.gameStarted = false;
     net.latencyMs = null;
     net.serverClockOffsetMs = 0;
+    net.clockSync = createClockSync();
+    resetJitterBuffer(net.jitterBuffer);
+    net.lastRecvSnapshotSeq = 0;
 }
 
 function isActiveSession(net, ws, token) {
@@ -640,27 +800,15 @@ function isActiveSession(net, ws, token) {
 }
 
 function startHeartbeat(net) {
-    if (typeof window === 'undefined' || net.pingTimer) {
-        return;
-    }
-
-    const sendPing = () => {
+    if (typeof window === 'undefined') return;
+    startClockSync(net.clockSync, (clientTime) => {
         if (!canSend(net)) return;
-        net.ws.send(JSON.stringify({
-            t: 'ping',
-            clientTime: Date.now(),
-        }));
-    };
-
-    sendPing();
-    net.pingTimer = window.setInterval(sendPing, 1000);
+        net.ws.send(encodePing(clientTime));
+    });
 }
 
 function stopHeartbeat(net) {
-    if (typeof window !== 'undefined' && net.pingTimer) {
-        window.clearInterval(net.pingTimer);
-    }
-    net.pingTimer = null;
+    stopClockSync(net.clockSync);
 }
 
 export function applyPong(net, msg, receivedAt = Date.now()) {
@@ -668,19 +816,17 @@ export function applyPong(net, msg, receivedAt = Date.now()) {
         return;
     }
 
-    const rtt = Math.max(0, receivedAt - msg.clientTime);
-    const offset = msg.serverTime - (msg.clientTime + rtt * 0.5);
-
-    net.latencyMs = net.latencyMs == null
-        ? rtt
-        : Math.round(net.latencyMs * 0.7 + rtt * 0.3);
-    net.serverClockOffsetMs = net.serverClockOffsetMs === 0
-        ? offset
-        : net.serverClockOffsetMs * 0.7 + offset * 0.3;
+    clockOnPong(net.clockSync, msg.clientTime, msg.serverTime, receivedAt);
+    net.latencyMs = getLatency(net.clockSync);
+    net.serverClockOffsetMs = getClockOffset(net.clockSync);
 }
 
 export function estimateServerTime(net, clientTime = Date.now()) {
-    return clientTime + (net.serverClockOffsetMs || 0);
+    return clientTime + (getClockOffset(net.clockSync) || net.serverClockOffsetMs || 0);
+}
+
+export function getAdaptiveRenderDelay(net) {
+    return jbGetRenderDelay(net.jitterBuffer);
 }
 
 export function sampleRemotePlayer(player, renderServerTimeMs) {
@@ -696,68 +842,29 @@ export function sampleRemotePlayer(player, renderServerTimeMs) {
     };
     player.renderSample = sample;
 
-    const fromTime = player.prevSnapshotServerTimeMs || 0;
-    const toTime = player.targetSnapshotServerTimeMs || 0;
-    const span = toTime - fromTime;
-    if (span <= 0 || !Number.isFinite(renderServerTimeMs)) {
-        copyVec3(sample.pos, player.targetPos || player.pos);
-        sample.yaw = player.targetYaw ?? player.yaw;
-        sample.pitch = player.targetPitch ?? player.pitch;
-        sample.crouching = player.targetCrouching ?? player.crouching;
+    if (player.snapRing && player.snapRing.count > 0) {
+        sampleSnapRing(player.snapRing, renderServerTimeMs, sample);
         return sample;
     }
 
-    const t = clamp01((renderServerTimeMs - fromTime) / span);
-    lerpVec3Into(sample.pos, player.prevPos, player.targetPos, t);
-    sample.yaw = lerpAngle(player.prevYaw ?? player.yaw, player.targetYaw ?? player.yaw, t);
-    sample.pitch = lerp(player.prevPitch ?? player.pitch, player.targetPitch ?? player.pitch, t);
-    sample.crouching = t >= 0.5 ? !!player.targetCrouching : !!player.prevCrouching;
+    // Fallback for players with no snapshot ring entries yet.
+    copyVec3(sample.pos, player.pos);
+    sample.yaw = player.yaw;
+    sample.pitch = player.pitch;
+    sample.crouching = player.crouching;
     return sample;
 }
 
 function applyTransformState(target, nextPos, nextYaw, nextPitch, nextCrouching, serverTimeMs) {
-    target.pos = cloneVec3(nextPos);
+    copyVec3(target.pos, nextPos);
     target.yaw = nextYaw;
     target.pitch = nextPitch;
 
-    if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs)) {
-        syncRemoteSnapshotTarget(target, target.pos, target.yaw, target.pitch, nextCrouching, 0);
-        return;
+    // Push into snapshot ring for interpolation.
+    const t = (typeof serverTimeMs === 'number' && Number.isFinite(serverTimeMs)) ? serverTimeMs : 0;
+    if (target.snapRing) {
+        pushSnapRing(target.snapRing, t, target.pos, nextYaw, nextPitch, nextCrouching);
     }
-
-    const hasTimedSnapshot = target.targetSnapshotServerTimeMs > 0;
-    if (!hasTimedSnapshot || serverTimeMs <= target.targetSnapshotServerTimeMs) {
-        syncRemoteSnapshotTarget(target, target.pos, target.yaw, target.pitch, nextCrouching, serverTimeMs);
-        return;
-    }
-
-    target.prevPos = cloneVec3(target.targetPos || target.pos);
-    target.prevYaw = target.targetYaw ?? target.yaw;
-    target.prevPitch = target.targetPitch ?? target.pitch;
-    target.prevCrouching = target.targetCrouching ?? target.crouching;
-    target.prevSnapshotServerTimeMs = target.targetSnapshotServerTimeMs;
-    target.targetPos = cloneVec3(target.pos);
-    target.targetYaw = target.yaw;
-    target.targetPitch = target.pitch;
-    target.targetCrouching = !!nextCrouching;
-    target.targetSnapshotServerTimeMs = serverTimeMs;
-}
-
-function syncRemoteSnapshotTarget(target, pos, yaw, pitch, crouching, serverTimeMs) {
-    target.prevPos = cloneVec3(pos);
-    target.targetPos = cloneVec3(pos);
-    target.prevYaw = yaw;
-    target.targetYaw = yaw;
-    target.prevPitch = pitch;
-    target.targetPitch = pitch;
-    target.prevCrouching = !!crouching;
-    target.targetCrouching = !!crouching;
-    target.prevSnapshotServerTimeMs = serverTimeMs;
-    target.targetSnapshotServerTimeMs = serverTimeMs;
-}
-
-function cloneVec3(vec) {
-    return [vec[0] ?? 0, vec[1] ?? 0, vec[2] ?? 0];
 }
 
 function copyVec3(target, source) {
@@ -766,41 +873,17 @@ function copyVec3(target, source) {
     target[2] = source?.[2] ?? 0;
 }
 
-function lerpVec3Into(target, from, to, t) {
-    target[0] = lerp(from?.[0] ?? 0, to?.[0] ?? 0, t);
-    target[1] = lerp(from?.[1] ?? 0, to?.[1] ?? 0, t);
-    target[2] = lerp(from?.[2] ?? 0, to?.[2] ?? 0, t);
-}
-
-function lerp(from, to, t) {
-    return from + (to - from) * t;
-}
-
-function lerpAngle(from, to, t) {
-    const delta = normalizeAngle(to - from);
-    return from + delta * t;
-}
-
-function normalizeAngle(angle) {
-    let normalized = angle;
-    while (normalized > Math.PI) normalized -= Math.PI * 2;
-    while (normalized < -Math.PI) normalized += Math.PI * 2;
-    return normalized;
-}
-
-function clamp01(value) {
-    if (value <= 0) return 0;
-    if (value >= 1) return 1;
-    return value;
-}
-
 function syncSnapshotClock(net, serverTimeMs, receivedAt = Date.now()) {
     if (typeof serverTimeMs !== 'number' || !Number.isFinite(serverTimeMs)) {
         return;
     }
 
+    // Snapshot-based clock offset (backup — primary comes from ping/pong probes).
     const offset = serverTimeMs - receivedAt;
     net.serverClockOffsetMs = net.serverClockOffsetMs === 0
         ? offset
         : net.serverClockOffsetMs * 0.85 + offset * 0.15;
+
+    // Track snapshot arrival jitter for adaptive render delay.
+    onSnapshotArrival(net.jitterBuffer, receivedAt);
 }

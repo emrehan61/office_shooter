@@ -31,7 +31,11 @@ class FakeWebSocket {
     }
 
     send(data) {
-        this.sent.push(JSON.parse(data));
+        if (data instanceof ArrayBuffer) {
+            this.sent.push(data);
+        } else {
+            this.sent.push(JSON.parse(data));
+        }
     }
 
     open() {
@@ -374,28 +378,24 @@ test('action requests send the current item ids and flags', async () => {
         sendMode(net, 'deathmatch');
         sendRejoin(net, true);
         sendChat(net, 'hello');
-        sendInput(net, [1, 2, 3], 0.2, -0.1, true);
+        sendInput(net, { seq: 1, forward: true, backward: false, left: false, right: false, jump: false, crouch: true, aiming: false, yaw: 0.2, pitch: -0.1 });
         sendShoot(net, [0, 0, -1], 'awp', true, false);
 
         const actions = ws.sent.slice(1);
 
-        assert.deepEqual(actions[0], { t: 'buy', item: 'm4a4' });
-        assert.deepEqual(actions[1], { t: 'reload' });
-        assert.deepEqual(actions[2], { t: 'switch', weapon: 'usp-s' });
-        assert.deepEqual(actions[3], { t: 'throw', dir: [0, 0.25, -1], weapon: 'flashbang' });
+        // Binary messages: buy, reload, switch, throw
+        assert.ok(actions[0] instanceof ArrayBuffer, 'buy should be binary');
+        assert.ok(actions[1] instanceof ArrayBuffer, 'reload should be binary');
+        assert.ok(actions[2] instanceof ArrayBuffer, 'switch should be binary');
+        assert.ok(actions[3] instanceof ArrayBuffer, 'throw should be binary');
+        // JSON messages: team, mode, rejoin, chat
         assert.deepEqual(actions[4], { t: 'team', team: 'blue' });
         assert.deepEqual(actions[5], { t: 'mode', mode: 'deathmatch' });
         assert.deepEqual(actions[6], { t: 'rejoin', yes: true });
         assert.deepEqual(actions[7], { t: 'chat', text: 'hello' });
-        assert.deepEqual(actions[8], { t: 'input', pos: [1, 2, 3], yaw: 0.2, pitch: -0.1, crouching: true });
-        assert.deepEqual(actions[9], {
-            t: 'shoot',
-            dir: [0, 0, -1],
-            shotTime: actions[9].shotTime,
-            weapon: 'awp',
-            aiming: true,
-            alternate: false,
-        });
+        // Binary messages: input, shoot
+        assert.ok(actions[8] instanceof ArrayBuffer, 'input should be binary');
+        assert.ok(actions[9] instanceof ArrayBuffer, 'shoot should be binary');
     } finally {
         restore();
     }

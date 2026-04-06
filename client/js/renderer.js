@@ -817,6 +817,7 @@ export function createRenderer(canvas, options = {}) {
     renderer.toneMappingExposure = editorMode ? 1.0 : 1.3;
     renderer.setClearColor(INDOOR_FOG_COLOR, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, editorMode ? 1 : 2));
+    renderer.info.autoReset = false;
 
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(INDOOR_FOG_COLOR, 0.025);
@@ -984,6 +985,7 @@ export function render(r) {
     if (r.skyDome?.material?.uniforms?.time) {
         r.skyDome.material.uniforms.time.value = performance.now() * 0.001;
     }
+    r.renderer.info.reset();
     if (r.composer) {
         r.composer.render();
     } else {

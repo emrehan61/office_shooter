@@ -35,6 +35,10 @@ export function createHUD() {
         weaponEl: document.getElementById('weapon-name'),
         creditsEl: document.getElementById('credits'),
         pingEl: document.getElementById('ping'),
+        fpsEl: document.getElementById('fps-counter'),
+        _fpsFrames: 0,
+        _fpsLastTime: performance.now(),
+        _fpsValue: 0,
         roundEl: document.getElementById('round-label'),
         roundTimerEl: document.getElementById('round-timer'),
         buyStatusEl: document.getElementById('buy-status'),
@@ -128,6 +132,14 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
     if (hud.armorEl) hud.armorEl.textContent = player.armor;
     if (hud.creditsEl) hud.creditsEl.textContent = player.credits;
     if (hud.pingEl) hud.pingEl.textContent = formatPing(network.latencyMs);
+    hud._fpsFrames++;
+    const now = performance.now();
+    if (now - hud._fpsLastTime >= 500) {
+        hud._fpsValue = Math.round(hud._fpsFrames / ((now - hud._fpsLastTime) / 1000));
+        hud._fpsFrames = 0;
+        hud._fpsLastTime = now;
+    }
+    if (hud.fpsEl) hud.fpsEl.textContent = `FPS ${hud._fpsValue}`;
     if (hud.weaponEl) hud.weaponEl.textContent = WEAPON_DEFS[player.activeWeapon]?.label || 'Knife';
     if (hud.roundEl) hud.roundEl.textContent = isDeathmatch
         ? 'DEATHMATCH'
