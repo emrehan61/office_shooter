@@ -544,22 +544,36 @@ function appendPart(out, verts, pos, yaw, eyeHeight = STAND_EYE_HEIGHT, rx = 0, 
     const cosYaw = Math.cos(yaw || 0);
     const baseY = (pos?.[1] ?? STAND_EYE_HEIGHT) - eyeHeight;
 
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         let x = verts[i];
         let y = verts[i + 1];
         let z = verts[i + 2];
-        const yx = y * cosX - z * sinX;
-        const zx = y * sinX + z * cosX;
+        let nx = verts[i + 6];
+        let ny = verts[i + 7];
+        let nz = verts[i + 8];
+        let yx = y * cosX - z * sinX;
+        let zx = y * sinX + z * cosX;
         y = yx; z = zx;
-        const xy = x * cosYLocal + z * sinYLocal;
-        const zy = -x * sinYLocal + z * cosYLocal;
+        let nyx = ny * cosX - nz * sinX;
+        let nzx = ny * sinX + nz * cosX;
+        ny = nyx; nz = nzx;
+        let xy = x * cosYLocal + z * sinYLocal;
+        let zy = -x * sinYLocal + z * cosYLocal;
         x = xy; z = zy;
-        const xz = x * cosZ - y * sinZ;
-        const yz = x * sinZ + y * cosZ;
+        let nxy = nx * cosYLocal + nz * sinYLocal;
+        let nzy = -nx * sinYLocal + nz * cosYLocal;
+        nx = nxy; nz = nzy;
+        let xz = x * cosZ - y * sinZ;
+        let yz = x * sinZ + y * cosZ;
         x = xz; y = yz;
+        let nxz = nx * cosZ - ny * sinZ;
+        let nyz = nx * sinZ + ny * cosZ;
+        nx = nxz; ny = nyz;
         const worldX = x * cosYaw - z * sinYaw + (pos?.[0] ?? 0);
         const worldZ = x * sinYaw + z * cosYaw + (pos?.[2] ?? 0);
-        out.push(worldX, y + baseY, worldZ, verts[i + 3], verts[i + 4], verts[i + 5]);
+        const worldNX = nx * cosYaw - nz * sinYaw;
+        const worldNZ = nx * sinYaw + nz * cosYaw;
+        out.push(worldX, y + baseY, worldZ, verts[i + 3], verts[i + 4], verts[i + 5], worldNX, ny, worldNZ);
     }
 }
 

@@ -17,6 +17,7 @@ const (
 	msgClientSwitch byte = 0x06
 	msgClientBuy    byte = 0x07
 	msgClientPing   byte = 0x0F
+	msgClientDCPing byte = 0x10
 )
 
 // Server → Client
@@ -30,6 +31,7 @@ const (
 	msgServerKill     byte = 0x87
 	msgServerRespawn  byte = 0x88
 	msgServerPong     byte = 0x8A
+	msgServerDCPong   byte = 0x8B
 )
 
 // ─── Weapon ID enum ────────────────────────────────────────────────────────

@@ -13,10 +13,27 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v3"
 )
+
+type serverMetrics struct {
+	tickDurationUs     atomic.Int64
+	tickDurationAvgUs  atomic.Int64
+	tickDurationMaxUs  atomic.Int64
+	stateTickUs        atomic.Int64
+	stateTickAvgUs     atomic.Int64
+	sendChMaxOccupancy atomic.Int64
+	pongQueueDepth     atomic.Int64
+	droppedMessages    atomic.Int64
+	writeStalls        atomic.Int64
+	playerCount        atomic.Int64
+}
+
+var stats serverMetrics
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -397,6 +414,8 @@ type playerStore struct {
 	botShotCount        []int64
 	conns               []*websocket.Conn
 	sendChs             []chan []byte
+	dataChannels        []*webrtc.DataChannel
+	peerConns           []*webrtc.PeerConnection
 	history             []positionRingBuffer
 	idToIndex           map[int]int
 }
@@ -946,6 +965,8 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 	ps.botShotCount = append(ps.botShotCount, 0)
 	ps.conns = append(ps.conns, conn)
 	ps.sendChs = append(ps.sendChs, sendCh)
+	ps.dataChannels = append(ps.dataChannels, nil)
+	ps.peerConns = append(ps.peerConns, nil)
 	var rb positionRingBuffer
 	rb.add(positionSample{At: nowMS, Pos: spawn, Crouching: false})
 	ps.history = append(ps.history, rb)
@@ -957,6 +978,10 @@ func (ps *playerStore) add(id int, conn *websocket.Conn, spawn Vec3, nowMS int64
 func (ps *playerStore) removeAt(idx int) {
 	last := len(ps.ids) - 1
 	removedID := ps.ids[idx]
+
+	if ps.peerConns[idx] != nil {
+		ps.peerConns[idx].Close()
+	}
 
 	if idx != last {
 		movedID := ps.ids[last]
@@ -1006,6 +1031,8 @@ func (ps *playerStore) removeAt(idx int) {
 		ps.botShotCount[idx] = ps.botShotCount[last]
 		ps.conns[idx] = ps.conns[last]
 		ps.sendChs[idx] = ps.sendChs[last]
+		ps.dataChannels[idx] = ps.dataChannels[last]
+		ps.peerConns[idx] = ps.peerConns[last]
 		ps.history[idx] = ps.history[last]
 		ps.idToIndex[movedID] = idx
 	}
@@ -1056,6 +1083,8 @@ func (ps *playerStore) removeAt(idx int) {
 	ps.botShotCount = ps.botShotCount[:last]
 	ps.conns = ps.conns[:last]
 	ps.sendChs = ps.sendChs[:last]
+	ps.dataChannels = ps.dataChannels[:last]
+	ps.peerConns = ps.peerConns[:last]
 	ps.history = ps.history[:last]
 	delete(ps.idToIndex, removedID)
 }
@@ -1073,6 +1102,7 @@ func (g *Game) addPlayer(conn *websocket.Conn) (int, chan []byte, bool) {
 
 	spawn := g.mapSpawns[rand.Intn(len(g.mapSpawns))]
 	sendCh := g.players.add(id, conn, spawn, time.Now().UnixMilli(), false)
+	stats.playerCount.Add(1)
 	return id, sendCh, true
 }
 
@@ -1084,6 +1114,7 @@ func (g *Game) removePlayer(id int) {
 		return
 	}
 	g.players.removeAt(idx)
+	stats.playerCount.Add(-1)
 	nowMS := time.Now().UnixMilli()
 	g.syncModeBotsLocked(nowMS)
 	if g.humanCountLocked() == 0 {
@@ -1121,7 +1152,35 @@ func (g *Game) broadcast(msg []byte, exclude int) {
 		select {
 		case g.players.sendChs[i] <- msg:
 		default:
+			stats.droppedMessages.Add(1)
 		}
+	}
+}
+
+func (g *Game) sendUnreliable(idx int, msg []byte) {
+	dc := g.players.dataChannels[idx]
+	if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+		dc.Send(msg)
+		return
+	}
+	sendCh := g.players.sendChs[idx]
+	if sendCh != nil {
+		select {
+		case sendCh <- msg:
+		default:
+			stats.droppedMessages.Add(1)
+		}
+	}
+}
+
+func (g *Game) broadcastUnreliable(msg []byte, exclude int) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for i, id := range g.players.ids {
+		if id == exclude || g.players.isBot[i] {
+			continue
+		}
+		g.sendUnreliable(i, msg)
 	}
 }
 
@@ -1651,6 +1710,18 @@ func (g *Game) buildPlayerStateLocked(idx int, nowMS int64) playerState {
 
 
 func (g *Game) stateTick(nowMS int64) {
+	stT0 := time.Now()
+	defer func() {
+		d := time.Since(stT0).Microseconds()
+		stats.stateTickUs.Store(d)
+		prev := stats.stateTickAvgUs.Load()
+		if prev == 0 {
+			stats.stateTickAvgUs.Store(d)
+		} else {
+			stats.stateTickAvgUs.Store((prev*7 + d) / 8)
+		}
+	}()
+
 	g.mu.RLock()
 	if len(g.players.ids) == 0 {
 		g.mu.RUnlock()
@@ -1661,11 +1732,13 @@ func (g *Game) stateTick(nowMS int64) {
 	g.snapshotSeq = (g.snapshotSeq + 1) & 0xFFFF
 	seq := g.snapshotSeq
 
-	// Build current quantized player states for delta comparison.
-	currentStates := make(map[int][]byte, len(g.players.ids))
+	nPlayers := len(g.players.ids)
+	slab := make([]byte, nPlayers*playerStateDataSize)
+	currentStates := make(map[int][]byte, nPlayers)
 	for i, id := range g.players.ids {
 		ps := g.buildPlayerStateLocked(i, nowMS)
-		data := make([]byte, playerStateDataSize)
+		off := i * playerStateDataSize
+		data := slab[off : off+playerStateDataSize]
 		quantizePlayerBlock(data, ps)
 		currentStates[id] = data
 	}
@@ -1678,8 +1751,7 @@ func (g *Game) stateTick(nowMS int64) {
 		if g.players.isBot[idx] {
 			continue
 		}
-		sendCh := g.players.sendChs[idx]
-		if sendCh == nil {
+		if g.players.sendChs[idx] == nil && g.players.dataChannels[idx] == nil {
 			continue
 		}
 
@@ -1695,10 +1767,7 @@ func (g *Game) stateTick(nowMS int64) {
 			msg = g.encodeDeltaStateBinary(nowMS, seq, baseline, currentStates)
 		}
 
-		select {
-		case sendCh <- msg:
-		default:
-		}
+		g.sendUnreliable(idx, msg)
 		_ = id
 	}
 	g.mu.RUnlock()
@@ -1811,14 +1880,8 @@ func (g *Game) processInputsLocked(nowMS int64) {
 		g.players.inputQueue[idx] = queue[:0] // clear processed
 
 		// Send input ack to this player.
-		sendCh := g.players.sendChs[idx]
-		if sendCh != nil {
-			ack := encodeInputAck(g.players.lastProcessedSeq[idx], g.players.velY[idx], g.players.onGround[idx])
-			select {
-			case sendCh <- ack:
-			default:
-			}
-		}
+		ack := encodeInputAck(g.players.lastProcessedSeq[idx], g.players.velY[idx], g.players.onGround[idx])
+		g.sendUnreliable(idx, ack)
 
 		// Record position history for lag compensation.
 		newPos := g.players.pos[idx]
@@ -1915,9 +1978,7 @@ func (g *Game) broadcastChat(id int, text string) {
 }
 
 func newTickMessages() *tickMessages {
-	return &tickMessages{
-		directs: make(map[int][][]byte),
-	}
+	return &tickMessages{}
 }
 
 func (tm *tickMessages) addBroadcast(payload any) {
@@ -1938,6 +1999,9 @@ func (tm *tickMessages) addDirect(id int, payload any) {
 	msg, err := json.Marshal(payload)
 	if err != nil {
 		return
+	}
+	if tm.directs == nil {
+		tm.directs = make(map[int][][]byte)
 	}
 	tm.directs[id] = append(tm.directs[id], msg)
 }
@@ -2850,8 +2914,11 @@ func isMovingAtTime(r *positionRingBuffer, at int64) bool {
 }
 
 func deterministicSpreadOffset(seed int64) float64 {
-	rng := rand.New(rand.NewSource(seed))
-	return rng.Float64()*2 - 1
+	s := uint64(seed)
+	s ^= s << 13
+	s ^= s >> 7
+	s ^= s << 17
+	return float64(s%(1<<53)) / float64(1<<53) * 2 - 1
 }
 
 func (g *Game) normalizeActiveWeaponLocked(idx int, requested WeaponID) WeaponID {
@@ -3375,14 +3442,7 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 		g.players.botShotCount[idx]++
 		shooterPos := positionAtTime(&g.players.history[idx], shotTime)
 
-		shotMsg, _ := json.Marshal(map[string]interface{}{
-			"t":         "shot",
-			"id":        botID,
-			"pos":       shooterPos,
-			"dir":       dir,
-			"weapon":    botWeapon,
-			"alternate": false,
-		})
+		shotMsg := encodeShotBinary(botID, shooterPos, dir, botWeapon, false)
 		tm.broadcasts = append(tm.broadcasts, shotMsg)
 
 		hit := g.findHitTargetLocked(botID, shooterPos, dir, shotTime, config.Range)
@@ -3409,29 +3469,14 @@ func (g *Game) tickFallbackBotsLocked(nowMS int64, tm *tickMessages) {
 			}
 		}
 
-		hitMsg, _ := json.Marshal(map[string]interface{}{
-			"t":        "hit",
-			"from":     botID,
-			"to":       victimID,
-			"dmg":      damage,
-			"zone":     hit.zone,
-			"weapon":   botWeapon,
-			"hp":       victimHP,
-			"armor":    victimArmor,
-			"absorbed": absorbedDamage,
-		})
+		hitMsg := encodeHitBinary(botID, victimID, damage, hit.zone, botWeapon, victimHP, victimArmor, absorbedDamage)
 		tm.broadcasts = append(tm.broadcasts, hitMsg)
 
 		if victimHP > 0 {
 			continue
 		}
 
-		killMsg, _ := json.Marshal(map[string]interface{}{
-			"t":      "kill",
-			"killer": botID,
-			"victim": victimID,
-			"weapon": botWeapon,
-		})
+		killMsg := encodeKillBinary(botID, victimID, botWeapon)
 		tm.broadcasts = append(tm.broadcasts, killMsg)
 	}
 }
@@ -3575,13 +3620,16 @@ func absInt(v int) int {
 
 func writer(conn *websocket.Conn, sendCh <-chan []byte) {
 	for msg := range sendCh {
-		// Binary messages start with a non-'{' byte; JSON always starts with '{'.
 		msgType := websocket.TextMessage
 		if len(msg) > 0 && msg[0] != '{' {
 			msgType = websocket.BinaryMessage
 		}
+		wt0 := time.Now()
 		if err := conn.WriteMessage(msgType, msg); err != nil {
 			break
+		}
+		if time.Since(wt0) > 5*time.Millisecond {
+			stats.writeStalls.Add(1)
 		}
 	}
 	conn.Close()
@@ -4050,6 +4098,21 @@ func (g *Game) broadcastRoundState(nowMS int64) {
 }
 
 func (g *Game) tick(nowMS int64) {
+	t0 := time.Now()
+	defer func() {
+		d := time.Since(t0).Microseconds()
+		stats.tickDurationUs.Store(d)
+		prev := stats.tickDurationAvgUs.Load()
+		if prev == 0 {
+			stats.tickDurationAvgUs.Store(d)
+		} else {
+			stats.tickDurationAvgUs.Store((prev*7 + d) / 8)
+		}
+		if d > stats.tickDurationMaxUs.Load() {
+			stats.tickDurationMaxUs.Store(d)
+		}
+	}()
+
 	shouldBroadcastLobby := false
 	shouldBroadcastRound := false
 	shouldBroadcastState := false
@@ -4216,9 +4279,11 @@ func (g *Game) handleBinaryMessage(playerID int, sendCh chan []byte, buf []byte)
 		g.mu.Unlock()
 
 		shotMsg := encodeShotBinary(playerID, shooterPos, dir, weapon, alternate)
-		g.broadcast(shotMsg, 0)
+		g.broadcastUnreliable(shotMsg, 0)
 
+		g.mu.Lock()
 		hit := g.findHitTargetLocked(playerID, shooterPos, dir, shotTime, config.Range)
+		g.mu.Unlock()
 		if hit == nil {
 			return
 		}
@@ -4289,7 +4354,7 @@ func (g *Game) handleBinaryMessage(playerID int, sendCh chan []byte, buf []byte)
 		}
 
 		hitMsg := encodeHitBinary(playerID, victimID, damage, hit.zone, weapon, victimHP, victimArmor, absorbedDamage)
-		g.broadcast(hitMsg, 0)
+		g.broadcastUnreliable(hitMsg, 0)
 		if shooterUpdate != nil {
 			g.sendToPlayer(playerID, shooterUpdate)
 		}
@@ -4415,11 +4480,139 @@ func (g *Game) handleBinaryMessage(playerID int, sendCh chan []byte, buf []byte)
 			return
 		}
 		pongMsg := encodePongBinary(clientTime, time.Now().UnixMilli())
-		select {
-		case sendCh <- pongMsg:
-		default:
+		stats.pongQueueDepth.Store(int64(len(sendCh)))
+		g.mu.RLock()
+		if idx, ok := g.players.indexOf(playerID); ok {
+			g.sendUnreliable(idx, pongMsg)
 		}
+		g.mu.RUnlock()
+
+	case msgClientDCPing:
+		if len(buf) < 9 {
+			return
+		}
+		pong := make([]byte, 17)
+		pong[0] = msgServerDCPong
+		copy(pong[1:9], buf[1:9])
+		putInt64(pong[9:], time.Now().UnixMilli())
+		g.mu.RLock()
+		if idx, ok := g.players.indexOf(playerID); ok {
+			g.sendUnreliable(idx, pong)
+		}
+		g.mu.RUnlock()
 	}
+}
+
+func (g *Game) handleRTCOffer(playerID int, sdp string, sendCh chan []byte) {
+	config := webrtc.Configuration{}
+	if stunServer := os.Getenv("STUN_SERVER"); stunServer != "" {
+		config.ICEServers = []webrtc.ICEServer{{URLs: []string{stunServer}}}
+	}
+
+	pc, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		log.Printf("WebRTC: PeerConnection failed for player %d: %v", playerID, err)
+		return
+	}
+
+	g.mu.Lock()
+	idx, ok := g.players.indexOf(playerID)
+	if !ok {
+		g.mu.Unlock()
+		pc.Close()
+		return
+	}
+	g.players.peerConns[idx] = pc
+	g.mu.Unlock()
+
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		candidateJSON, _ := json.Marshal(c.ToJSON())
+		queueJSON(sendCh, map[string]string{
+			"t":         "rtc-ice",
+			"candidate": string(candidateJSON),
+		})
+	})
+
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		dc.OnOpen(func() {
+			g.mu.Lock()
+			idx, ok := g.players.indexOf(playerID)
+			if ok {
+				g.players.dataChannels[idx] = dc
+			}
+			g.mu.Unlock()
+			log.Printf("WebRTC: DataChannel open for player %d", playerID)
+		})
+
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			if msg.IsString {
+				return
+			}
+			g.handleBinaryMessage(playerID, sendCh, msg.Data)
+		})
+
+		dc.OnClose(func() {
+			g.mu.Lock()
+			idx, ok := g.players.indexOf(playerID)
+			if ok {
+				g.players.dataChannels[idx] = nil
+			}
+			g.mu.Unlock()
+			log.Printf("WebRTC: DataChannel closed for player %d", playerID)
+		})
+	})
+
+	offer := webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  sdp,
+	}
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		log.Printf("WebRTC: SetRemoteDescription failed for player %d: %v", playerID, err)
+		pc.Close()
+		return
+	}
+
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		log.Printf("WebRTC: CreateAnswer failed for player %d: %v", playerID, err)
+		pc.Close()
+		return
+	}
+
+	if err := pc.SetLocalDescription(answer); err != nil {
+		log.Printf("WebRTC: SetLocalDescription failed for player %d: %v", playerID, err)
+		pc.Close()
+		return
+	}
+
+	queueJSON(sendCh, map[string]string{
+		"t":   "rtc-answer",
+		"sdp": answer.SDP,
+	})
+}
+
+func (g *Game) handleRTCICE(playerID int, candidateStr string) {
+	g.mu.RLock()
+	idx, ok := g.players.indexOf(playerID)
+	if !ok {
+		g.mu.RUnlock()
+		return
+	}
+	pc := g.players.peerConns[idx]
+	g.mu.RUnlock()
+
+	if pc == nil {
+		return
+	}
+
+	var candidate webrtc.ICECandidateInit
+	if err := json.Unmarshal([]byte(candidateStr), &candidate); err != nil {
+		return
+	}
+	pc.AddICECandidate(candidate)
 }
 
 func handleWS(w http.ResponseWriter, r *http.Request) {
@@ -4434,6 +4627,9 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Println("upgrade error:", err)
 		return
+	}
+	if tc, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
 	}
 
 	game := lobby.Game
@@ -4715,6 +4911,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 				game.broadcastRoundState(nowMS)
 				game.broadcastLobby()
 			}
+
+		case "rtc-offer":
+			var sdp string
+			json.Unmarshal(msg["sdp"], &sdp)
+			go game.handleRTCOffer(playerID, sdp, sendCh)
+
+		case "rtc-ice":
+			var candidate string
+			json.Unmarshal(msg["candidate"], &candidate)
+			game.handleRTCICE(playerID, candidate)
 		}
 	}
 }
@@ -5113,6 +5319,29 @@ func main() {
 		names := listMaps(clientDir)
 		json.NewEncoder(w).Encode(names)
 	})
+	http.HandleFunc("/debug/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(map[string]int64{
+			"tickUs":       stats.tickDurationUs.Load(),
+			"tickAvgUs":    stats.tickDurationAvgUs.Load(),
+			"tickMaxUs":    stats.tickDurationMaxUs.Load(),
+			"stateTickUs":  stats.stateTickUs.Load(),
+			"stateTickAvgUs": stats.stateTickAvgUs.Load(),
+			"sendChMaxOcc": stats.sendChMaxOccupancy.Load(),
+			"pongQueueDepth": stats.pongQueueDepth.Load(),
+			"droppedMsgs":  stats.droppedMessages.Load(),
+			"writeStalls":  stats.writeStalls.Load(),
+			"playerCount":  stats.playerCount.Load(),
+		})
+	})
+
+	go func() {
+		for range time.NewTicker(5 * time.Second).C {
+			stats.tickDurationMaxUs.Store(0)
+			stats.sendChMaxOccupancy.Store(0)
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(time.Second / tickRate)

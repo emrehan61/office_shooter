@@ -1,7 +1,8 @@
 import { MODE_TEAM, normalizeMode } from './modes.js';
-import { decodeMessage, encodeInput, encodeShoot, encodeThrow, encodeReload, encodeSwitch, encodeBuy, encodePing, applyDeltaToPlayer } from './codec.js';
+import { decodeMessage, encodeInput, encodeShoot, encodeThrow, encodeReload, encodeSwitch, encodeBuy, encodePing, encodeDCPing, applyDeltaToPlayer } from './codec.js';
 import { createClockSync, startClockSync, stopClockSync, onPong as clockOnPong, getClockOffset, getLatency } from './clock.js';
 import { createJitterBuffer, onSnapshotArrival, getRenderDelayMs as jbGetRenderDelay, resetJitterBuffer, createSnapRing, pushSnapRing, sampleSnapRing } from './jitter.js';
+import { createRTC, startRTC, stopRTC, sendRTC, handleSignaling } from './webrtc.js';
 
 // Delta field group byte ranges — must match server deltaFieldGroups and codec.js DELTA_FIELD_GROUPS.
 const _DELTA_SIZES = [
@@ -26,6 +27,9 @@ export function createNet() {
         serverClockOffsetMs: 0,
         clockSync: createClockSync(),
         jitterBuffer: createJitterBuffer(),
+        rtc: createRTC(),
+        dcLatencyMs: null,
+        _dcPingInterval: null,
         onHit: null,
         onKill: null,
         onRespawn: null,
@@ -42,6 +46,7 @@ export function createNet() {
         onRejoin: null,
         onStartDenied: null,
         onChat: null,
+        onSnapshotArrival: null,
         lastRecvSnapshotSeq: 0,
     };
 }
@@ -118,6 +123,27 @@ export function connect(net, url, name, lobby = null) {
                 settled = true;
                 clearTimeout(timeout);
                 startHeartbeat(net);
+                startRTC(net.rtc, ws,
+                    () => {
+                        net._dcPingInterval = setInterval(() => {
+                            if (net.rtc.ready) {
+                                sendRTC(net.rtc, encodeDCPing(Date.now()));
+                            }
+                        }, 500);
+                    },
+                    (data) => {
+                        if (!isActiveSession(net, ws, token)) return;
+                        const m = decodeMessage(data);
+                        if (m) handleMsg(net, m);
+                    },
+                    () => {
+                        if (net._dcPingInterval) {
+                            clearInterval(net._dcPingInterval);
+                            net._dcPingInterval = null;
+                        }
+                        net.dcLatencyMs = null;
+                    }
+                );
                 resolve(msg);
             }
         };
@@ -278,6 +304,12 @@ function handleMsg(net, msg) {
             applyPong(net, msg);
             break;
 
+        case 'dcPong':
+            if (typeof msg.clientTime === 'number') {
+                net.dcLatencyMs = Math.max(0, Math.round((Date.now() - msg.clientTime) / 2));
+            }
+            break;
+
         case 'inputAck':
             if (net.onInputAck) net.onInputAck(msg.lastProcessedSeq, msg.velY, msg.onGround);
             break;
@@ -288,6 +320,11 @@ function handleMsg(net, msg) {
 
         case 'chat':
             if (net.onChat) net.onChat(msg);
+            break;
+
+        case 'rtc-answer':
+        case 'rtc-ice':
+            handleSignaling(net.rtc, msg);
             break;
     }
 }
@@ -483,13 +520,13 @@ function applyDeltaSnapshot(net, msg) {
 }
 
 export function sendInput(net, cmd) {
-    if (!canSend(net)) return;
-    net.ws.send(encodeInput(cmd, net.lastRecvSnapshotSeq));
+    if (!canSend(net) && !net.rtc.ready) return;
+    sendUnreliable(net, encodeInput(cmd, net.lastRecvSnapshotSeq));
 }
 
 export function sendShoot(net, dir, weapon, aiming = false, alternate = false) {
-    if (!canSend(net)) return;
-    net.ws.send(encodeShoot(dir, Math.round(estimateServerTime(net, Date.now())), weapon, aiming, alternate));
+    if (!canSend(net) && !net.rtc.ready) return;
+    sendUnreliable(net, encodeShoot(dir, Math.round(estimateServerTime(net, Date.now())), weapon, aiming, alternate));
 }
 
 export function sendThrow(net, dir, weapon) {
@@ -599,6 +636,11 @@ function normalizeId(id) {
 
 function canSend(net) {
     return !!(net.connected && net.ws && net.ws.readyState === 1);
+}
+
+function sendUnreliable(net, data) {
+    if (sendRTC(net.rtc, data)) return;
+    if (canSend(net)) net.ws.send(data);
 }
 
 function applyPlayerState(target, state, includeTransform = true, serverTimeMs = null) {
@@ -778,6 +820,13 @@ function applyGameState(net, state) {
 }
 
 function resetSession(net) {
+    if (net._dcPingInterval) {
+        clearInterval(net._dcPingInterval);
+        net._dcPingInterval = null;
+    }
+    net.dcLatencyMs = null;
+    stopRTC(net.rtc);
+    net.rtc = createRTC();
     stopHeartbeat(net);
     net.ws = null;
     net.myId = null;
@@ -886,4 +935,5 @@ function syncSnapshotClock(net, serverTimeMs, receivedAt = Date.now()) {
 
     // Track snapshot arrival jitter for adaptive render delay.
     onSnapshotArrival(net.jitterBuffer, receivedAt);
+    if (net.onSnapshotArrival) net.onSnapshotArrival(receivedAt);
 }

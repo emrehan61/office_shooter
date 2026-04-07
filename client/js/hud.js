@@ -128,10 +128,23 @@ export function createHUD() {
 export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui = {}) {
     const isDeathmatch = match.mode === MODE_DEATHMATCH;
     const matchBar = getMatchBarDisplay(player, match, leaderboard);
-    if (hud.healthEl) hud.healthEl.textContent = player.hp;
-    if (hud.armorEl) hud.armorEl.textContent = player.armor;
-    if (hud.creditsEl) hud.creditsEl.textContent = player.credits;
-    if (hud.pingEl) hud.pingEl.textContent = formatPing(network.latencyMs);
+    if (hud.healthEl && hud._prevHp !== player.hp) {
+        hud._prevHp = player.hp;
+        hud.healthEl.textContent = player.hp;
+    }
+    if (hud.armorEl && hud._prevArmor !== player.armor) {
+        hud._prevArmor = player.armor;
+        hud.armorEl.textContent = player.armor;
+    }
+    if (hud.creditsEl && hud._prevCredits !== player.credits) {
+        hud._prevCredits = player.credits;
+        hud.creditsEl.textContent = player.credits;
+    }
+    const pingText = formatPing(network.latencyMs);
+    if (hud.pingEl && hud._prevPing !== pingText) {
+        hud._prevPing = pingText;
+        hud.pingEl.textContent = pingText;
+    }
     hud._fpsFrames++;
     const now = performance.now();
     if (now - hud._fpsLastTime >= 500) {
@@ -139,21 +152,55 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
         hud._fpsFrames = 0;
         hud._fpsLastTime = now;
     }
-    if (hud.fpsEl) hud.fpsEl.textContent = `FPS ${hud._fpsValue}`;
-    if (hud.weaponEl) hud.weaponEl.textContent = WEAPON_DEFS[player.activeWeapon]?.label || 'Knife';
-    if (hud.roundEl) hud.roundEl.textContent = isDeathmatch
+    if (hud.fpsEl && hud._prevFps !== hud._fpsValue) {
+        hud._prevFps = hud._fpsValue;
+        hud.fpsEl.textContent = `FPS ${hud._fpsValue}`;
+    }
+    const weaponLabel = WEAPON_DEFS[player.activeWeapon]?.label || 'Knife';
+    if (hud.weaponEl && hud._prevWeapon !== weaponLabel) {
+        hud._prevWeapon = weaponLabel;
+        hud.weaponEl.textContent = weaponLabel;
+    }
+    const roundText = isDeathmatch
         ? 'DEATHMATCH'
         : `ROUND ${match.currentRound || 0}/${match.totalRounds || 0}`;
-    if (hud.roundTimerEl) hud.roundTimerEl.textContent = formatClock(match.roundTimeLeftMs || 0);
-    if (hud.blueScoreNameEl) hud.blueScoreNameEl.textContent = matchBar.left.name;
-    if (hud.blueScoreEl) hud.blueScoreEl.textContent = matchBar.left.value;
-    if (hud.blueScoreMetaEl) hud.blueScoreMetaEl.textContent = matchBar.left.meta;
-    if (hud.greenScoreNameEl) hud.greenScoreNameEl.textContent = matchBar.right.name;
-    if (hud.greenScoreEl) hud.greenScoreEl.textContent = matchBar.right.value;
-    if (hud.greenScoreMetaEl) hud.greenScoreMetaEl.textContent = matchBar.right.meta;
+    if (hud.roundEl && hud._prevRound !== roundText) {
+        hud._prevRound = roundText;
+        hud.roundEl.textContent = roundText;
+    }
+    const timerText = formatClock(match.roundTimeLeftMs || 0);
+    if (hud.roundTimerEl && hud._prevTimer !== timerText) {
+        hud._prevTimer = timerText;
+        hud.roundTimerEl.textContent = timerText;
+    }
+    if (hud.blueScoreNameEl && hud._prevBlueScoreName !== matchBar.left.name) {
+        hud._prevBlueScoreName = matchBar.left.name;
+        hud.blueScoreNameEl.textContent = matchBar.left.name;
+    }
+    if (hud.blueScoreEl && hud._prevBlueScore !== matchBar.left.value) {
+        hud._prevBlueScore = matchBar.left.value;
+        hud.blueScoreEl.textContent = matchBar.left.value;
+    }
+    if (hud.blueScoreMetaEl && hud._prevBlueMeta !== matchBar.left.meta) {
+        hud._prevBlueMeta = matchBar.left.meta;
+        hud.blueScoreMetaEl.textContent = matchBar.left.meta;
+    }
+    if (hud.greenScoreNameEl && hud._prevGreenScoreName !== matchBar.right.name) {
+        hud._prevGreenScoreName = matchBar.right.name;
+        hud.greenScoreNameEl.textContent = matchBar.right.name;
+    }
+    if (hud.greenScoreEl && hud._prevGreenScore !== matchBar.right.value) {
+        hud._prevGreenScore = matchBar.right.value;
+        hud.greenScoreEl.textContent = matchBar.right.value;
+    }
+    if (hud.greenScoreMetaEl && hud._prevGreenMeta !== matchBar.right.meta) {
+        hud._prevGreenMeta = matchBar.right.meta;
+        hud.greenScoreMetaEl.textContent = matchBar.right.meta;
+    }
     if (hud.buyStatusEl) {
+        let buyStatusText;
         if (match.mode === MODE_DEATHMATCH && match.deathmatchVoteActive) {
-            hud.buyStatusEl.textContent = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
+            buyStatusText = `VOTE ${formatClock(match.deathmatchVoteTimeLeftMs || 0)}`;
         } else if (isDeathmatch) {
             const protectionTimeLeftMs = Math.max(0, player.spawnProtectionTimeLeftMs || 0);
             const loadoutTimeLeftMs = Math.max(0, player.loadoutTimeLeftMs || 0);
@@ -167,18 +214,22 @@ export function updateHUD(hud, player, leaderboard, network = {}, match = {}, ui
                         ? `LOADOUT ${formatClock(loadoutTimeLeftMs)} • ESC CLOSE`
                         : `LOADOUT ${formatClock(loadoutTimeLeftMs)} • B OPEN`);
                 }
-                hud.buyStatusEl.textContent = parts.join(' • ');
+                buyStatusText = parts.join(' • ');
             } else {
-                hud.buyStatusEl.textContent = 'FREE FOR ALL';
+                buyStatusText = 'FREE FOR ALL';
             }
         } else if (match.intermission) {
-            hud.buyStatusEl.textContent = `ROUND OVER • ${formatClock(match.intermissionTimeLeftMs || 0)}`;
+            buyStatusText = `ROUND OVER • ${formatClock(match.intermissionTimeLeftMs || 0)}`;
         } else if (match.buyPhase) {
-            hud.buyStatusEl.textContent = ui.buyMenuOpen
+            buyStatusText = ui.buyMenuOpen
                 ? `BUY ${formatClock(match.buyTimeLeftMs || 0)} • ESC CLOSE`
                 : `BUY ${formatClock(match.buyTimeLeftMs || 0)} • B OPEN`;
         } else {
-            hud.buyStatusEl.textContent = 'LIVE FIRE';
+            buyStatusText = 'LIVE FIRE';
+        }
+        if (hud._prevBuyStatus !== buyStatusText) {
+            hud._prevBuyStatus = buyStatusText;
+            hud.buyStatusEl.textContent = buyStatusText;
         }
     }
 
@@ -621,19 +672,28 @@ function renderLoadoutBar(hud) {
 
 function updateAmmoDisplay(hud, player) {
     if (hud.ammoEl) {
+        let ammoText;
         const ammo = getWeaponAmmoState(player);
         if (ammo) {
-            hud.ammoEl.textContent = `${ammo.clip} / ${ammo.reserve}`;
+            ammoText = `${ammo.clip} / ${ammo.reserve}`;
         } else if (isUtilityWeapon(player.activeWeapon)) {
-            hud.ammoEl.textContent = `x${getUtilityCount(player, player.activeWeapon)}`;
+            ammoText = `x${getUtilityCount(player, player.activeWeapon)}`;
         } else {
-            hud.ammoEl.textContent = '--';
+            ammoText = '--';
+        }
+        if (hud._prevAmmo !== ammoText) {
+            hud._prevAmmo = ammoText;
+            hud.ammoEl.textContent = ammoText;
         }
     }
     if (hud.ammoLabelEl) {
-        hud.ammoLabelEl.textContent = player.activeWeapon === WEAPON_KNIFE
+        const labelText = player.activeWeapon === WEAPON_KNIFE
             ? 'KNIFE'
             : (WEAPON_DEFS[player.activeWeapon]?.hudAmmoLabel || 'AMMO');
+        if (hud._prevAmmoLabel !== labelText) {
+            hud._prevAmmoLabel = labelText;
+            hud.ammoLabelEl.textContent = labelText;
+        }
     }
 }
 
@@ -729,6 +789,10 @@ function updateLeaderboard(hud, leaderboard) {
 
     hud.leaderboard.style.display = 'block';
     if (!hud.leaderboardBody || typeof document === 'undefined') return;
+
+    const rowsKey = JSON.stringify(rows);
+    if (hud._prevLeaderboardRows === rowsKey) return;
+    hud._prevLeaderboardRows = rowsKey;
 
     hud.leaderboardBody.replaceChildren();
 
@@ -895,7 +959,17 @@ function updateShop(hud, player, match, buyMenuOpen) {
     const buyPhase = canOpenBuyMenu(player, match);
     ensureShopSelection(hud);
 
-    hud.shopPanel.style.display = buyPhase && buyMenuOpen ? 'grid' : 'none';
+    const shopDisplay = buyPhase && buyMenuOpen ? 'grid' : 'none';
+    if (hud._prevShopDisplay !== shopDisplay) {
+        hud._prevShopDisplay = shopDisplay;
+        hud.shopPanel.style.display = shopDisplay;
+    }
+
+    if (!buyPhase || !buyMenuOpen) return;
+
+    const shopKey = `${player.credits}|${player.team}|${freeLoadout}|${player.heavyWeapon}|${player.pistolWeapon}|${hud.selectedShopSectionId}|${hud.selectedShopItemId}`;
+    if (hud._prevShopKey === shopKey) return;
+    hud._prevShopKey = shopKey;
 
     for (const button of hud.shopSectionButtons || []) {
         const sectionId = button.dataset.shopSectionButton;

@@ -1055,19 +1055,23 @@ function disposeObject(obj) {
 // ─── Legacy compatibility: boxVerts still returns raw float arrays ───
 export function boxVerts(cx, cy, cz, hw, hh, hd, mat) {
     const v = [];
-    const a = cx-hw, b = cx+hw, c = cy-hh, d = cy+hh, e = cz-hd, f = cz+hd;
-    quad(v, a,c,f, b,c,f, b,d,f, a,d,f, mat);
-    quad(v, b,c,e, a,c,e, a,d,e, b,d,e, mat);
-    quad(v, a,d,f, b,d,f, b,d,e, a,d,e, mat);
-    quad(v, a,c,e, b,c,e, b,c,f, a,c,f, mat);
-    quad(v, b,c,f, b,c,e, b,d,e, b,d,f, mat);
-    quad(v, a,c,e, a,c,f, a,d,f, a,d,e, mat);
+    boxVertsInto(v, cx, cy, cz, hw, hh, hd, mat);
     return v;
 }
 
-function quad(v, x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3, m) {
-    v.push(x0,y0,z0, 0,0,m, x1,y1,z1, 1,0,m, x2,y2,z2, 1,1,m);
-    v.push(x0,y0,z0, 0,0,m, x2,y2,z2, 1,1,m, x3,y3,z3, 0,1,m);
+export function boxVertsInto(v, cx, cy, cz, hw, hh, hd, mat) {
+    const a = cx-hw, b = cx+hw, c = cy-hh, d = cy+hh, e = cz-hd, f = cz+hd;
+    quad(v, a,c,f, b,c,f, b,d,f, a,d,f, mat, 0,0,1);
+    quad(v, b,c,e, a,c,e, a,d,e, b,d,e, mat, 0,0,-1);
+    quad(v, a,d,f, b,d,f, b,d,e, a,d,e, mat, 0,1,0);
+    quad(v, a,c,e, b,c,e, b,c,f, a,c,f, mat, 0,-1,0);
+    quad(v, b,c,f, b,c,e, b,d,e, b,d,f, mat, 1,0,0);
+    quad(v, a,c,e, a,c,f, a,d,f, a,d,e, mat, -1,0,0);
+}
+
+function quad(v, x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3, m, nx,ny,nz) {
+    v.push(x0,y0,z0, 0,0,m, nx,ny,nz, x1,y1,z1, 1,0,m, nx,ny,nz, x2,y2,z2, 1,1,m, nx,ny,nz);
+    v.push(x0,y0,z0, 0,0,m, nx,ny,nz, x2,y2,z2, 1,1,m, nx,ny,nz, x3,y3,z3, 0,1,m, nx,ny,nz);
 }
 
 // Convert raw vertex array (pos3 + uv2 + matID1) into a Three.js Group of meshes.
@@ -1076,22 +1080,23 @@ export function vertsToGroup(verts) {
     if (!verts || verts.length === 0) return group;
 
     const buckets = new Map();
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         const matID = Math.round(verts[i + 5]);
         let bucket = buckets.get(matID);
         if (!bucket) {
-            bucket = { positions: [], uvs: [] };
+            bucket = { positions: [], uvs: [], normals: [] };
             buckets.set(matID, bucket);
         }
         bucket.positions.push(verts[i], verts[i + 1], verts[i + 2]);
         bucket.uvs.push(verts[i + 3], verts[i + 4]);
+        bucket.normals.push(verts[i + 6], verts[i + 7], verts[i + 8]);
     }
 
     for (const [matID, data] of buckets) {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
         geo.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
-        geo.computeVertexNormals();
+        geo.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
         const mat = getMaterial(matID);
         const mesh = new THREE.Mesh(geo, mat);
         const isTransparent = mat.transparent === true;
@@ -1121,7 +1126,7 @@ export function updateVertPool(pool, verts) {
 
     // First pass: count vertices per material
     const vertCounts = new Map();
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         const matID = Math.round(verts[i + 5]);
         vertCounts.set(matID, (vertCounts.get(matID) || 0) + 1);
     }
@@ -1140,8 +1145,11 @@ export function updateVertPool(pool, verts) {
             posAttr.setUsage(THREE.DynamicDrawUsage);
             const uvAttr = new THREE.BufferAttribute(new Float32Array(newCapacity * 2), 2);
             uvAttr.setUsage(THREE.DynamicDrawUsage);
+            const nrmAttr = new THREE.BufferAttribute(new Float32Array(newCapacity * 3), 3);
+            nrmAttr.setUsage(THREE.DynamicDrawUsage);
             geo.setAttribute('position', posAttr);
             geo.setAttribute('uv', uvAttr);
+            geo.setAttribute('normal', nrmAttr);
             const mat = getMaterial(matID);
             const mesh = new THREE.Mesh(geo, mat);
             mesh.castShadow = !mat.transparent;
@@ -1157,17 +1165,21 @@ export function updateVertPool(pool, verts) {
     const offsets = new Map();
     for (const matID of vertCounts.keys()) offsets.set(matID, 0);
 
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         const matID = Math.round(verts[i + 5]);
         const entry = pool.buckets.get(matID);
         const off = offsets.get(matID);
         const posArr = entry.mesh.geometry.attributes.position.array;
         const uvArr = entry.mesh.geometry.attributes.uv.array;
+        const nrmArr = entry.mesh.geometry.attributes.normal.array;
         posArr[off * 3]     = verts[i];
         posArr[off * 3 + 1] = verts[i + 1];
         posArr[off * 3 + 2] = verts[i + 2];
         uvArr[off * 2]     = verts[i + 3];
         uvArr[off * 2 + 1] = verts[i + 4];
+        nrmArr[off * 3]     = verts[i + 6];
+        nrmArr[off * 3 + 1] = verts[i + 7];
+        nrmArr[off * 3 + 2] = verts[i + 8];
         offsets.set(matID, off + 1);
     }
 
@@ -1176,8 +1188,8 @@ export function updateVertPool(pool, verts) {
         const geo = pool.buckets.get(matID).mesh.geometry;
         geo.attributes.position.needsUpdate = true;
         geo.attributes.uv.needsUpdate = true;
+        geo.attributes.normal.needsUpdate = true;
         geo.setDrawRange(0, count);
-        geo.computeVertexNormals();
         pool.buckets.get(matID).mesh.visible = true;
     }
 

@@ -6,7 +6,7 @@ import { TEAM_BLUE, TEAM_GREEN } from './teams.js';
 
 function materialIds(vertices) {
     const ids = new Set();
-    for (let i = 5; i < vertices.length; i += 6) {
+    for (let i = 5; i < vertices.length; i += 9) {
         ids.add(vertices[i]);
     }
     return ids;
@@ -36,8 +36,8 @@ test('crouching lowers the avatar silhouette', () => {
     const standing = buildAvatarVerts(1, { pos: [0, 1.7, 0], yaw: 0, shotTime: 0, crouching: false });
     const crouching = buildAvatarVerts(1, { pos: [0, 1.15, 0], yaw: 0, shotTime: 0, crouching: true });
 
-    const standingTop = Math.max(...standing.filter((_, index) => index % 6 === 1));
-    const crouchingTop = Math.max(...crouching.filter((_, index) => index % 6 === 1));
+    const standingTop = Math.max(...standing.filter((_, index) => index % 9 === 1));
+    const crouchingTop = Math.max(...crouching.filter((_, index) => index % 9 === 1));
 
     assert.ok(crouchingTop < standingTop);
 });

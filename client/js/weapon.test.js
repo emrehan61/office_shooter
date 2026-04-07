@@ -12,7 +12,7 @@ function getBounds(verts) {
     let minZ = Infinity;
     let maxZ = -Infinity;
 
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         minX = Math.min(minX, verts[i]);
         maxX = Math.max(maxX, verts[i]);
         minY = Math.min(minY, verts[i + 1]);
@@ -102,7 +102,7 @@ test('weapon view model includes hands holding the gun', () => {
     const verts = weaponVerts(weapon);
     const mats = new Set();
 
-    for (let i = 5; i < verts.length; i += 6) {
+    for (let i = 5; i < verts.length; i += 9) {
         mats.add(verts[i]);
     }
 

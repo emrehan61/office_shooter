@@ -62,6 +62,25 @@ const worldDynamicVerts = [];
 const mergedEffects = [];
 const chatMessages = [];
 
+const telemetry = {
+    enabled: false,
+    el: null,
+    frameTimeMs: 0,
+    frameTimeAvgMs: 0,
+    snapshotsPerSec: 0,
+    snapshotCount: 0,
+    snapshotCountResetAt: 0,
+    lastSnapshotArrivalMs: 0,
+    snapshotJitterMs: 0,
+    snapshotIntervals: [],
+    pongRttMs: 0,
+    renderDelayMs: 0,
+    clockOffsetMs: 0,
+    droppedSnapshots: 0,
+    updateIntervalMs: 250,
+    lastUpdateMs: 0,
+};
+
 const canvas = document.getElementById('game');
 const renderer = createRenderer(canvas);
 const camera = createCamera();
@@ -83,6 +102,8 @@ const objectiveTargetVec = new THREE.Vector3();
 
 window._cam = camera;
 init(canvas);
+
+telemetry.el = document.getElementById('debug-overlay');
 
 // Muzzle flash dynamic point light (reusable, intensity toggled)
 const muzzleFlashLight = new THREE.PointLight(0xffe080, 0, 8, 2);
@@ -1411,6 +1432,13 @@ if (leaveMatchBtn) {
 }
 
 window.addEventListener('keydown', (e) => {
+    if (e.code === 'F3') {
+        e.preventDefault();
+        telemetry.enabled = !telemetry.enabled;
+        if (telemetry.el) telemetry.el.style.display = telemetry.enabled ? 'block' : 'none';
+        return;
+    }
+
     if (isEditableTarget(e.target)) {
         return;
     }
@@ -1659,8 +1687,20 @@ net.onChat = (msg) => {
     pushChatMessage(msg);
 };
 
+net.onSnapshotArrival = (receivedAt) => {
+    const now = receivedAt;
+    if (telemetry.lastSnapshotArrivalMs > 0) {
+        const interval = now - telemetry.lastSnapshotArrivalMs;
+        telemetry.snapshotIntervals.push(interval);
+        if (telemetry.snapshotIntervals.length > 60) telemetry.snapshotIntervals.shift();
+    }
+    telemetry.lastSnapshotArrivalMs = now;
+    telemetry.snapshotCount++;
+};
+
 function frame(time) {
     requestAnimationFrame(frame);
+    const frameStart = performance.now();
 
     const dt = Math.min((time - lastTime) / 1000, 0.05);
     lastTime = time;
@@ -1856,11 +1896,11 @@ function frame(time) {
 
         // Projectiles + effects still go through vertex pool
         worldDynamicVerts.length = 0;
-        appendVerts(worldDynamicVerts, buildProjectileVerts(net.projectiles));
+        buildProjectileVerts(worldDynamicVerts, net.projectiles);
         mergedEffects.length = 0;
         appendItems(mergedEffects, net.effects);
         appendItems(mergedEffects, localImpactEffects);
-        appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects));
+        buildEffectVerts(worldDynamicVerts, mergedEffects);
 
         updateVertPool(renderer.dynamicVertPool, worldDynamicVerts);
 
@@ -1938,11 +1978,41 @@ function frame(time) {
         crosshairOffsetY: getCrosshairOffsetY(weapon),
         objectiveMarkers: buildObjectiveMarkers(),
     });
-}
 
-function appendVerts(target, source) {
-    for (let i = 0; i < source.length; i += 1) {
-        target.push(source[i]);
+    const frameEnd = performance.now();
+    telemetry.frameTimeMs = frameEnd - frameStart;
+    telemetry.frameTimeAvgMs = telemetry.frameTimeAvgMs * 0.9 + telemetry.frameTimeMs * 0.1;
+
+    if (telemetry.enabled && telemetry.el && frameEnd - telemetry.lastUpdateMs > telemetry.updateIntervalMs) {
+        telemetry.lastUpdateMs = frameEnd;
+
+        const jitterArr = telemetry.snapshotIntervals;
+        let jitter = 0;
+        if (jitterArr.length > 1) {
+            const mean = jitterArr.reduce((a, b) => a + b, 0) / jitterArr.length;
+            jitter = Math.sqrt(jitterArr.reduce((a, b) => a + (b - mean) ** 2, 0) / jitterArr.length);
+        }
+
+        const elapsed = frameEnd - telemetry.snapshotCountResetAt;
+        const snapRate = telemetry.snapshotCount / (elapsed / 1000);
+        if (elapsed > 2000) {
+            telemetry.snapshotsPerSec = Math.round(snapRate);
+            telemetry.snapshotCount = 0;
+            telemetry.snapshotCountResetAt = frameEnd;
+        }
+
+        const dcStatus = net.dcLatencyMs != null
+            ? `${net.dcLatencyMs}ms`
+            : (net.rtc.ready ? 'waiting' : 'off');
+        telemetry.el.textContent = [
+            `frame: ${telemetry.frameTimeMs.toFixed(1)}ms (avg ${telemetry.frameTimeAvgMs.toFixed(1)}ms)`,
+            `tcp:   ${Math.round(net.latencyMs ?? 0)}ms`,
+            `udp:   ${dcStatus}`,
+            `clock: ${Math.round(net.serverClockOffsetMs)}ms offset`,
+            `snap:  ${telemetry.snapshotsPerSec}/s  jitter: ${jitter.toFixed(1)}ms`,
+            `render delay: ${Math.round(getAdaptiveRenderDelay(net))}ms`,
+            `players: ${Object.keys(net.players).length}`,
+        ].join('\n');
     }
 }
 

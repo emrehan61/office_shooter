@@ -1,61 +1,53 @@
-import { boxVerts } from './renderer.js';
+import { boxVertsInto } from './renderer.js';
 import { UTILITY_BOMB, UTILITY_FLASHBANG, UTILITY_SMOKE } from './economy.js';
 
-export function buildProjectileVerts(projectiles = []) {
-    const verts = [];
-
+export function buildProjectileVerts(out, projectiles = []) {
     for (const projectile of projectiles) {
         if (!projectile?.pos || !projectile?.type) continue;
 
         if (projectile.type === UTILITY_BOMB) {
-            appendCube(verts, projectile.pos, 0.12, 5);
-            appendCube(verts, [projectile.pos[0], projectile.pos[1] + 0.12, projectile.pos[2]], 0.03, 4);
+            appendCube(out, projectile.pos, 0.12, 5);
+            appendCube(out, [projectile.pos[0], projectile.pos[1] + 0.12, projectile.pos[2]], 0.03, 4);
             continue;
         }
 
         if (projectile.type === UTILITY_SMOKE) {
-            appendBox(verts, projectile.pos, 0.08, 0.14, 0.08, 13);
-            appendBox(verts, [projectile.pos[0], projectile.pos[1] + 0.11, projectile.pos[2]], 0.09, 0.02, 0.09, 3);
+            appendBox(out, projectile.pos, 0.08, 0.14, 0.08, 13);
+            appendBox(out, [projectile.pos[0], projectile.pos[1] + 0.11, projectile.pos[2]], 0.09, 0.02, 0.09, 3);
             continue;
         }
 
         if (projectile.type === UTILITY_FLASHBANG) {
-            appendBox(verts, projectile.pos, 0.07, 0.13, 0.07, 4);
-            appendBox(verts, [projectile.pos[0], projectile.pos[1], projectile.pos[2]], 0.075, 0.12, 0.075, 3);
+            appendBox(out, projectile.pos, 0.07, 0.13, 0.07, 4);
+            appendBox(out, [projectile.pos[0], projectile.pos[1], projectile.pos[2]], 0.075, 0.12, 0.075, 3);
             continue;
         }
     }
-
-    return verts;
 }
 
-export function buildEffectVerts(effects = []) {
-    const verts = [];
-
+export function buildEffectVerts(out, effects = []) {
     for (const effect of effects) {
         if (!effect?.pos || !effect?.type) continue;
         if (effect.type === 'smoke') {
-            appendSmokeCloud(verts, effect.pos, effect.radius || 9);
+            appendSmokeCloud(out, effect.pos, effect.radius || 9);
             continue;
         }
         if (effect.type === 'bomb') {
-            appendBombBlast(verts, effect.pos, effect.radius || 6, effect.timeLeftMs || 0);
+            appendBombBlast(out, effect.pos, effect.radius || 6, effect.timeLeftMs || 0);
             continue;
         }
         if (effect.type === 'impact') {
-            appendImpactMarker(verts, effect.pos, effect.timeLeftMs || 0);
+            appendImpactMarker(out, effect.pos, effect.timeLeftMs || 0);
         }
     }
-
-    return verts;
 }
 
 function appendCube(out, pos, halfSize, mat) {
-    out.push(...boxVerts(pos[0], pos[1], pos[2], halfSize, halfSize, halfSize, mat));
+    boxVertsInto(out, pos[0], pos[1], pos[2], halfSize, halfSize, halfSize, mat);
 }
 
 function appendBox(out, pos, hx, hy, hz, mat) {
-    out.push(...boxVerts(pos[0], pos[1], pos[2], hx, hy, hz, mat));
+    boxVertsInto(out, pos[0], pos[1], pos[2], hx, hy, hz, mat);
 }
 
 function appendSmokeCloud(out, pos, radius) {

@@ -1347,25 +1347,34 @@ function appendPart(out, verts, tx, ty, tz, rx, ry, rz) {
     const sinZ = Math.sin(rz);
     const cosZ = Math.cos(rz);
 
-    for (let i = 0; i < verts.length; i += 6) {
+    for (let i = 0; i < verts.length; i += 9) {
         let x = verts[i];
         let y = verts[i + 1];
         let z = verts[i + 2];
+        let nx = verts[i + 6];
+        let ny = verts[i + 7];
+        let nz = verts[i + 8];
 
-        const yx = y * cosX - z * sinX;
-        const zx = y * sinX + z * cosX;
-        y = yx;
-        z = zx;
+        let yx = y * cosX - z * sinX;
+        let zx = y * sinX + z * cosX;
+        y = yx; z = zx;
+        let nyx = ny * cosX - nz * sinX;
+        let nzx = ny * sinX + nz * cosX;
+        ny = nyx; nz = nzx;
 
-        const xy = x * cosY + z * sinY;
-        const zy = -x * sinY + z * cosY;
-        x = xy;
-        z = zy;
+        let xy = x * cosY + z * sinY;
+        let zy = -x * sinY + z * cosY;
+        x = xy; z = zy;
+        let nxy = nx * cosY + nz * sinY;
+        let nzy = -nx * sinY + nz * cosY;
+        nx = nxy; nz = nzy;
 
-        const xz = x * cosZ - y * sinZ;
-        const yz = x * sinZ + y * cosZ;
-        x = xz;
-        y = yz;
+        let xz = x * cosZ - y * sinZ;
+        let yz = x * sinZ + y * cosZ;
+        x = xz; y = yz;
+        let nxz = nx * cosZ - ny * sinZ;
+        let nyz = nx * sinZ + ny * cosZ;
+        nx = nxz; ny = nyz;
 
         out.push(
             x + tx,
@@ -1373,7 +1382,8 @@ function appendPart(out, verts, tx, ty, tz, rx, ry, rz) {
             z + tz,
             verts[i + 3],
             verts[i + 4],
-            verts[i + 5]
+            verts[i + 5],
+            nx, ny, nz
         );
     }
 }

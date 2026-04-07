@@ -10,7 +10,8 @@ export const MSG_THROW  = 0x04;
 export const MSG_RELOAD = 0x05;
 export const MSG_SWITCH = 0x06;
 export const MSG_BUY    = 0x07;
-export const MSG_PING   = 0x0F;
+export const MSG_PING    = 0x0F;
+export const MSG_DC_PING = 0x10;
 
 // Server → Client
 const MSG_DELTA_STATE = 0x81;
@@ -22,6 +23,7 @@ const MSG_HIT     = 0x86;
 const MSG_KILL    = 0x87;
 const MSG_RESPAWN = 0x88;
 const MSG_PONG    = 0x8A;
+const MSG_DC_PONG = 0x8B;
 
 // ─── Weapon ID enum ────────────────────────────────────────────────────────
 
@@ -91,6 +93,80 @@ const BYTE_MODE = ['team', 'deathmatch', 'hostage', 'ctf'];
 
 const BYTE_HITZONE = ['body', 'head'];
 const BYTE_EFFECT  = ['bomb', 'smoke'];
+
+// ─── Object pool for full-state decode path ───────────────────────────────
+
+const MAX_POOLED_PLAYERS = 32;
+const MAX_POOLED_PROJECTILES = 64;
+const MAX_POOLED_EFFECTS = 16;
+
+function createPlayerState() {
+    return {
+        pos: [0, 0, 0],
+        yaw: 0, pitch: 0, crouching: false, hp: 0, armor: 0, credits: 0, team: '',
+        kills: 0, deaths: 0, alive: false, inMatch: false, isBot: false, reloading: false,
+        pistolWeapon: '', pistolClip: 0, pistolReserve: 0,
+        heavyWeapon: '', heavyClip: 0, heavyReserve: 0,
+        bombs: 0, smokes: 0, flashbangs: 0,
+        flashTimeLeftMs: 0, spawnProtectionTimeLeftMs: 0, loadoutTimeLeftMs: 0,
+        activeWeapon: '', reloadTimeLeftMs: 0,
+    };
+}
+
+function createProjectile() {
+    return { id: 0, type: '', pos: [0, 0, 0] };
+}
+
+function createEffect() {
+    return { type: '', pos: [0, 0, 0], radius: 0, timeLeftMs: 0 };
+}
+
+const _playerPool = [];
+for (let i = 0; i < MAX_POOLED_PLAYERS; i++) _playerPool.push(createPlayerState());
+
+const _projectilePool = [];
+for (let i = 0; i < MAX_POOLED_PROJECTILES; i++) _projectilePool.push(createProjectile());
+
+const _effectPool = [];
+for (let i = 0; i < MAX_POOLED_EFFECTS; i++) _effectPool.push(createEffect());
+
+const _stateResult = {
+    t: '',
+    snapshotSeq: 0,
+    serverTime: 0,
+    players: {},
+    projectiles: [],
+    effects: [],
+    match: {
+        mode: '', currentRound: 0, totalRounds: 0, roundTimeLeftMs: 0, buyTimeLeftMs: 0,
+        buyPhase: false, intermission: false, intermissionTimeLeftMs: 0, roundWinner: '',
+        blueScore: 0, greenScore: 0, blueAlive: 0, greenAlive: 0,
+        deathmatchVoteActive: false, deathmatchVoteTimeLeftMs: 0,
+        hostages: [], flags: [], blueCTFCaptures: 0, greenCTFCaptures: 0,
+        rescueZones: [], healthRestorePoints: [],
+    },
+};
+
+function getPooledPlayer(index) {
+    if (index < _playerPool.length) return _playerPool[index];
+    const p = createPlayerState();
+    _playerPool.push(p);
+    return p;
+}
+
+function getPooledProjectile(index) {
+    if (index < _projectilePool.length) return _projectilePool[index];
+    const p = createProjectile();
+    _projectilePool.push(p);
+    return p;
+}
+
+function getPooledEffect(index) {
+    if (index < _effectPool.length) return _effectPool[index];
+    const e = createEffect();
+    _effectPool.push(e);
+    return e;
+}
 
 // ─── Quantization ──────────────────────────────────────────────────────────
 
@@ -180,7 +256,15 @@ export function encodePing(clientTime) {
     const buf = new ArrayBuffer(9);
     const v = new DataView(buf);
     v.setUint8(0, MSG_PING);
-    // Write int64 as two uint32s (JS doesn't have native int64)
+    v.setUint32(1, clientTime & 0xFFFFFFFF, true);
+    v.setUint32(5, Math.floor(clientTime / 0x100000000) & 0xFFFFFFFF, true);
+    return buf;
+}
+
+export function encodeDCPing(clientTime) {
+    const buf = new ArrayBuffer(9);
+    const v = new DataView(buf);
+    v.setUint8(0, MSG_DC_PING);
     v.setUint32(1, clientTime & 0xFFFFFFFF, true);
     v.setUint32(5, Math.floor(clientTime / 0x100000000) & 0xFFFFFFFF, true);
     return buf;
@@ -203,6 +287,7 @@ export function decodeMessage(buffer) {
         case MSG_KILL:  return decodeKill(v);
         case MSG_RESPAWN: return decodeRespawn(v);
         case MSG_PONG:  return decodePong(v);
+        case MSG_DC_PONG: return decodeDCPong(v);
         case MSG_INPUT_ACK: return decodeInputAck(v);
         default: return null;
     }
@@ -214,53 +299,45 @@ function readInt64(v, off) {
     return hi * 0x100000000 + lo;
 }
 
-function decodePlayerStateBlock(v, off) {
+function decodePlayerStateBlock(v, off, out) {
     const id = v.getUint8(off);
-    const posX = dequantizePosXZ(v.getInt16(off + 1, true));
-    const posY = dequantizePosY(v.getInt16(off + 3, true));
-    const posZ = dequantizePosXZ(v.getInt16(off + 5, true));
-    const yaw = dequantizeYaw(v.getUint16(off + 7, true));
-    const pitch = dequantizePitch(v.getInt16(off + 9, true));
-    const hp = v.getUint8(off + 11);
-    const armor = v.getUint8(off + 12);
-    const credits = v.getUint16(off + 13, true);
-    const team = BYTE_TEAM[v.getUint8(off + 15)] || '';
-    const kills = v.getUint16(off + 16, true);
-    const deaths = v.getUint16(off + 18, true);
-    const flags = v.getUint8(off + 20);
-    const crouching = !!(flags & 0x01);
-    const alive = !!(flags & 0x02);
-    const inMatch = !!(flags & 0x04);
-    const isBot = !!(flags & 0x08);
-    const reloading = !!(flags & 0x10);
-    const pistolWeapon = byteToWeapon(v.getUint8(off + 21));
-    const pistolClip = v.getUint8(off + 22);
-    const pistolReserve = v.getUint8(off + 23);
-    const heavyWeapon = byteToWeapon(v.getUint8(off + 24));
-    const heavyClip = v.getUint8(off + 25);
-    const heavyReserve = v.getUint8(off + 26);
-    const bombs = v.getUint8(off + 27);
-    const smokes = v.getUint8(off + 28);
-    const flashbangs = v.getUint8(off + 29);
-    const flashTimeLeftMs = v.getUint16(off + 30, true) * 100;
-    const spawnProtectionTimeLeftMs = v.getUint16(off + 32, true) * 100;
-    const loadoutTimeLeftMs = v.getUint16(off + 34, true) * 100;
-    const activeWeapon = byteToWeapon(v.getUint8(off + 36));
-    const reloadTimeLeftMs = v.getUint16(off + 37, true) * 100;
+    const state = out || createPlayerState();
+    writePlayerStateFields(state, v, off + 1);
+    return { id, state };
+}
 
-    return {
-        id,
-        state: {
-            pos: [posX, posY, posZ],
-            yaw, pitch, crouching, hp, armor, credits, team,
-            kills, deaths, alive, inMatch, isBot, reloading,
-            pistolWeapon, pistolClip, pistolReserve,
-            heavyWeapon, heavyClip, heavyReserve,
-            bombs, smokes, flashbangs,
-            flashTimeLeftMs, spawnProtectionTimeLeftMs, loadoutTimeLeftMs,
-            activeWeapon, reloadTimeLeftMs,
-        },
-    };
+function writePlayerStateFields(s, v, off) {
+    s.pos[0] = dequantizePosXZ(v.getInt16(off, true));
+    s.pos[1] = dequantizePosY(v.getInt16(off + 2, true));
+    s.pos[2] = dequantizePosXZ(v.getInt16(off + 4, true));
+    s.yaw = dequantizeYaw(v.getUint16(off + 6, true));
+    s.pitch = dequantizePitch(v.getInt16(off + 8, true));
+    s.hp = v.getUint8(off + 10);
+    s.armor = v.getUint8(off + 11);
+    s.credits = v.getUint16(off + 12, true);
+    s.team = BYTE_TEAM[v.getUint8(off + 14)] || '';
+    s.kills = v.getUint16(off + 15, true);
+    s.deaths = v.getUint16(off + 17, true);
+    const flags = v.getUint8(off + 19);
+    s.crouching = !!(flags & 0x01);
+    s.alive = !!(flags & 0x02);
+    s.inMatch = !!(flags & 0x04);
+    s.isBot = !!(flags & 0x08);
+    s.reloading = !!(flags & 0x10);
+    s.pistolWeapon = byteToWeapon(v.getUint8(off + 20));
+    s.pistolClip = v.getUint8(off + 21);
+    s.pistolReserve = v.getUint8(off + 22);
+    s.heavyWeapon = byteToWeapon(v.getUint8(off + 23));
+    s.heavyClip = v.getUint8(off + 24);
+    s.heavyReserve = v.getUint8(off + 25);
+    s.bombs = v.getUint8(off + 26);
+    s.smokes = v.getUint8(off + 27);
+    s.flashbangs = v.getUint8(off + 28);
+    s.flashTimeLeftMs = v.getUint16(off + 29, true) * 100;
+    s.spawnProtectionTimeLeftMs = v.getUint16(off + 31, true) * 100;
+    s.loadoutTimeLeftMs = v.getUint16(off + 33, true) * 100;
+    s.activeWeapon = byteToWeapon(v.getUint8(off + 35));
+    s.reloadTimeLeftMs = v.getUint16(off + 36, true) * 100;
 }
 
 const PLAYER_BLOCK_SIZE = 39;
@@ -280,33 +357,40 @@ function decodeState(v, msgType) {
     const projectileCount = v.getUint8(off); off++;
     const effectCount = v.getUint8(off); off++;
 
-    const players = {};
+    const players = _stateResult.players;
+    for (const k in players) delete players[k];
     for (let i = 0; i < playerCount; i++) {
-        const { id, state } = decodePlayerStateBlock(v, off);
-        players[id] = state;
+        const id = v.getUint8(off);
+        const pooled = getPooledPlayer(i);
+        writePlayerStateFields(pooled, v, off + 1);
+        players[id] = pooled;
         off += PLAYER_BLOCK_SIZE;
     }
 
-    const projectiles = [];
+    const projectiles = _stateResult.projectiles;
     for (let i = 0; i < projectileCount; i++) {
-        const id = v.getUint8(off); off++;
-        const type = byteToWeapon(v.getUint8(off)); off++;
-        const px = dequantizePosXZ(v.getInt16(off, true)); off += 2;
-        const py = dequantizePosY(v.getInt16(off, true)); off += 2;
-        const pz = dequantizePosXZ(v.getInt16(off, true)); off += 2;
-        projectiles.push({ id, type, pos: [px, py, pz] });
+        const proj = getPooledProjectile(i);
+        proj.id = v.getUint8(off); off++;
+        proj.type = byteToWeapon(v.getUint8(off)); off++;
+        proj.pos[0] = dequantizePosXZ(v.getInt16(off, true)); off += 2;
+        proj.pos[1] = dequantizePosY(v.getInt16(off, true)); off += 2;
+        proj.pos[2] = dequantizePosXZ(v.getInt16(off, true)); off += 2;
+        projectiles[i] = proj;
     }
+    projectiles.length = projectileCount;
 
-    const effects = [];
+    const effects = _stateResult.effects;
     for (let i = 0; i < effectCount; i++) {
-        const type = BYTE_EFFECT[v.getUint8(off)] || 'bomb'; off++;
-        const ex = dequantizePosXZ(v.getInt16(off, true)); off += 2;
-        const ey = dequantizePosY(v.getInt16(off, true)); off += 2;
-        const ez = dequantizePosXZ(v.getInt16(off, true)); off += 2;
-        const radius = v.getUint8(off) / 10; off++;
-        const timeLeftMs = v.getUint16(off, true); off += 2;
-        effects.push({ type, pos: [ex, ey, ez], radius, timeLeftMs });
+        const eff = getPooledEffect(i);
+        eff.type = BYTE_EFFECT[v.getUint8(off)] || 'bomb'; off++;
+        eff.pos[0] = dequantizePosXZ(v.getInt16(off, true)); off += 2;
+        eff.pos[1] = dequantizePosY(v.getInt16(off, true)); off += 2;
+        eff.pos[2] = dequantizePosXZ(v.getInt16(off, true)); off += 2;
+        eff.radius = v.getUint8(off) / 10; off++;
+        eff.timeLeftMs = v.getUint16(off, true); off += 2;
+        effects[i] = eff;
     }
+    effects.length = effectCount;
 
     // Match state
     const mode = BYTE_MODE[v.getUint8(off)] || 'team'; off++;
@@ -332,7 +416,8 @@ function decodeState(v, msgType) {
     const rescueZoneCount = v.getUint8(off); off++;
     const healthRestoreCount = v.getUint8(off); off++;
 
-    const hostages = [];
+    const hostages = _stateResult.match.hostages;
+    hostages.length = 0;
     for (let i = 0; i < hostageCount; i++) {
         const hid = v.getUint8(off); off++;
         const hx = dequantizePosXZ(v.getInt16(off, true)); off += 2;
@@ -349,7 +434,8 @@ function decodeState(v, msgType) {
         });
     }
 
-    const flags = [];
+    const flags = _stateResult.match.flags;
+    flags.length = 0;
     for (let i = 0; i < flagCount; i++) {
         const fTeam = BYTE_TEAM[v.getUint8(off)] || ''; off++;
         const fx = dequantizePosXZ(v.getInt16(off, true)); off += 2;
@@ -370,7 +456,8 @@ function decodeState(v, msgType) {
         });
     }
 
-    const rescueZones = [];
+    const rescueZones = _stateResult.match.rescueZones;
+    rescueZones.length = 0;
     for (let i = 0; i < rescueZoneCount; i++) {
         const rx = dequantizePosXZ(v.getInt16(off, true)); off += 2;
         const rz = dequantizePosXZ(v.getInt16(off, true)); off += 2;
@@ -378,7 +465,8 @@ function decodeState(v, msgType) {
         rescueZones.push({ cx: rx, cz: rz, radius: rRadius });
     }
 
-    const healthRestorePoints = [];
+    const healthRestorePoints = _stateResult.match.healthRestorePoints;
+    healthRestorePoints.length = 0;
     for (let i = 0; i < healthRestoreCount; i++) {
         const hpx = dequantizePosXZ(v.getInt16(off, true)); off += 2;
         const hpz = dequantizePosXZ(v.getInt16(off, true)); off += 2;
@@ -394,24 +482,30 @@ function decodeState(v, msgType) {
         });
     }
 
-    const match = {
-        mode, currentRound, totalRounds, roundTimeLeftMs, buyTimeLeftMs,
-        buyPhase, intermission, intermissionTimeLeftMs, roundWinner,
-        blueScore, greenScore, blueAlive, greenAlive,
-        deathmatchVoteActive, deathmatchVoteTimeLeftMs,
-        hostages, flags, blueCTFCaptures, greenCTFCaptures,
-        rescueZones, healthRestorePoints,
-    };
+    const match = _stateResult.match;
+    match.mode = mode;
+    match.currentRound = currentRound;
+    match.totalRounds = totalRounds;
+    match.roundTimeLeftMs = roundTimeLeftMs;
+    match.buyTimeLeftMs = buyTimeLeftMs;
+    match.buyPhase = buyPhase;
+    match.intermission = intermission;
+    match.intermissionTimeLeftMs = intermissionTimeLeftMs;
+    match.roundWinner = roundWinner;
+    match.blueScore = blueScore;
+    match.greenScore = greenScore;
+    match.blueAlive = blueAlive;
+    match.greenAlive = greenAlive;
+    match.deathmatchVoteActive = deathmatchVoteActive;
+    match.deathmatchVoteTimeLeftMs = deathmatchVoteTimeLeftMs;
+    match.blueCTFCaptures = blueCTFCaptures;
+    match.greenCTFCaptures = greenCTFCaptures;
 
-    return {
-        t: msgType,
-        snapshotSeq,
-        serverTime,
-        players,
-        projectiles,
-        effects,
-        match,
-    };
+    _stateResult.t = msgType;
+    _stateResult.snapshotSeq = snapshotSeq;
+    _stateResult.serverTime = serverTime;
+
+    return _stateResult;
 }
 
 // Delta field groups: maps each bit in the 16-bit changed mask to byte ranges
@@ -435,50 +529,10 @@ const DELTA_FIELD_GROUPS = [
     [36, 38], // bit 15: reload timer
 ];
 
-// Dequantize a full 38-byte player state block from a DataView at the given offset.
-function dequantizePlayerBlock(v, off) {
-    const posX = dequantizePosXZ(v.getInt16(off + 0, true));
-    const posY = dequantizePosY(v.getInt16(off + 2, true));
-    const posZ = dequantizePosXZ(v.getInt16(off + 4, true));
-    const yaw = dequantizeYaw(v.getUint16(off + 6, true));
-    const pitch = dequantizePitch(v.getInt16(off + 8, true));
-    const hp = v.getUint8(off + 10);
-    const armor = v.getUint8(off + 11);
-    const credits = v.getUint16(off + 12, true);
-    const team = BYTE_TEAM[v.getUint8(off + 14)] || '';
-    const kills = v.getUint16(off + 15, true);
-    const deaths = v.getUint16(off + 17, true);
-    const flags = v.getUint8(off + 19);
-    const crouching = !!(flags & 0x01);
-    const alive = !!(flags & 0x02);
-    const inMatch = !!(flags & 0x04);
-    const isBot = !!(flags & 0x08);
-    const reloading = !!(flags & 0x10);
-    const pistolWeapon = byteToWeapon(v.getUint8(off + 20));
-    const pistolClip = v.getUint8(off + 21);
-    const pistolReserve = v.getUint8(off + 22);
-    const heavyWeapon = byteToWeapon(v.getUint8(off + 23));
-    const heavyClip = v.getUint8(off + 24);
-    const heavyReserve = v.getUint8(off + 25);
-    const bombs = v.getUint8(off + 26);
-    const smokes = v.getUint8(off + 27);
-    const flashbangs = v.getUint8(off + 28);
-    const flashTimeLeftMs = v.getUint16(off + 29, true) * 100;
-    const spawnProtectionTimeLeftMs = v.getUint16(off + 31, true) * 100;
-    const loadoutTimeLeftMs = v.getUint16(off + 33, true) * 100;
-    const activeWeapon = byteToWeapon(v.getUint8(off + 35));
-    const reloadTimeLeftMs = v.getUint16(off + 36, true) * 100;
-
-    return {
-        pos: [posX, posY, posZ],
-        yaw, pitch, crouching, hp, armor, credits, team,
-        kills, deaths, alive, inMatch, isBot, reloading,
-        pistolWeapon, pistolClip, pistolReserve,
-        heavyWeapon, heavyClip, heavyReserve,
-        bombs, smokes, flashbangs,
-        flashTimeLeftMs, spawnProtectionTimeLeftMs, loadoutTimeLeftMs,
-        activeWeapon, reloadTimeLeftMs,
-    };
+function dequantizePlayerBlock(v, off, out) {
+    const s = out || createPlayerState();
+    writePlayerStateFields(s, v, off);
+    return s;
 }
 
 // Apply a delta to an existing player state object.  For each set bit in
@@ -768,6 +822,14 @@ function decodeRespawn(v) {
 function decodePong(v) {
     return {
         t: 'pong',
+        clientTime: readInt64(v, 1),
+        serverTime: readInt64(v, 9),
+    };
+}
+
+function decodeDCPong(v) {
+    return {
+        t: 'dcPong',
         clientTime: readInt64(v, 1),
         serverTime: readInt64(v, 9),
     };
