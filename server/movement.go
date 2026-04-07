@@ -123,13 +123,28 @@ func (g *Game) simulateMovement(idx int, cmd InputCommand, dt float64) {
 
 	// Vertical physics.
 	if onGround {
-		pos[1] = eyeHeight
-		velY = 0
-	} else {
+		footY := pos[1] - eyeHeight
+		groundHeight := g.groundHeightAt(pos[0], pos[2], footY+worldStepHeight)
+		if footY-groundHeight > worldStepDown {
+			onGround = false
+		} else {
+			pos[1] = groundHeight + eyeHeight
+			velY = 0
+		}
+	}
+	if !onGround {
+		prevHeadY := pos[1] + playerHeadClearance
 		velY += gravity * dt
 		pos[1] += velY * dt
-		if pos[1] <= eyeHeight {
-			pos[1] = eyeHeight
+		if velY > 0 {
+			if ceilingHeight, ok := g.ceilingHeightAt(pos[0], pos[2], prevHeadY, pos[1]+playerHeadClearance); ok {
+				pos[1] = ceilingHeight - playerHeadClearance
+				velY = 0
+			}
+		}
+		landingHeight := g.groundHeightAt(pos[0], pos[2], pos[1]-eyeHeight)
+		if pos[1] <= landingHeight+eyeHeight {
+			pos[1] = landingHeight + eyeHeight
 			velY = 0
 			onGround = true
 		}
@@ -143,7 +158,7 @@ func (g *Game) simulateMovement(idx int, cmd InputCommand, dt float64) {
 	}
 
 	// Wall / box collision (reuse existing server implementation).
-	g.collideWalls(&pos)
+	g.collideWalls(&pos, eyeHeight)
 
 	// Arena bounds clamp (matches client player.js:204-205, using arenaSize-0.5).
 	limit := g.mapArenaSize - 0.5

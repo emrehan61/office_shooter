@@ -49,6 +49,7 @@ const MATERIAL_DEFS = {
 const materialCache = new Map();
 const aoMaterialCache = new Map();
 const normalMapCache = new Map();
+const colorMapCache = new Map();
 const puddleMaterialCache = new Map();
 let envMap = null;
 
@@ -56,6 +57,28 @@ const INDOOR_FOG_COLOR = 0x1a1e28;
 const OUTDOOR_CLEAR_COLOR = 0x87b8e8;
 const INDOOR_DIRLIGHT_POS = [6, 16, 4];
 const DEFAULT_SUN_DIRECTION = new THREE.Vector3(0.72, 0.58, -0.36).normalize();
+const MATERIAL_TEXTURE_DEFS = {
+    0:  { type: 'wall', tileSize: 2.6 },
+    1:  { type: 'carpet', tileSize: 2.2 },
+    2:  { type: 'ceiling', tileSize: 2.4 },
+    3:  { type: 'metal', tileSize: 1.8 },
+    14: { type: 'wood', tileSize: 1.25 },
+    23: { type: 'sandstone', tileSize: 4.5 },
+    24: { type: 'sand', tileSize: 4.0 },
+    25: { type: 'crate_wood', tileSize: 1.1 },
+    26: { type: 'warehouse_brick', tileSize: 1.5 },
+    27: { type: 'concrete', tileSize: 3.0 },
+    28: { type: 'metal_container', tileSize: 2.4 },
+    29: { type: 'pool_tile', tileSize: 1.0 },
+};
+
+export function getMaterialTextureTileSize(matID) {
+    return MATERIAL_TEXTURE_DEFS[matID]?.tileSize ?? 2.0;
+}
+
+function getMaterialTextureDef(matID) {
+    return MATERIAL_TEXTURE_DEFS[matID] || null;
+}
 
 export function normalizeRendererSkyConfig(sky = {}) {
     const enabled = sky?.enabled === true;
@@ -430,6 +453,159 @@ function generateProceduralNormalMap(type) {
     return tex;
 }
 
+function clampColorByte(value) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function generateProceduralColorMap(type) {
+    if (colorMapCache.has(type)) return colorMapCache.get(type);
+
+    const size = 256;
+    const cvs = document.createElement('canvas');
+    cvs.width = size;
+    cvs.height = size;
+    const ctx = cvs.getContext('2d');
+    const imageData = ctx.createImageData(size, size);
+    const d = imageData.data;
+
+    const hash = (a, b) => {
+        const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+        return h - Math.floor(h);
+    };
+
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const i = (y * size + x) * 4;
+            let r = 180;
+            let g = 180;
+            let b = 180;
+
+            if (type === 'carpet') {
+                const weave = (hash(x * 0.35, y * 0.35) - 0.5) * 18;
+                const rows = (Math.sin(y * 0.32) * 0.5 + 0.5) * 8;
+                const speck = hash(x * 2.7, y * 2.1) > 0.94 ? 16 : 0;
+                r = 34 + weave + rows;
+                g = 43 + weave * 0.8 + rows * 0.9;
+                b = 57 + weave * 0.7 + rows + speck;
+            } else if (type === 'wall') {
+                const panelX = x % 96;
+                const panelY = y % 48;
+                let shade = 0.94 + (hash(x * 0.5, y * 0.5) - 0.5) * 0.08;
+                if (panelX < 3 || panelX > 92) shade *= 0.78;
+                if (panelY < 2 || panelY > 46) shade *= 0.8;
+                const warm = 1 + (hash(x * 0.18 + 4, y * 0.12 + 9) - 0.5) * 0.05;
+                r = 202 * shade * warm;
+                g = 214 * shade;
+                b = 222 * shade * 0.99;
+            } else if (type === 'metal') {
+                const brushed = Math.sin(y * 0.9) * 10 + Math.sin(y * 3.6) * 4;
+                const wear = (hash(x * 0.7, y * 0.9) - 0.5) * 22;
+                r = 146 + brushed + wear;
+                g = 151 + brushed + wear;
+                b = 158 + brushed + wear * 0.8;
+            } else if (type === 'wood') {
+                const grain = Math.sin(y * 0.18 + Math.sin(x * 0.05) * 5) * 24;
+                const fine = Math.sin(y * 0.72 + x * 0.04) * 8;
+                const knot = Math.max(0, 1 - Math.hypot(x - 72, y - 188) / 28) * 35;
+                r = 112 + grain + fine - knot * 0.2;
+                g = 78 + grain * 0.7 + fine * 0.4 - knot * 0.35;
+                b = 45 + grain * 0.3 + fine * 0.15 - knot * 0.45;
+            } else if (type === 'ceiling') {
+                const tileX = x % 48;
+                const tileY = y % 48;
+                let shade = 232 + (hash(x * 0.8, y * 0.8) - 0.5) * 10;
+                if (tileX < 2 || tileX > 45 || tileY < 2 || tileY > 45) {
+                    shade -= 24;
+                }
+                r = shade;
+                g = shade + 2;
+                b = shade + 6;
+            } else if (type === 'sandstone') {
+                const blockX = x % 128;
+                const blockY = (y + (Math.floor(x / 128) % 2 === 0 ? 0 : 64)) % 64;
+                const mortar = blockX < 4 || blockX > 123 || blockY < 4 || blockY > 59;
+                const grain = (hash(x * 0.9, y * 0.9) - 0.5) * 26;
+                if (mortar) {
+                    r = 176 + grain * 0.3;
+                    g = 160 + grain * 0.3;
+                    b = 126 + grain * 0.25;
+                } else {
+                    r = 212 + grain;
+                    g = 190 + grain * 0.85;
+                    b = 142 + grain * 0.6;
+                }
+            } else if (type === 'sand') {
+                const grain = (hash(x * 2.7, y * 2.5) - 0.5) * 30;
+                const dune = (Math.sin(x * 0.06 + y * 0.04) * 0.5 + 0.5) * 14;
+                r = 198 + grain + dune;
+                g = 181 + grain * 0.9 + dune * 0.8;
+                b = 136 + grain * 0.55 + dune * 0.45;
+            } else if (type === 'crate_wood') {
+                const plankX = x % 64;
+                const seam = plankX < 3 || plankX > 60;
+                const grain = Math.sin(y * 0.22 + x * 0.03) * 22;
+                const scuff = (hash(x * 1.4, y * 1.1) - 0.5) * 18;
+                r = seam ? 92 : 126 + grain + scuff;
+                g = seam ? 62 : 91 + grain * 0.7 + scuff * 0.7;
+                b = seam ? 38 : 58 + grain * 0.35 + scuff * 0.35;
+            } else if (type === 'warehouse_brick') {
+                const brickX = x % 32;
+                const brickY = (y + (Math.floor(x / 32) % 2 === 0 ? 0 : 16)) % 16;
+                const mortar = brickX < 2 || brickX > 29 || brickY < 2 || brickY > 13;
+                const age = (hash(x * 1.1, y * 1.1) - 0.5) * 18;
+                if (mortar) {
+                    r = 154 + age * 0.2;
+                    g = 146 + age * 0.2;
+                    b = 138 + age * 0.2;
+                } else {
+                    r = 132 + age;
+                    g = 58 + age * 0.5;
+                    b = 46 + age * 0.35;
+                }
+            } else if (type === 'concrete') {
+                const mottled = (hash(x * 0.7, y * 0.8) - 0.5) * 24;
+                const cloud = Math.sin(x * 0.05) * Math.cos(y * 0.04) * 12;
+                r = 126 + mottled + cloud;
+                g = 131 + mottled * 0.9 + cloud;
+                b = 136 + mottled * 0.8 + cloud * 1.1;
+            } else if (type === 'metal_container') {
+                const corrugation = (Math.sin(x * 0.45) * 0.5 + 0.5) * 38;
+                const wear = (hash(x * 0.9, y * 0.8) - 0.5) * 16;
+                r = 39 + corrugation * 0.35 + wear;
+                g = 81 + corrugation * 0.45 + wear;
+                b = 101 + corrugation * 0.65 + wear;
+            } else if (type === 'pool_tile') {
+                const tileX = x % 16;
+                const tileY = y % 16;
+                const grout = tileX < 1 || tileX > 14 || tileY < 1 || tileY > 14;
+                const shimmer = (hash(x * 1.2, y * 1.2) - 0.5) * 10;
+                if (grout) {
+                    r = 210 + shimmer * 0.2;
+                    g = 220 + shimmer * 0.2;
+                    b = 224 + shimmer * 0.2;
+                } else {
+                    r = 154 + shimmer;
+                    g = 184 + shimmer;
+                    b = 191 + shimmer * 1.2;
+                }
+            }
+
+            d[i] = clampColorByte(r);
+            d[i + 1] = clampColorByte(g);
+            d[i + 2] = clampColorByte(b);
+            d[i + 3] = 255;
+        }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    colorMapCache.set(type, tex);
+    return tex;
+}
+
 // ─── Environment cubemap ───
 
 function generateEnvMap(renderer) {
@@ -544,11 +720,15 @@ export function getMaterial(matID) {
     if (materialCache.has(matID)) return materialCache.get(matID);
 
     const def = MATERIAL_DEFS[matID] || MATERIAL_DEFS[10];
+    const textureDef = getMaterialTextureDef(matID);
     const params = {
-        color: def.color,
+        color: textureDef ? 0xffffff : def.color,
         roughness: def.roughness,
         metalness: def.metalness,
     };
+    if (textureDef) {
+        params.map = generateProceduralColorMap(textureDef.type);
+    }
     if (def.emissive) {
         params.emissive = def.emissive;
         params.emissiveIntensity = def.emissiveIntensity || 1;
@@ -623,43 +803,17 @@ export function getAOMaterial(matID) {
 }
 
 export function createFloorMaterial(matID, aoTexture) {
-    const def = MATERIAL_DEFS[matID] || MATERIAL_DEFS[1];
-    const params = {
-        color: def.color,
-        roughness: def.roughness,
-        metalness: def.metalness,
-    };
-    if (envMap && def.metalness > 0.1) {
-        params.envMap = envMap;
-        params.envMapIntensity = 0.6;
-    }
+    const mat = getMaterial(matID).clone();
     if (aoTexture) {
-        params.lightMap = aoTexture;
-        params.lightMapIntensity = 1.0;
-    }
-    const mat = new THREE.MeshStandardMaterial(params);
-    // Apply normal map same as cached version
-    if (matID === 1) {
-        mat.normalMap = generateProceduralNormalMap('carpet');
-        mat.normalScale = new THREE.Vector2(0.5, 0.5);
-    } else if (matID === 14) {
-        mat.normalMap = generateProceduralNormalMap('wood');
-        mat.normalScale = new THREE.Vector2(0.7, 0.7);
-    } else if (matID === 24) {
-        mat.normalMap = generateProceduralNormalMap('sand');
-        mat.normalScale = new THREE.Vector2(0.8, 0.8);
-    } else if (matID === 27) {
-        mat.normalMap = generateProceduralNormalMap('concrete');
-        mat.normalScale = new THREE.Vector2(0.6, 0.6);
-    } else if (matID === 29) {
-        mat.normalMap = generateProceduralNormalMap('pool_tile');
-        mat.normalScale = new THREE.Vector2(0.8, 0.8);
+        mat.lightMap = aoTexture;
+        mat.lightMapIntensity = 1.0;
     }
     return mat;
 }
 
 export function createBoxMesh(cx, cy, cz, hx, hy, hz, matID) {
-    const geo = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
+    const geo = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2).toNonIndexed();
+    applyBoxUVTiling(geo, matID);
     const mat = getMaterial(matID);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(cx, cy, cz);
@@ -701,6 +855,45 @@ export function createPuddleMesh(cx, cz, radiusX, radiusZ, opacity = 0.58) {
     mesh.renderOrder = 6;
     mesh.userData.kind = 'puddle';
     return mesh;
+}
+
+function applyBoxUVTiling(geo, matID) {
+    const posAttr = geo.getAttribute('position');
+    if (!posAttr) return;
+    if (!geo.getAttribute('normal')) {
+        geo.computeVertexNormals();
+    }
+
+    const normalAttr = geo.getAttribute('normal');
+    const tileSize = getMaterialTextureTileSize(matID);
+    const uvs = new Float32Array(posAttr.count * 2);
+
+    for (let i = 0; i < posAttr.count; i++) {
+        const px = posAttr.getX(i);
+        const py = posAttr.getY(i);
+        const pz = posAttr.getZ(i);
+        const nx = Math.abs(normalAttr.getX(i));
+        const ny = Math.abs(normalAttr.getY(i));
+        const nz = Math.abs(normalAttr.getZ(i));
+
+        let u = 0;
+        let v = 0;
+        if (ny > 0.5) {
+            u = px / tileSize;
+            v = pz / tileSize;
+        } else if (nx > nz) {
+            u = pz / tileSize;
+            v = py / tileSize;
+        } else {
+            u = px / tileSize;
+            v = py / tileSize;
+        }
+
+        uvs[i * 2] = u;
+        uvs[i * 2 + 1] = v;
+    }
+
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
 }
 
 function createSkyDome() {
