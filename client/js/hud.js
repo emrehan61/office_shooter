@@ -265,9 +265,11 @@ const WEAPON_ICONS = {
         <rect x="30" y="11" width="2" height="4" fill="currentColor" opacity="0.5"/>
     </svg>`,
     bomb: `<svg viewBox="0 0 24 24" class="kill-weapon-icon kill-weapon-bomb">
-        <circle cx="12" cy="15" r="7" fill="currentColor"/>
-        <rect x="11" y="3" width="2" height="6" rx="1" fill="currentColor" opacity="0.7"/>
-        <circle cx="12" cy="3" r="2" fill="#ff4" opacity="0.9"/>
+        <circle cx="12" cy="12" r="9" fill="currentColor" opacity="0.9"/>
+        <circle cx="12" cy="12" r="2.3" fill="#111"/>
+        <path d="M12 4.2c1.8 0 3.2 1.5 3.2 3.3 0 0.7-0.2 1.3-0.6 1.8l2.8 1.6c1-1.7 2.8-2.8 4.8-2.8 0 0-1.3-3.9-5.5-5.6L12 4.2z" fill="#111"/>
+        <path d="M4 15.7c0-1.8 1.5-3.2 3.3-3.2 0.7 0 1.3 0.2 1.8 0.6l1.6-2.8c-1.7-1-2.8-2.8-2.8-4.8 0 0-3.9 1.3-5.6 5.5L4 15.7z" fill="#111"/>
+        <path d="M16.7 19.8c-1.8 0-3.2-1.5-3.2-3.3 0-0.7 0.2-1.3 0.6-1.8l-2.8-1.6c-1 1.7-2.8 2.8-4.8 2.8 0 0 1.3 3.9 5.5 5.6l4.7-1.7z" fill="#111"/>
     </svg>`,
 };
 
@@ -645,7 +647,7 @@ function updateLoadoutBar(hud, player) {
     const selectedUtilityLabel = isUtilityWeapon(player.activeWeapon)
         ? (WEAPON_DEFS[player.activeWeapon]?.label || 'Utility')
         : 'Utility';
-    const utilityStock = `B${getUtilityCount(player, UTILITY_BOMB)} S${getUtilityCount(player, UTILITY_SMOKE)} F${getUtilityCount(player, UTILITY_FLASHBANG)}`;
+    const utilityStock = `N${getUtilityCount(player, UTILITY_BOMB)} S${getUtilityCount(player, UTILITY_SMOKE)} F${getUtilityCount(player, UTILITY_FLASHBANG)}`;
 
     for (const slotEl of hud.loadoutSlots) {
         const slotId = slotEl.dataset.loadoutSlot;

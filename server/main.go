@@ -57,14 +57,15 @@ const (
 	projectileCeilingY          = 4.9
 	projectileFloorY            = 0.12
 	projectileFuseMS            = 1800
-	bombDamage                  = 100
-	bombRadius                  = 6.0
+	bombDamageMax               = 165
+	bombDamageMin               = 60
+	bombRadius                  = 10.5
 	flashbangRadius             = 12.0
 	flashbangDurationMS         = 3 * 1000
 	flashbangVisibleDot         = 0.2
 	smokeRadius                 = 9.0
 	smokeDurationMS             = 8 * 1000
-	bombEffectDurationMS        = 350
+	bombEffectDurationMS        = 650
 	botThinkIntervalMS          = 650
 	botPreferredRange           = 6.0
 	botAdvanceSpeed             = 4.8
@@ -2066,11 +2067,35 @@ func killRewardForWeapon(id WeaponID) int {
 	switch id {
 	case WeaponKnife:
 		return 1500
-	case WeaponBomb, WeaponSmoke, WeaponFlashbang:
+	case WeaponBomb:
+		return 600
+	case WeaponSmoke, WeaponFlashbang:
 		return 300
 	default:
 		return 300
 	}
+}
+
+func utilityDisplayLabel(id WeaponID) string {
+	switch id {
+	case WeaponBomb:
+		return "Nuke Grenade"
+	case WeaponSmoke:
+		return "Smoke Grenade"
+	case WeaponFlashbang:
+		return "Flashbang"
+	default:
+		return string(id)
+	}
+}
+
+func bombDamageAtDistance(dist float64) int {
+	if dist >= bombRadius {
+		return 0
+	}
+	falloff := dist / bombRadius
+	damage := float64(bombDamageMin) + (1-falloff)*float64(bombDamageMax-bombDamageMin)
+	return int(math.Round(damage))
 }
 
 func lossBonusForRound(currentRound, streak int) int {
@@ -3280,7 +3305,11 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 			continue
 		}
 
-		nextHP, nextArmor, absorbed := applyDamage(g.players.hp[idx], g.players.armor[idx], bombDamage)
+		damage := bombDamageAtDistance(dist)
+		if damage <= 0 {
+			continue
+		}
+		nextHP, nextArmor, absorbed := applyDamage(g.players.hp[idx], g.players.armor[idx], damage)
 		g.players.hp[idx] = nextHP
 		g.players.armor[idx] = nextArmor
 
@@ -3288,7 +3317,7 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 			"t":        "hit",
 			"from":     projectile.OwnerID,
 			"to":       playerID,
-			"dmg":      bombDamage,
+			"dmg":      damage,
 			"zone":     HitZoneBody,
 			"weapon":   WeaponBomb,
 			"hp":       nextHP,
@@ -3308,7 +3337,7 @@ func (g *Game) handleBombDetonationLocked(projectile projectileState, nowMS int6
 			g.players.kills[ownerIdx]++
 			rewardAmount := g.addCreditsLocked(ownerIdx, killRewardForWeapon(WeaponBomb))
 			if rewardAmount != 0 {
-				tm.addDirect(projectile.OwnerID, g.applyEconomyUpdateLocked(ownerIdx, true, "reward", string(WeaponBomb), "Explosion elimination reward", "", rewardAmount, nowMS))
+				tm.addDirect(projectile.OwnerID, g.applyEconomyUpdateLocked(ownerIdx, true, "reward", string(WeaponBomb), "Nuke elimination reward", "", rewardAmount, nowMS))
 			}
 		}
 		if normalizeMode(g.mode) == ModeDeathmatch {
@@ -3618,7 +3647,7 @@ func (g *Game) applyPurchaseLocked(idx int, item string, nowMS int64) economyUpd
 
 	switch item {
 	case "bomb":
-		return g.purchaseUtilityLocked(idx, item, "HE Grenade", 300, &g.players.bombs[idx], freeLoadout, nowMS)
+		return g.purchaseUtilityLocked(idx, item, "Nuke Grenade", 1800, &g.players.bombs[idx], freeLoadout, nowMS)
 	case "smoke":
 		return g.purchaseUtilityLocked(idx, item, "Smoke Grenade", 300, &g.players.smokes[idx], freeLoadout, nowMS)
 	case "flashbang":
@@ -4423,29 +4452,29 @@ func (g *Game) handleBinaryMessage(playerID int, sendCh chan []byte, buf []byte)
 		var update economyUpdate
 		switch {
 		case !g.players.inMatch[idx]:
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Join the next match first", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Join the next match first", 0, nowMS)
 		case !g.players.alive[idx]:
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Only alive players can throw utility", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Only alive players can throw utility", 0, nowMS)
 		case g.hasSpawnProtectionLocked(idx, nowMS):
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Spawn protection is still active", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Spawn protection is still active", 0, nowMS)
 		case g.isIntermissionLocked(nowMS):
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Round is over", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Round is over", 0, nowMS)
 		case nowMS < g.buyEndsAt:
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Buy time is still active", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Buy time is still active", 0, nowMS)
 		case !isUtilityWeaponID(weapon):
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Selected item is not throwable", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Selected item is not throwable", 0, nowMS)
 		case g.isReloadingLocked(idx, nowMS):
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Cannot throw while reloading", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Cannot throw while reloading", 0, nowMS)
 		case nowMS < g.players.nextAttackAt[idx]:
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "Utility is not ready yet", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "Utility is not ready yet", 0, nowMS)
 		case !g.spendUtilityLocked(idx, weapon):
-			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), "", "No utility remaining", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, false, "throw", string(weapon), utilityDisplayLabel(weapon), "No utility remaining", 0, nowMS)
 		default:
 			g.players.activeWeapon[idx] = weapon
 			g.players.nextAttackAt[idx] = nowMS + utilityThrowIntervalMS
 			g.spawnProjectileLocked(playerID, weapon, g.players.pos[idx], dir, nowMS)
 			g.players.activeWeapon[idx] = g.normalizeActiveWeaponLocked(idx, weapon)
-			update = g.applyEconomyUpdateLocked(idx, true, "throw", string(weapon), string(weapon), "", 0, nowMS)
+			update = g.applyEconomyUpdateLocked(idx, true, "throw", string(weapon), utilityDisplayLabel(weapon), "", 0, nowMS)
 		}
 		g.mu.Unlock()
 		queueJSON(sendCh, update)
