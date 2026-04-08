@@ -262,7 +262,6 @@ const (
 
 type Vec3 [3]float64
 
-
 type shootMessage struct {
 	Dir       Vec3     `json:"dir"`
 	ShotTime  int64    `json:"shotTime"`
@@ -332,73 +331,73 @@ type healthRestorePointJSON struct {
 }
 
 type healthRestorePointState struct {
-	X               float64
-	Z               float64
-	Radius          float64
-	HealAmount      int
-	CooldownEndsAt  int64
-	CooldownMS      int64
+	X              float64
+	Z              float64
+	Radius         float64
+	HealAmount     int
+	CooldownEndsAt int64
+	CooldownMS     int64
 }
 
 type healthRestorePointSnapshot struct {
-	X                   float64 `json:"x"`
-	Z                   float64 `json:"z"`
-	Radius              float64 `json:"radius"`
-	HealAmount          int     `json:"healAmount"`
-	CooldownSec         float64 `json:"cooldownSec"`
-	CooldownTimeLeftMS  int64   `json:"cooldownTimeLeftMs"`
-	Active              bool    `json:"active"`
+	X                  float64 `json:"x"`
+	Z                  float64 `json:"z"`
+	Radius             float64 `json:"radius"`
+	HealAmount         int     `json:"healAmount"`
+	CooldownSec        float64 `json:"cooldownSec"`
+	CooldownTimeLeftMS int64   `json:"cooldownTimeLeftMs"`
+	Active             bool    `json:"active"`
 }
 
 type playerStore struct {
-	ids                 []int
-	names               []string
-	isBot               []bool
-	pos                 []Vec3
-	yaw                 []float64
-	pitch               []float64
-	crouching           []bool
-	hp                  []int
-	armor               []int
-	credits             []int
-	team                []TeamID
-	pistolWeapon        []WeaponID
-	heavyWeapon         []WeaponID
-	pistolClip          []int
-	pistolReserve       []int
-	heavyClip           []int
-	heavyReserve        []int
-	bombs               []int
-	smokes              []int
-	flashbangs          []int
-	flashEndsAt         []int64
-	spawnProtectedUntil []int64
-	loadoutEndsAt       []int64
-	activeWeapon        []WeaponID
-	reloadWeapon        []WeaponID
-	reloadEndsAt        []int64
-	nextAttackAt        []int64
-	shotBloom           []float64
-	bloomWeapon         []WeaponID
-	lastShotAt          []int64
-	recoilPitch         []float64
-	recoilYaw           []float64
-	recoilShotIndex     []int
-	kills               []int
-	deaths              []int
-	alive               []bool
-	inMatch             []bool
-	velY                   []float64
-	onGround               []bool
-	lastProcessedSeq       []uint16
-	inputQueue             [][]InputCommand
-	lastAckedSnapshotSeq   []uint16
-	botNextThink        []int64
-	botShotCount        []int64
-	conns               []*websocket.Conn
-	sendChs             []chan []byte
-	history             []positionRingBuffer
-	idToIndex           map[int]int
+	ids                  []int
+	names                []string
+	isBot                []bool
+	pos                  []Vec3
+	yaw                  []float64
+	pitch                []float64
+	crouching            []bool
+	hp                   []int
+	armor                []int
+	credits              []int
+	team                 []TeamID
+	pistolWeapon         []WeaponID
+	heavyWeapon          []WeaponID
+	pistolClip           []int
+	pistolReserve        []int
+	heavyClip            []int
+	heavyReserve         []int
+	bombs                []int
+	smokes               []int
+	flashbangs           []int
+	flashEndsAt          []int64
+	spawnProtectedUntil  []int64
+	loadoutEndsAt        []int64
+	activeWeapon         []WeaponID
+	reloadWeapon         []WeaponID
+	reloadEndsAt         []int64
+	nextAttackAt         []int64
+	shotBloom            []float64
+	bloomWeapon          []WeaponID
+	lastShotAt           []int64
+	recoilPitch          []float64
+	recoilYaw            []float64
+	recoilShotIndex      []int
+	kills                []int
+	deaths               []int
+	alive                []bool
+	inMatch              []bool
+	velY                 []float64
+	onGround             []bool
+	lastProcessedSeq     []uint16
+	inputQueue           [][]InputCommand
+	lastAckedSnapshotSeq []uint16
+	botNextThink         []int64
+	botShotCount         []int64
+	conns                []*websocket.Conn
+	sendChs              []chan []byte
+	history              []positionRingBuffer
+	idToIndex            map[int]int
 }
 
 type hostageState struct {
@@ -420,35 +419,35 @@ type flagState struct {
 }
 
 type Game struct {
-	mu                 sync.RWMutex
-	players            playerStore
-	nextID             int
-	mode               GameMode
-	state              GameState
-	currentRound       int
-	roundEndsAt        int64
-	buyEndsAt          int64
-	intermissionEndsAt int64
-	roundWinner        TeamID
-	pendingMatchEnd    bool
-	blueScore          int
-	greenScore         int
-	blueLossStreak     int
-	greenLossStreak    int
-	projectiles        []projectileState
-	effects            []areaEffectState
-	nextProjID         int
-	deathmatchVoteEnds int64
-	deathmatchVotes    map[int]bool
-	mapName            string
-	mapSpawns          []Vec3
-	mapBlueSpawns      []Vec3
-	mapGreenSpawns     []Vec3
-	mapWallsRuntime    []wallSegment
-	mapBoxesRuntime    []boxEntry
-	mapArenaSize       float64
-	mapWallHeight      float64
-	mapWallThickness   float64
+	mu                     sync.RWMutex
+	players                playerStore
+	nextID                 int
+	mode                   GameMode
+	state                  GameState
+	currentRound           int
+	roundEndsAt            int64
+	buyEndsAt              int64
+	intermissionEndsAt     int64
+	roundWinner            TeamID
+	pendingMatchEnd        bool
+	blueScore              int
+	greenScore             int
+	blueLossStreak         int
+	greenLossStreak        int
+	projectiles            []projectileState
+	effects                []areaEffectState
+	nextProjID             int
+	deathmatchVoteEnds     int64
+	deathmatchVotes        map[int]bool
+	mapName                string
+	mapSpawns              []Vec3
+	mapBlueSpawns          []Vec3
+	mapGreenSpawns         []Vec3
+	mapWallsRuntime        []wallSegment
+	mapBoxesRuntime        []boxEntry
+	mapArenaSize           float64
+	mapWallHeight          float64
+	mapWallThickness       float64
 	mapHealthRestorePoints []healthRestorePointState
 	// Hostage rescue state
 	mapHostages    []hostageJSON
@@ -523,19 +522,19 @@ const defaultMapName = "de_dust2"
 
 func newGame() *Game {
 	g := &Game{
-		players:          newPlayerStore(),
-		nextID:           1,
-		mode:             ModeTeam,
-		state:            StateWaiting,
-		deathmatchVotes:  make(map[int]bool),
-		mapName:          defaultMapName,
-		mapSpawns:        defaultSpawns,
-		mapBlueSpawns:    []Vec3{{-25, standEyeHeight, -25}, {-25, standEyeHeight, 25}},
-		mapGreenSpawns:   []Vec3{{25, standEyeHeight, -25}, {25, standEyeHeight, 25}, {0, standEyeHeight, -12}, {0, standEyeHeight, 12}},
-		mapWallsRuntime:  mapWalls,
-		mapArenaSize:     arenaSize,
-		mapWallHeight:    5.0,
-		mapWallThickness: wallThick,
+		players:                newPlayerStore(),
+		nextID:                 1,
+		mode:                   ModeTeam,
+		state:                  StateWaiting,
+		deathmatchVotes:        make(map[int]bool),
+		mapName:                defaultMapName,
+		mapSpawns:              defaultSpawns,
+		mapBlueSpawns:          []Vec3{{-25, standEyeHeight, -25}, {-25, standEyeHeight, 25}},
+		mapGreenSpawns:         []Vec3{{25, standEyeHeight, -25}, {25, standEyeHeight, 25}, {0, standEyeHeight, -12}, {0, standEyeHeight, 12}},
+		mapWallsRuntime:        mapWalls,
+		mapArenaSize:           arenaSize,
+		mapWallHeight:          5.0,
+		mapWallThickness:       wallThick,
 		mapHealthRestorePoints: nil,
 	}
 
@@ -701,19 +700,19 @@ func (l *Lobby) summary() lobbySummary {
 }
 
 type mapJSON struct {
-	Arena       float64          `json:"arena"`
-	WallHeight  float64          `json:"wallHeight"`
-	WallThick   float64          `json:"wallThick"`
-	Walls       []wallEntry      `json:"walls"`
-	FloorInsets []floorEntry     `json:"floorInsets"`
-	Boxes       []boxEntry       `json:"boxes"`
-	SpawnPoints [][]float64      `json:"spawnPoints"`
-	BlueSpawns  [][]float64      `json:"blueSpawns"`
-	GreenSpawns [][]float64      `json:"greenSpawns"`
+	Arena               float64                  `json:"arena"`
+	WallHeight          float64                  `json:"wallHeight"`
+	WallThick           float64                  `json:"wallThick"`
+	Walls               []wallEntry              `json:"walls"`
+	FloorInsets         []floorEntry             `json:"floorInsets"`
+	Boxes               []boxEntry               `json:"boxes"`
+	SpawnPoints         [][]float64              `json:"spawnPoints"`
+	BlueSpawns          [][]float64              `json:"blueSpawns"`
+	GreenSpawns         [][]float64              `json:"greenSpawns"`
 	HealthRestorePoints []healthRestorePointJSON `json:"healthRestorePoints"`
-	Hostages    []hostageJSON    `json:"hostages"`
-	RescueZones []rescueZoneJSON `json:"rescueZones"`
-	FlagBases   []flagBaseJSON   `json:"flagBases"`
+	Hostages            []hostageJSON            `json:"hostages"`
+	RescueZones         []rescueZoneJSON         `json:"rescueZones"`
+	FlagBases           []flagBaseJSON           `json:"flagBases"`
 }
 
 type hostageJSON struct {
@@ -761,18 +760,18 @@ type boxEntry struct {
 }
 
 type mapLoadResult struct {
-	spawns      []Vec3
-	blueSpawns  []Vec3
-	greenSpawns []Vec3
-	walls       []wallSegment
-	boxes       []boxEntry
-	arena       float64
-	wallHeight  float64
-	wallThick   float64
+	spawns              []Vec3
+	blueSpawns          []Vec3
+	greenSpawns         []Vec3
+	walls               []wallSegment
+	boxes               []boxEntry
+	arena               float64
+	wallHeight          float64
+	wallThick           float64
 	healthRestorePoints []healthRestorePointState
-	hostages    []hostageJSON
-	rescueZones []rescueZoneJSON
-	flagBases   []flagBaseJSON
+	hostages            []hostageJSON
+	rescueZones         []rescueZoneJSON
+	flagBases           []flagBaseJSON
 }
 
 func loadMapGeometry(clientDir, name string) ([]Vec3, []wallSegment, []boxEntry, float64, float64, float64, error) {
@@ -809,9 +808,9 @@ func parseHealthRestorePoints(raw []healthRestorePointJSON) []healthRestorePoint
 			cooldownSec = 12
 		}
 		points = append(points, healthRestorePointState{
-			X: point.X,
-			Z: point.Z,
-			Radius: radius,
+			X:          point.X,
+			Z:          point.Z,
+			Radius:     radius,
 			HealAmount: healAmount,
 			CooldownMS: int64(math.Round(cooldownSec * 1000)),
 		})
@@ -856,18 +855,18 @@ func loadMapFull(clientDir, name string) (mapLoadResult, error) {
 	greenSpawns := parseSpawnList(m.GreenSpawns)
 
 	return mapLoadResult{
-		spawns:      spawns,
-		blueSpawns:  blueSpawns,
-		greenSpawns: greenSpawns,
-		walls:       walls,
-		boxes:       m.Boxes,
-		arena:       arena,
-		wallHeight:  wHeight,
-		wallThick:   wThick,
+		spawns:              spawns,
+		blueSpawns:          blueSpawns,
+		greenSpawns:         greenSpawns,
+		walls:               walls,
+		boxes:               m.Boxes,
+		arena:               arena,
+		wallHeight:          wHeight,
+		wallThick:           wThick,
 		healthRestorePoints: parseHealthRestorePoints(m.HealthRestorePoints),
-		hostages:    m.Hostages,
-		rescueZones: m.RescueZones,
-		flagBases:   m.FlagBases,
+		hostages:            m.Hostages,
+		rescueZones:         m.RescueZones,
+		flagBases:           m.FlagBases,
 	}, nil
 }
 
@@ -1188,27 +1187,27 @@ type flagSnapshot struct {
 }
 
 type matchState struct {
-	Mode                 GameMode          `json:"mode"`
-	Map                  string            `json:"map"`
-	CurrentRound         int               `json:"currentRound"`
-	TotalRounds          int               `json:"totalRounds"`
-	RoundTimeLeft        int64             `json:"roundTimeLeftMs"`
-	BuyTimeLeft          int64             `json:"buyTimeLeftMs"`
-	BuyPhase             bool              `json:"buyPhase"`
-	Intermission         bool              `json:"intermission"`
-	IntermissionTimeLeft int64             `json:"intermissionTimeLeftMs"`
-	RoundWinner          TeamID            `json:"roundWinner"`
-	BlueScore            int               `json:"blueScore"`
-	GreenScore           int               `json:"greenScore"`
-	BlueAlive            int               `json:"blueAlive"`
-	GreenAlive           int               `json:"greenAlive"`
-	DeathmatchVoteActive bool              `json:"deathmatchVoteActive"`
-	DeathmatchVoteTimeMS int64             `json:"deathmatchVoteTimeLeftMs"`
-	Hostages             []hostageSnapshot `json:"hostages,omitempty"`
-	Flags                []flagSnapshot    `json:"flags,omitempty"`
-	BlueCTFCaptures      int               `json:"blueCTFCaptures,omitempty"`
-	GreenCTFCaptures     int               `json:"greenCTFCaptures,omitempty"`
-	RescueZones          []rescueZoneJSON  `json:"rescueZones,omitempty"`
+	Mode                 GameMode                     `json:"mode"`
+	Map                  string                       `json:"map"`
+	CurrentRound         int                          `json:"currentRound"`
+	TotalRounds          int                          `json:"totalRounds"`
+	RoundTimeLeft        int64                        `json:"roundTimeLeftMs"`
+	BuyTimeLeft          int64                        `json:"buyTimeLeftMs"`
+	BuyPhase             bool                         `json:"buyPhase"`
+	Intermission         bool                         `json:"intermission"`
+	IntermissionTimeLeft int64                        `json:"intermissionTimeLeftMs"`
+	RoundWinner          TeamID                       `json:"roundWinner"`
+	BlueScore            int                          `json:"blueScore"`
+	GreenScore           int                          `json:"greenScore"`
+	BlueAlive            int                          `json:"blueAlive"`
+	GreenAlive           int                          `json:"greenAlive"`
+	DeathmatchVoteActive bool                         `json:"deathmatchVoteActive"`
+	DeathmatchVoteTimeMS int64                        `json:"deathmatchVoteTimeLeftMs"`
+	Hostages             []hostageSnapshot            `json:"hostages,omitempty"`
+	Flags                []flagSnapshot               `json:"flags,omitempty"`
+	BlueCTFCaptures      int                          `json:"blueCTFCaptures,omitempty"`
+	GreenCTFCaptures     int                          `json:"greenCTFCaptures,omitempty"`
+	RescueZones          []rescueZoneJSON             `json:"rescueZones,omitempty"`
 	HealthRestorePoints  []healthRestorePointSnapshot `json:"healthRestorePoints,omitempty"`
 }
 
@@ -1648,7 +1647,6 @@ func (g *Game) buildPlayerStateLocked(idx int, nowMS int64) playerState {
 		ReloadTimeLeftMS:          g.reloadTimeLeftLocked(idx, nowMS),
 	}
 }
-
 
 func (g *Game) stateTick(nowMS int64) {
 	g.mu.RLock()
@@ -4499,8 +4497,8 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 					game.players.inMatch[idx] = true
 					game.respawnPlayerLocked(idx, nowMS)
 				} else if game.state == StatePlaying && normalizeMode(game.mode) == ModeDeathmatch {
-					game.players.inMatch[idx] = false
-					game.players.alive[idx] = false
+					game.players.inMatch[idx] = true
+					game.respawnPlayerLocked(idx, nowMS)
 				}
 				game.syncModeBotsLocked(nowMS)
 				idx, ok = game.players.indexOf(playerID)
