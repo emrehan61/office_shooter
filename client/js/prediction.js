@@ -1,6 +1,6 @@
 // Client-side prediction and server reconciliation for server-authoritative movement.
 import { forwardFromYaw, rightFromYaw } from './math.js';
-import { collideWalls, mapArena } from './world.js';
+import { PLAYER_HEAD_CLEARANCE, WORLD_STEP_DOWN, WORLD_STEP_HEIGHT, collideWalls, getCeilingHeightAt, getGroundHeightAt, mapArena } from './world.js';
 import { getMoveSpeed, getJumpVelocity, PLAYER_RADIUS, STAND_EYE_HEIGHT, CROUCH_EYE_HEIGHT } from './player.js';
 
 const GRAVITY = -20;
@@ -135,13 +135,29 @@ export function predictStep(pos, velY, onGround, cmd, dt) {
 
     // Vertical physics.
     if (onGround) {
-        outPos[1] = eyeHeight;
-        velY = 0;
-    } else {
+        const footY = outPos[1] - eyeHeight;
+        const groundHeight = getGroundHeightAt(outPos[0], outPos[2], footY + WORLD_STEP_HEIGHT);
+        if (footY - groundHeight > WORLD_STEP_DOWN) {
+            onGround = false;
+        } else {
+            outPos[1] = groundHeight + eyeHeight;
+            velY = 0;
+        }
+    }
+    if (!onGround) {
+        const prevHeadY = outPos[1] + PLAYER_HEAD_CLEARANCE;
         velY += GRAVITY * dt;
         outPos[1] += velY * dt;
-        if (outPos[1] <= eyeHeight) {
-            outPos[1] = eyeHeight;
+        if (velY > 0) {
+            const ceilingHeight = getCeilingHeightAt(outPos[0], outPos[2], prevHeadY, outPos[1] + PLAYER_HEAD_CLEARANCE);
+            if (ceilingHeight != null) {
+                outPos[1] = ceilingHeight - PLAYER_HEAD_CLEARANCE;
+                velY = 0;
+            }
+        }
+        const landingHeight = getGroundHeightAt(outPos[0], outPos[2], outPos[1] - eyeHeight);
+        if (outPos[1] <= landingHeight + eyeHeight) {
+            outPos[1] = landingHeight + eyeHeight;
             velY = 0;
             onGround = true;
         }
@@ -155,7 +171,7 @@ export function predictStep(pos, velY, onGround, cmd, dt) {
     }
 
     // Wall / box collision (same implementation as server).
-    collideWalls(outPos, PLAYER_RADIUS);
+    collideWalls(outPos, PLAYER_RADIUS, eyeHeight);
 
     // Arena bounds clamp.
     const limit = mapArena - 0.5;

@@ -1,5 +1,5 @@
 import { clamp, forwardFromYaw, rightFromYaw } from './math.js';
-import { collideWalls, getSpawnPoints } from './world.js';
+import { PLAYER_HEAD_CLEARANCE, WORLD_STEP_DOWN, WORLD_STEP_HEIGHT, collideWalls, getCeilingHeightAt, getGroundHeightAt, getSpawnPoints, mapArena } from './world.js';
 import {
     GRENADE_MAX,
     MAX_ARMOR,
@@ -181,13 +181,29 @@ export function updatePlayer(player, dt, keys, movementEnabled = true) {
     player.pos[2] += mz * dt;
 
     if (player.onGround) {
-        player.pos[1] = targetEyeHeight;
-        player.vel[1] = 0;
-    } else {
+        const footY = player.pos[1] - targetEyeHeight;
+        const groundHeight = getGroundHeightAt(player.pos[0], player.pos[2], footY + WORLD_STEP_HEIGHT);
+        if (footY - groundHeight > WORLD_STEP_DOWN) {
+            player.onGround = false;
+        } else {
+            player.pos[1] = groundHeight + targetEyeHeight;
+            player.vel[1] = 0;
+        }
+    }
+    if (!player.onGround) {
+        const prevHeadY = player.pos[1] + PLAYER_HEAD_CLEARANCE;
         player.vel[1] += GRAVITY * dt;
         player.pos[1] += player.vel[1] * dt;
-        if (player.pos[1] <= targetEyeHeight) {
-            player.pos[1] = targetEyeHeight;
+        if (player.vel[1] > 0) {
+            const ceilingHeight = getCeilingHeightAt(player.pos[0], player.pos[2], prevHeadY, player.pos[1] + PLAYER_HEAD_CLEARANCE);
+            if (ceilingHeight != null) {
+                player.pos[1] = ceilingHeight - PLAYER_HEAD_CLEARANCE;
+                player.vel[1] = 0;
+            }
+        }
+        const landingHeight = getGroundHeightAt(player.pos[0], player.pos[2], player.pos[1] - targetEyeHeight);
+        if (player.pos[1] <= landingHeight + targetEyeHeight) {
+            player.pos[1] = landingHeight + targetEyeHeight;
             player.vel[1] = 0;
             player.onGround = true;
         }
@@ -199,10 +215,11 @@ export function updatePlayer(player, dt, keys, movementEnabled = true) {
         player.onGround = false;
     }
 
-    collideWalls(player.pos, PLAYER_RADIUS);
+    collideWalls(player.pos, PLAYER_RADIUS, targetEyeHeight);
 
-    player.pos[0] = clamp(player.pos[0], -29.5, 29.5);
-    player.pos[2] = clamp(player.pos[2], -29.5, 29.5);
+    const limit = mapArena - 0.5;
+    player.pos[0] = clamp(player.pos[0], -limit, limit);
+    player.pos[2] = clamp(player.pos[2], -limit, limit);
 }
 
 export function playerJump(player) {
@@ -421,4 +438,3 @@ export function getOwnedPistol(player) {
 export function getOwnedHeavy(player) {
     return player.heavyWeapon;
 }
-

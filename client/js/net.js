@@ -1,4 +1,4 @@
-import { MODE_TEAM, normalizeMode } from './modes.js';
+import { MODE_CTF, MODE_DEATHMATCH, MODE_HOSTAGE, MODE_TEAM, normalizeMode } from './modes.js';
 import { decodeMessage, encodeInput, encodeShoot, encodeThrow, encodeReload, encodeSwitch, encodeBuy, encodePing, applyDeltaToPlayer } from './codec.js';
 import { createClockSync, startClockSync, stopClockSync, onPong as clockOnPong, getClockOffset, getLatency } from './clock.js';
 import { createJitterBuffer, onSnapshotArrival, getRenderDelayMs as jbGetRenderDelay, resetJitterBuffer, createSnapRing, pushSnapRing, sampleSnapRing } from './jitter.js';
@@ -663,7 +663,8 @@ function applyPlayerState(target, state, includeTransform = true, serverTimeMs =
 function applyMatchState(net, match) {
     if (!match) return;
 
-    net.match.mode = normalizeMode(match.mode ?? net.match.mode);
+    const mode = normalizeMode(match.mode ?? net.match.mode);
+    net.match.mode = mode;
     net.match.map = match.map ?? net.match.map;
     net.match.currentRound = match.currentRound ?? net.match.currentRound;
     net.match.totalRounds = match.totalRounds ?? net.match.totalRounds;
@@ -679,11 +680,21 @@ function applyMatchState(net, match) {
     net.match.greenAlive = match.greenAlive ?? net.match.greenAlive;
     net.match.deathmatchVoteActive = match.deathmatchVoteActive ?? net.match.deathmatchVoteActive;
     net.match.deathmatchVoteTimeLeftMs = match.deathmatchVoteTimeLeftMs ?? net.match.deathmatchVoteTimeLeftMs;
-    net.match.hostages = match.hostages ?? net.match.hostages;
-    net.match.flags = match.flags ?? net.match.flags;
-    net.match.blueCTFCaptures = match.blueCTFCaptures ?? net.match.blueCTFCaptures;
-    net.match.greenCTFCaptures = match.greenCTFCaptures ?? net.match.greenCTFCaptures;
-    net.match.rescueZones = match.rescueZones ?? net.match.rescueZones;
+    net.match.hostages = mode === MODE_HOSTAGE
+        ? (Array.isArray(match.hostages) ? match.hostages : [])
+        : [];
+    net.match.flags = mode === MODE_CTF
+        ? (Array.isArray(match.flags) ? match.flags : [])
+        : [];
+    net.match.blueCTFCaptures = mode === MODE_CTF
+        ? (match.blueCTFCaptures ?? net.match.blueCTFCaptures)
+        : 0;
+    net.match.greenCTFCaptures = mode === MODE_CTF
+        ? (match.greenCTFCaptures ?? net.match.greenCTFCaptures)
+        : 0;
+    net.match.rescueZones = mode === MODE_HOSTAGE
+        ? (Array.isArray(match.rescueZones) ? match.rescueZones : [])
+        : [];
     net.match.healthRestorePoints = Array.isArray(match.healthRestorePoints)
         ? match.healthRestorePoints.map((point) => ({
             x: point.x ?? 0,
@@ -694,7 +705,7 @@ function applyMatchState(net, match) {
             cooldownTimeLeftMs: point.cooldownTimeLeftMs ?? 0,
             active: point.active !== false,
         }))
-        : (net.match.mode === 'deathmatch' ? net.match.healthRestorePoints : []);
+        : (mode === MODE_DEATHMATCH ? net.match.healthRestorePoints : []);
     if (typeof match.deathmatchVoteTimeLeftMs === 'number') {
         net.match.deathmatchVoteEndsAtClientMs = Date.now() + Math.max(0, match.deathmatchVoteTimeLeftMs);
     } else if (match.deathmatchVoteActive === false) {

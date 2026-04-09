@@ -30,6 +30,7 @@ import { buildHttpURL, buildWebSocketURL, getDefaultServerAddress } from './conf
 import { clamp, lookDirFromYawPitch } from './math.js';
 import { WEAPON_DEFS, WEAPON_KNIFE, getWeaponSwitchByCode, isScopedWeapon, isUtilityWeapon } from './economy.js';
 import { buildEffectVerts, buildProjectileVerts } from './projectiles.js';
+import { clearParticleSystem, createParticleSystem, spawnImpactParticles, triggerEffectParticles, updateParticleSystem } from './particles.js';
 import { TEAM_BLUE, TEAM_GREEN, TEAM_NONE, canSelectTeam, getTeamCounts, getTeamLabel, getTeamStartState, normalizeTeam } from './teams.js';
 import { MODE_CTF, MODE_DEATHMATCH, MODE_HOSTAGE, MODE_TEAM, getCTFStartState, getDeathmatchStartState, getHostageStartState, getModeLabel, normalizeMode } from './modes.js';
 import {
@@ -140,6 +141,7 @@ const healthRestoreGroup = new THREE.Group();
 healthRestoreGroup.name = 'health-restore-points';
 renderer.scene.add(healthRestoreGroup);
 const healthRestorePool = [];
+const particleSystem = createParticleSystem(renderer.scene);
 
 // Pre-allocated remote muzzle flash light pool (avoids per-frame PointLight allocation)
 const REMOTE_FLASH_POOL_SIZE = 6;
@@ -1126,6 +1128,7 @@ function resetAfterDisconnect(message) {
     clearChat();
     camera.fov = DEFAULT_FOV;
     localImpactEffects.length = 0;
+    clearParticleSystem(particleSystem);
     lastAnnouncerMatch = null;
     killAnnouncerState = createKillAnnouncerState();
 
@@ -1563,6 +1566,7 @@ net.onRespawn = (msg) => {
     setBuyMenuOpen(false);
     setPauseMenuOpen(false);
     localImpactEffects.length = 0;
+    clearParticleSystem(particleSystem);
     resetPrediction();
 };
 
@@ -1576,6 +1580,7 @@ net.onRound = () => {
     setBuyMenuOpen(false);
     setPauseMenuOpen(false);
     localImpactEffects.length = 0;
+    clearParticleSystem(particleSystem);
     killAnnouncerState = createKillAnnouncerState(net.match.currentRound || 0);
     if (hud.overlay) hud.overlay.style.display = 'none';
 };
@@ -1596,6 +1601,7 @@ net.onShot = (msg) => {
             localImpactEffects.splice(0, localImpactEffects.length - 16);
         }
     }
+    spawnImpactParticles(particleSystem, impactPos, isLocal ? 1.15 : 0.85);
 
     // Bullet tracer
     if (activeTracers.length < MAX_TRACERS) {
@@ -1775,6 +1781,12 @@ function frame(time) {
             localImpactEffects.splice(i, 1);
         }
     }
+    if (localInMatch) {
+        triggerEffectParticles(particleSystem, net.effects, performance.now(), {
+            outdoor: getSkyConfig().enabled === true,
+        });
+    }
+    updateParticleSystem(particleSystem, dt);
 
     // View punch is cosmetic screen shake layered on top of the camera.
     // Aim punch (recoil) is already applied to camera.yaw/pitch above.
@@ -1860,7 +1872,9 @@ function frame(time) {
         mergedEffects.length = 0;
         appendItems(mergedEffects, net.effects);
         appendItems(mergedEffects, localImpactEffects);
-        appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects));
+        appendVerts(worldDynamicVerts, buildEffectVerts(mergedEffects, {
+            outdoor: getSkyConfig().enabled === true,
+        }));
 
         updateVertPool(renderer.dynamicVertPool, worldDynamicVerts);
 

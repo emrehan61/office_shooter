@@ -20,11 +20,13 @@ import {
     setActiveWeapon,
     startReload,
     spendWeaponAmmo,
+    updatePlayer,
 } from './player.js';
 import { STARTING_CREDITS, UTILITY_BOMB, UTILITY_SMOKE, WEAPON_DEFS, WEAPON_KNIFE } from './economy.js';
 import { TEAM_BLUE, TEAM_GREEN } from './teams.js';
 
 const mapData = JSON.parse(readFileSync(new URL('../maps/office_studio.json', import.meta.url), 'utf8'));
+const dust2Map = JSON.parse(readFileSync(new URL('../maps/de_dust2.json', import.meta.url), 'utf8'));
 loadMap(mapData);
 
 test('player starts with knife only and empty weapon slots', () => {
@@ -177,6 +179,28 @@ test('movement is blocked during buy phase and intermission', () => {
 
     player.alive = false;
     assert.equal(canMove(player, { buyPhase: false }), false);
+});
+
+test('movement uses the active map arena instead of a fixed studio-sized clamp', () => {
+    const previousWindow = globalThis.window;
+    globalThis.window = { _cam: { yaw: Math.PI / 2 } };
+
+    loadMap(dust2Map);
+    const player = createPlayer();
+    player.pos = [-29, 1.7, 35];
+    player.onGround = true;
+
+    updatePlayer(player, 0.3, {
+        forward: true,
+        backward: false,
+        left: false,
+        right: false,
+    });
+
+    assert.ok(player.pos[0] < -29.5);
+
+    loadMap(mapData);
+    globalThis.window = previousWindow;
 });
 
 test('weapon mobility follows the equipped weapon and scoped weapons slow further while aiming', () => {

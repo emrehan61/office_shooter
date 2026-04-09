@@ -189,6 +189,84 @@ test('match snapshots retain health restore point cooldown state', async () => {
     }
 });
 
+test('mode switches clear stale hostage and ctf objectives', async () => {
+    const restore = installFakeWebSocket();
+    try {
+        const { net, ws } = await connectClient();
+        ws.emit({
+            t: 'state',
+            match: {
+                mode: 'hostage',
+                currentRound: 1,
+                totalRounds: 10,
+                roundTimeLeftMs: 60000,
+                buyTimeLeftMs: 0,
+                buyPhase: false,
+                hostages: [{ x: 12, y: 0, z: -4, followerId: 0, alive: true, rescued: false }],
+                rescueZones: [{ cx: 0, cz: 25, radius: 1.5 }],
+            },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100 },
+            },
+        });
+
+        assert.equal(net.match.hostages.length, 1);
+        assert.equal(net.match.rescueZones.length, 1);
+
+        ws.emit({
+            t: 'state',
+            match: {
+                mode: 'ctf',
+                currentRound: 1,
+                totalRounds: 10,
+                roundTimeLeftMs: 55000,
+                buyTimeLeftMs: 0,
+                buyPhase: false,
+                flags: [
+                    { team: 'blue', pos: [0, 0, 0], homePos: [0, 0, 0], atHome: true, carrierId: 0, dropped: false },
+                    { team: 'green', pos: [10, 0, 10], homePos: [10, 0, 10], atHome: true, carrierId: 0, dropped: false },
+                ],
+                blueCTFCaptures: 1,
+                greenCTFCaptures: 2,
+            },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100 },
+            },
+        });
+
+        assert.equal(net.match.mode, 'ctf');
+        assert.equal(net.match.hostages.length, 0);
+        assert.equal(net.match.rescueZones.length, 0);
+        assert.equal(net.match.flags.length, 2);
+        assert.equal(net.match.blueCTFCaptures, 1);
+        assert.equal(net.match.greenCTFCaptures, 2);
+
+        ws.emit({
+            t: 'state',
+            match: {
+                mode: 'deathmatch',
+                currentRound: 1,
+                totalRounds: 1,
+                roundTimeLeftMs: 45000,
+                buyTimeLeftMs: 0,
+                buyPhase: false,
+            },
+            players: {
+                1: { pos: [0, 1.7, 0], yaw: 0, pitch: 0, hp: 100 },
+            },
+        });
+
+        assert.equal(net.match.mode, 'deathmatch');
+        assert.equal(net.match.hostages.length, 0);
+        assert.equal(net.match.rescueZones.length, 0);
+        assert.equal(net.match.flags.length, 0);
+        assert.equal(net.match.blueCTFCaptures, 0);
+        assert.equal(net.match.greenCTFCaptures, 0);
+    } finally {
+        restore();
+    }
+});
+
 test('connection closes before welcome and clears session state', async () => {
     const restore = installFakeWebSocket();
     try {

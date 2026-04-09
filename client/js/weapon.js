@@ -1238,14 +1238,15 @@ function bombVerts(slot, reloadPhase) {
     // Fingers wrapping
     appendPart(v, boxVerts(0.10, -0.01, 0.02, 0.02, 0.04, 0.04, 9), ox, oy, oz, -0.3 + pitch * 0.5, yaw * 0.3, roll * 0.15);
 
-    // Body
-    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.05, 0.05, 0.05, 3), ox, oy, oz, pitch, yaw, roll);
-    // Neck
-    appendPart(v, boxVerts(0.0, 0.055, 0.0, 0.012, 0.02, 0.012, 14), ox, oy, oz, pitch, yaw, roll);
-    // Spoon
-    appendPart(v, boxVerts(0.0, 0.085, 0.0, 0.008, 0.012, 0.008, 4), ox, oy, oz, pitch, yaw, roll);
-    // Pin ring
-    appendPart(v, boxVerts(0.025, 0.06, 0.0, 0.008, 0.008, 0.003, 3), ox, oy, oz, pitch, yaw, roll);
+    // Nuke canister shell
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.052, 0.062, 0.052, 3), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.0, 0.0, 0.038, 0.05, 0.038, 21), ox, oy, oz, pitch, yaw, roll);
+    // Top assembly
+    appendPart(v, boxVerts(0.0, 0.072, 0.0, 0.028, 0.015, 0.028, 10), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.0, 0.095, 0.0, 0.01, 0.014, 0.01, 4), ox, oy, oz, pitch, yaw, roll);
+    // Side latch / pull ring
+    appendPart(v, boxVerts(0.048, 0.028, 0.0, 0.01, 0.014, 0.012, 14), ox, oy, oz, pitch, yaw, roll);
+    appendPart(v, boxVerts(0.06, 0.05, 0.0, 0.008, 0.008, 0.004, 3), ox, oy, oz, pitch, yaw, roll);
 
     return v;
 }

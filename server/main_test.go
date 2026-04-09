@@ -520,6 +520,54 @@ func TestAwardDeathmatchKillAmmoLockedAddsReserveAmmo(t *testing.T) {
 	}
 }
 
+func TestHandleBombDetonationLockedUsesBlastRadiusAndDamageFalloff(t *testing.T) {
+	g := newTestGame()
+	g.state = StatePlaying
+
+	shooter := addNamedPlayer(g, "Shooter")
+	nearby := addNamedPlayer(g, "Nearby")
+	edge := addNamedPlayer(g, "Edge")
+	outside := addNamedPlayer(g, "Outside")
+
+	shooterIdx := assignPlayerTeam(g, shooter.id, TeamBlue)
+	nearIdx := assignPlayerTeam(g, nearby.id, TeamGreen)
+	edgeIdx := assignPlayerTeam(g, edge.id, TeamGreen)
+	outsideIdx := assignPlayerTeam(g, outside.id, TeamGreen)
+
+	g.players.pos[shooterIdx] = Vec3{15, standEyeHeight, 0}
+	g.players.pos[nearIdx] = Vec3{2, standEyeHeight, 0}
+	g.players.pos[edgeIdx] = Vec3{9.5, standEyeHeight, 0}
+	g.players.pos[outsideIdx] = Vec3{12, standEyeHeight, 0}
+
+	tm := newTickMessages()
+	g.handleBombDetonationLocked(projectileState{
+		OwnerID: shooter.id,
+		Pos:     Vec3{0, standEyeHeight, 0},
+	}, 1000, tm)
+
+	if len(g.effects) != 1 {
+		t.Fatalf("expected 1 lingering blast effect, got %d", len(g.effects))
+	}
+	if got := g.effects[0].Radius; got != bombRadius {
+		t.Fatalf("expected blast radius %.1f, got %.1f", bombRadius, got)
+	}
+	if g.players.alive[nearIdx] {
+		t.Fatal("expected nearby player to be eliminated by the nuke blast")
+	}
+	if got := g.players.kills[shooterIdx]; got != 1 {
+		t.Fatalf("expected shooter kills 1, got %d", got)
+	}
+	if got := g.players.hp[edgeIdx]; got >= maxHP || got <= 0 {
+		t.Fatalf("expected edge player to survive with partial hp, got %d", got)
+	}
+	if got := g.players.hp[outsideIdx]; got != maxHP {
+		t.Fatalf("expected outside player hp %d, got %d", maxHP, got)
+	}
+	if len(tm.broadcasts) < 3 {
+		t.Fatalf("expected hit/kill broadcasts, got %d", len(tm.broadcasts))
+	}
+}
+
 func TestBeginRoundCooldownLockedAwardsCSStyleEconomy(t *testing.T) {
 	g := newTestGame()
 	blue := addNamedPlayer(g, "Blue")

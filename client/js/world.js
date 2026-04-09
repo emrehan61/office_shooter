@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getMaterial, getAOMaterial, createBoxMesh, createFloorMaterial, createPuddleMesh } from './renderer.js';
+import { getMaterial, getAOMaterial, createBoxMesh, createFloorMaterial, createPuddleMesh, getMaterialTextureTileSize } from './renderer.js';
 
 // Office-themed world definition: open software studio with meeting pods and workstations.
 // Material IDs: 0=wall panel, 1=carpet, 2=ceiling, 3=metal, 13=glass, 14=wood, 15=screen, 16=plant
@@ -9,12 +9,17 @@ let mapWallHeight = 5;
 let mapWallThick = 0.3;
 let mapWalls = [];
 let mapFloorInsets = [];
+let mapPlatforms = [];
 let mapBoxes = [];
 let mapSpawnPoints = [];
 let mapHealthRestorePoints = [];
 let mapPuddles = [];
 let mapSky = normalizeSkyConfig();
 let shotBlockers = [];
+
+export const WORLD_STEP_HEIGHT = 0.6;
+export const WORLD_STEP_DOWN = 0.75;
+export const PLAYER_HEAD_CLEARANCE = 0.1;
 
 export function normalizeSkyConfig(sky = {}) {
     const enabled = sky?.enabled === true;
@@ -32,6 +37,10 @@ export function getSpawnPoints() {
 
 export function getHealthRestorePoints() {
     return mapHealthRestorePoints;
+}
+
+export function getPlatforms() {
+    return mapPlatforms;
 }
 
 export function getPuddles() {
@@ -54,12 +63,29 @@ export function loadMap(data) {
     mapWallThick = data.wallThick ?? 0.3;
     mapWalls = data.walls || [];
     mapFloorInsets = data.floorInsets || [];
+    mapPlatforms = (data.platforms || []).map(normalizePlatform);
     mapBoxes = data.boxes || [];
     mapSpawnPoints = data.spawnPoints || [];
     mapHealthRestorePoints = data.healthRestorePoints || [];
     mapPuddles = (data.puddles || []).map(normalizePuddle);
     mapSky = normalizeSkyConfig(data.sky);
     rebuildShotBlockers();
+}
+
+function normalizePlatform(platform = {}) {
+    const x1 = Number.isFinite(platform.x1) ? platform.x1 : -1;
+    const x2 = Number.isFinite(platform.x2) ? platform.x2 : 1;
+    const z1 = Number.isFinite(platform.z1) ? platform.z1 : -1;
+    const z2 = Number.isFinite(platform.z2) ? platform.z2 : 1;
+    return {
+        x1,
+        x2,
+        z1,
+        z2,
+        y: Number.isFinite(platform.y) ? platform.y : 0.8,
+        thickness: Math.max(0.12, platform.thickness ?? 0.35),
+        matID: Number.isFinite(platform.matID) ? platform.matID : 27,
+    };
 }
 
 function normalizePuddle(puddle = {}) {
@@ -75,6 +101,7 @@ function normalizePuddle(puddle = {}) {
 function rebuildShotBlockers() {
     shotBlockers = [
         ...mapWalls.map(toWallBox),
+        ...mapPlatforms.map(toPlatformBox),
         ...mapBoxes.map((box) => ({
             min: [box.cx - box.hx, box.cy - box.hy, box.cz - box.hz],
             max: [box.cx + box.hx, box.cy + box.hy, box.cz + box.hz],
@@ -156,6 +183,17 @@ function generateFloorLightmap() {
                 if (box.cy > 2.0) continue;
                 const dx = Math.max(0, Math.abs(wx - box.cx) - box.hx);
                 const dz = Math.max(0, Math.abs(wz - box.cz) - box.hz);
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < SHADOW_RANGE_BOX) {
+                    const t = dist / SHADOW_RANGE_BOX;
+                    aoFactor = Math.min(aoFactor, 1.0 - (1.0 - t * t) * BOX_INTENSITY);
+                }
+            }
+            for (const platform of mapPlatforms) {
+                const bounds = getPlatformBounds(platform);
+                if (bounds.top > 2.5) continue;
+                const dx = Math.max(0, Math.max(bounds.minX - wx, wx - bounds.maxX));
+                const dz = Math.max(0, Math.max(bounds.minZ - wz, wz - bounds.maxZ));
                 const dist = Math.sqrt(dx * dx + dz * dz);
                 if (dist < SHADOW_RANGE_BOX) {
                     const t = dist / SHADOW_RANGE_BOX;
@@ -321,6 +359,9 @@ function computeWorldLighting(meshes) {
             max: [box.cx + box.hx, box.cy + box.hy, box.cz + box.hz],
         });
     }
+    for (const platform of mapPlatforms) {
+        aabbs.push(toPlatformBox(platform));
+    }
     aabbs.push({ min: [-mapArena, -0.5, -mapArena], max: [mapArena, 0, mapArena] });
     aabbs.push({ min: [-mapArena, mapWallHeight, -mapArena], max: [mapArena, mapWallHeight + 0.5, mapArena] });
 
@@ -411,6 +452,7 @@ function computeWorldLighting(meshes) {
 export function buildWorldGeometry(opts = {}) {
     const skipFloorAO = opts.skipFloorAO === true;
     const meshes = [];
+    const aoTargets = []; // meshes that should receive baked vertex AO
     // Editor skips AO: generateFloorAO is O(512² × geometry) and was freezing every rebuild while dragging.
     const floorAO = skipFloorAO ? null : generateFloorLightmap();
 
@@ -425,6 +467,12 @@ export function buildWorldGeometry(opts = {}) {
         meshes.push(createFloorMesh(floor.x1, floor.z1, floor.x2, floor.z2, floor.matID, 0.01, floorAO));
     }
 
+    for (const platform of mapPlatforms) {
+        const platformMesh = createPlatformMesh(platform);
+        meshes.push(platformMesh);
+        aoTargets.push(platformMesh);
+    }
+
     if (mapSky.enabled && mapSky.preset === 'rain_day') {
         for (const puddle of mapPuddles) {
             meshes.push(createPuddleMesh(puddle.x, puddle.z, puddle.radiusX, puddle.radiusZ, puddle.opacity));
@@ -436,10 +484,10 @@ export function buildWorldGeometry(opts = {}) {
     for (const wall of mapWalls) {
         pushThickWall(wallVerts, wall.x1, wall.z1, wall.x2, wall.z2, wall.matID, wall.height ?? mapWallHeight);
     }
-    const aoTargets = []; // meshes that should receive baked vertex AO
-    for (const [matID, positions] of wallVerts) {
+    for (const [matID, data] of wallVerts) {
         const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
         geo.computeVertexNormals();
         const mat = getMaterial(matID);
         const mesh = new THREE.Mesh(geo, mat);
@@ -487,9 +535,17 @@ function createFloorMesh(x1, z1, x2, z2, matID, y, aoTexture) {
     const geo = new THREE.PlaneGeometry(w, d);
     geo.rotateX(-Math.PI / 2);
 
+    const posAttr = geo.getAttribute('position');
+    const tileSize = getMaterialTextureTileSize(matID);
+    const uv = new Float32Array(posAttr.count * 2);
+    for (let i = 0; i < posAttr.count; i++) {
+        uv[i * 2] = (posAttr.getX(i) + w * 0.5) / tileSize;
+        uv[i * 2 + 1] = (posAttr.getZ(i) + d * 0.5) / tileSize;
+    }
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+
     if (aoTexture) {
         // UV2 maps world position to lightmap: (worldX + mapArena) / (2*mapArena)
-        const posAttr = geo.getAttribute('position');
         const uv2 = new Float32Array(posAttr.count * 2);
         for (let i = 0; i < posAttr.count; i++) {
             // After rotateX(-PI/2), local X → world X offset, local Z → world Z offset
@@ -508,6 +564,19 @@ function createFloorMesh(x1, z1, x2, z2, matID, y, aoTexture) {
     return mesh;
 }
 
+function createPlatformMesh(platform) {
+    const bounds = getPlatformBounds(platform);
+    const w = bounds.maxX - bounds.minX;
+    const d = bounds.maxZ - bounds.minZ;
+    const cx = (bounds.minX + bounds.maxX) * 0.5;
+    const cz = (bounds.minZ + bounds.maxZ) * 0.5;
+    const hy = bounds.thickness * 0.5;
+    const cy = bounds.top - hy;
+    const mesh = createBoxMesh(cx, cy, cz, w * 0.5, hy, d * 0.5, platform.matID);
+    mesh.userData.kind = 'platform';
+    return mesh;
+}
+
 function pushThickWall(buckets, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const dx = x2 - x1;
     const dz = z2 - z1;
@@ -522,30 +591,36 @@ function pushThickWall(buckets, x1, z1, x2, z2, matID, height = mapWallHeight) {
     const bx1 = x1 - nx, bz1 = z1 - nz;
     const bx2 = x2 - nx, bz2 = z2 - nz;
 
-    let positions = buckets.get(matID);
-    if (!positions) {
-        positions = [];
-        buckets.set(matID, positions);
+    let bucket = buckets.get(matID);
+    if (!bucket) {
+        bucket = { positions: [], uvs: [] };
+        buckets.set(matID, bucket);
     }
+    const tileSize = getMaterialTextureTileSize(matID);
+    const uLen = len / tileSize;
+    const vHeight = height / tileSize;
+    const uDepth = (mapWallThick * 2) / tileSize;
 
     // Front face
-    pushQuadPositions(positions, ax1,0,az1, ax2,0,az2, ax2,height,az2, ax1,height,az1);
+    pushQuad(bucket, ax1,0,az1, ax2,0,az2, ax2,height,az2, ax1,height,az1, 0,0, uLen,0, uLen,vHeight, 0,vHeight);
     // Back face
-    pushQuadPositions(positions, bx2,0,bz2, bx1,0,bz1, bx1,height,bz1, bx2,height,bz2);
+    pushQuad(bucket, bx2,0,bz2, bx1,0,bz1, bx1,height,bz1, bx2,height,bz2, 0,0, uLen,0, uLen,vHeight, 0,vHeight);
     // Top
-    pushQuadPositions(positions, ax1,height,az1, ax2,height,az2, bx2,height,bz2, bx1,height,bz1);
+    pushQuad(bucket, ax1,height,az1, ax2,height,az2, bx2,height,bz2, bx1,height,bz1, 0,0, uLen,0, uLen,uDepth, 0,uDepth);
     // Left cap
-    pushQuadPositions(positions, bx1,0,bz1, ax1,0,az1, ax1,height,az1, bx1,height,bz1);
+    pushQuad(bucket, bx1,0,bz1, ax1,0,az1, ax1,height,az1, bx1,height,bz1, 0,0, uDepth,0, uDepth,vHeight, 0,vHeight);
     // Right cap
-    pushQuadPositions(positions, ax2,0,az2, bx2,0,bz2, bx2,height,bz2, ax2,height,az2);
+    pushQuad(bucket, ax2,0,az2, bx2,0,bz2, bx2,height,bz2, ax2,height,az2, 0,0, uDepth,0, uDepth,vHeight, 0,vHeight);
 }
 
-function pushQuadPositions(positions, x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3) {
-    positions.push(x0,y0,z0, x1,y1,z1, x2,y2,z2);
-    positions.push(x0,y0,z0, x2,y2,z2, x3,y3,z3);
+function pushQuad(bucket, x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3, u0,v0, u1,v1, u2,v2, u3,v3) {
+    bucket.positions.push(x0,y0,z0, x1,y1,z1, x2,y2,z2);
+    bucket.positions.push(x0,y0,z0, x2,y2,z2, x3,y3,z3);
+    bucket.uvs.push(u0,v0, u1,v1, u2,v2);
+    bucket.uvs.push(u0,v0, u2,v2, u3,v3);
 }
 
-export function collideWalls(pos, radius) {
+export function collideWalls(pos, radius, eyeHeight = 1.7) {
     let px = pos[0];
     let pz = pos[2];
     const r = radius + mapWallThick;
@@ -564,8 +639,17 @@ export function collideWalls(pos, radius) {
     }
 
     // Box collision: push player circle out of each AABB in XZ if Y overlaps
-    const playerFoot = pos[1] - 1.7; // approximate feet position
-    const playerTop = pos[1] + 0.1;
+    const playerFoot = pos[1] - eyeHeight;
+    const playerTop = pos[1] + PLAYER_HEAD_CLEARANCE;
+    for (const platform of mapPlatforms) {
+        const bounds = getPlatformBounds(platform);
+        const stepDelta = bounds.top - playerFoot;
+        const standingOnTop = playerFoot >= bounds.top - 0.08;
+        const canStepOnto = stepDelta >= -0.08 && stepDelta <= WORLD_STEP_HEIGHT + 0.02;
+        if (standingOnTop || canStepOnto) continue;
+        if (playerTop < bounds.bottom || playerFoot > bounds.top) continue;
+        [px, pz] = collideCircleAgainstRect(px, pz, radius, bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ);
+    }
     for (const box of mapBoxes) {
         const bMinY = box.cy - box.hy;
         const bMaxY = box.cy + box.hy;
@@ -573,33 +657,62 @@ export function collideWalls(pos, radius) {
 
         const bx0 = box.cx - box.hx, bx1 = box.cx + box.hx;
         const bz0 = box.cz - box.hz, bz1 = box.cz + box.hz;
-
-        const cx = Math.max(bx0, Math.min(px, bx1));
-        const cz = Math.max(bz0, Math.min(pz, bz1));
-        const dx = px - cx;
-        const dz = pz - cz;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist < radius && dist > 1e-8) {
-            const push = (radius - dist) / dist;
-            px += dx * push;
-            pz += dz * push;
-        } else if (dist < 1e-8 && px >= bx0 && px <= bx1 && pz >= bz0 && pz <= bz1) {
-            // player center is inside the box — push out on the shortest axis
-            const pushXn = px - bx0 + radius;
-            const pushXp = bx1 - px + radius;
-            const pushZn = pz - bz0 + radius;
-            const pushZp = bz1 - pz + radius;
-            const minPush = Math.min(pushXn, pushXp, pushZn, pushZp);
-            if (minPush === pushXn) px = bx0 - radius;
-            else if (minPush === pushXp) px = bx1 + radius;
-            else if (minPush === pushZn) pz = bz0 - radius;
-            else pz = bz1 + radius;
-        }
+        [px, pz] = collideCircleAgainstRect(px, pz, radius, bx0, bx1, bz0, bz1);
     }
 
     pos[0] = px;
     pos[2] = pz;
+}
+
+function collideCircleAgainstRect(px, pz, radius, bx0, bx1, bz0, bz1) {
+    const cx = Math.max(bx0, Math.min(px, bx1));
+    const cz = Math.max(bz0, Math.min(pz, bz1));
+    const dx = px - cx;
+    const dz = pz - cz;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+
+    if (dist < radius && dist > 1e-8) {
+        const push = (radius - dist) / dist;
+        return [px + dx * push, pz + dz * push];
+    }
+    if (dist < 1e-8 && px >= bx0 && px <= bx1 && pz >= bz0 && pz <= bz1) {
+        const pushXn = px - bx0 + radius;
+        const pushXp = bx1 - px + radius;
+        const pushZn = pz - bz0 + radius;
+        const pushZp = bz1 - pz + radius;
+        const minPush = Math.min(pushXn, pushXp, pushZn, pushZp);
+        if (minPush === pushXn) return [bx0 - radius, pz];
+        if (minPush === pushXp) return [bx1 + radius, pz];
+        if (minPush === pushZn) return [px, bz0 - radius];
+        return [px, bz1 + radius];
+    }
+    return [px, pz];
+}
+
+export function getGroundHeightAt(x, z, maxTopY = Infinity) {
+    let best = 0;
+    for (const platform of mapPlatforms) {
+        const bounds = getPlatformBounds(platform);
+        if (bounds.top > maxTopY + 1e-6) continue;
+        if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue;
+        if (bounds.top > best) {
+            best = bounds.top;
+        }
+    }
+    return best;
+}
+
+export function getCeilingHeightAt(x, z, fromHeadY, toHeadY) {
+    let best = null;
+    for (const platform of mapPlatforms) {
+        const bounds = getPlatformBounds(platform);
+        if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue;
+        if (bounds.bottom + 1e-6 < fromHeadY || bounds.bottom - 1e-6 > toHeadY) continue;
+        if (best == null || bounds.bottom < best) {
+            best = bounds.bottom;
+        }
+    }
+    return best;
 }
 
 export function traceShotImpact(origin, dir, players = {}, shooterId = null, maxRange = 50) {
@@ -671,6 +784,32 @@ function toWallBox(wall) {
     return {
         min: [minX, 0, minZ],
         max: [maxX, height, maxZ],
+    };
+}
+
+function toPlatformBox(platform) {
+    const bounds = getPlatformBounds(platform);
+    return {
+        min: [bounds.minX, bounds.bottom, bounds.minZ],
+        max: [bounds.maxX, bounds.top, bounds.maxZ],
+    };
+}
+
+function getPlatformBounds(platform) {
+    const minX = Math.min(platform.x1, platform.x2);
+    const maxX = Math.max(platform.x1, platform.x2);
+    const minZ = Math.min(platform.z1, platform.z2);
+    const maxZ = Math.max(platform.z1, platform.z2);
+    const top = platform.y;
+    const thickness = Math.max(0.12, platform.thickness ?? 0.35);
+    return {
+        minX,
+        maxX,
+        minZ,
+        maxZ,
+        top,
+        bottom: top - thickness,
+        thickness,
     };
 }
 
